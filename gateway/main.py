@@ -261,7 +261,7 @@ async def discogs_login():
     # callback_url = "http://localhost:8000/callback.html?provider=discogs" 
     # We need to ensure the domain matches.
     # For now, hardcoding or using referer logic.
-    base_url = os.getenv("PUBLIC_URL", "http://localhost:5000")
+    base_url = os.getenv("PUBLIC_URL", "http://localhost:5000").rstrip("/")
     callback_url = f"{base_url}/callback.html"
     
     try:
