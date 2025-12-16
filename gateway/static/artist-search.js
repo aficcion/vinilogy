@@ -588,12 +588,19 @@ class ArtistSearch {
             this.loadingArtists.add(artist.name);
             this.updateUI();
 
+            // Get userId to enable persistent recommendations (Upgrade/Complete)
+            const userId = localStorage.getItem('userId');
+
             const fetchPromise = (async () => {
                 try {
                     const response = await fetch('/api/recommendations/artist-single', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ artist_name: artist.name, top_albums: 3 })
+                        body: JSON.stringify({
+                            artist_name: artist.name,
+                            top_albums: 3,
+                            user_id: userId ? parseInt(userId) : null
+                        })
                     });
 
                     if (response.ok) {

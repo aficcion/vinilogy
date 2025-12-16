@@ -306,6 +306,16 @@ async def discogs_finalize(request: DiscogsCallbackRequest):
     
     # Retrieve secret
     print(f"DEBUG: Finalizing Discogs. Token: {request.oauth_token} in dict {id(request_tokens)}. Available keys: {list(request_tokens.keys())}", flush=True)
+    
+    if request.oauth_token not in request_tokens:
+        # Reload from disk (handle multi-worker case)
+        try:
+             with open("request_tokens.json", "r") as f:
+                request_tokens.update(json.load(f))
+             print(f"DEBUG: Reloaded tokens from disk. Keys: {list(request_tokens.keys())}", flush=True)
+        except Exception as e:
+            print(f"DEBUG: Failed to reload tokens: {e}", flush=True)
+
     req_secret = request_tokens.pop(request.oauth_token, None)
     print(f"DEBUG: Retrieved secret for {request.oauth_token}: {req_secret}", flush=True)
     
@@ -1958,6 +1968,7 @@ async def get_single_artist_recommendations(request: dict):
     artist_name = request.get("artist_name")
     top_albums = request.get("top_albums", 3)
     csv_mode = request.get("csv_mode", False)
+    user_id = request.get("user_id")
     
     if not artist_name:
         raise HTTPException(status_code=400, detail="artist_name is required")
@@ -1969,7 +1980,12 @@ async def get_single_artist_recommendations(request: dict):
     try:
         resp = await http_client.post(
             f"{RECOMMENDER_SERVICE_URL}/artist-single-recommendation",
-            json={"artist_name": artist_name, "top_albums": top_albums, "csv_mode": csv_mode}
+            json={
+                "artist_name": artist_name, 
+                "top_albums": top_albums, 
+                "csv_mode": csv_mode,
+                "user_id": user_id
+            }
         )
         resp.raise_for_status()
         result = resp.json()

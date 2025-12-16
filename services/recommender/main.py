@@ -775,6 +775,14 @@ async def collection_recommendations(request: CollectionRecommendationRequest):
     return {"recommendations": recommendations, "total": len(recommendations)}
 
 
+class SingleArtistRequest(BaseModel):
+    artist_name: str
+    top_albums: int = 3
+    csv_mode: bool = False
+    cache_only: bool = False
+    user_id: int = None
+
+
 @app.post("/artist-single-recommendation")
 async def artist_single_recommendation(request: SingleArtistRequest):
     import time
@@ -786,22 +794,128 @@ async def artist_single_recommendation(request: SingleArtistRequest):
     if not discogs_key or not discogs_secret:
         raise HTTPException(status_code=500, detail="Discogs credentials not configured")
     
-    log_event("recommender-service", "INFO", f"Generating recommendations for artist: {request.artist_name}")
-    
+    log_event("recommender-service", "INFO", f"Generating recommendations for artist: {request.artist_name} (User: {request.user_id})")
+
+    # --- MODE A: Full User Context (Upgrade + Complete) ---
+    if request.user_id:
+        try:
+            generated_recs = []
+            
+            # 1. Fetch User Collection data for this artist (for Ownership/Upgrade check)
+            conn = db_utils.get_db_connection()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT title, internal_category, artist, release_type 
+                FROM user_collection_discogs 
+                WHERE user_id = ? AND artist = ?
+            """, (request.user_id, request.artist_name))
+            owned_items = cur.fetchall()
+            conn.close()
+
+            # Analyze ownership
+            owned_titles_norm = set() # Normalized titles of ANY format
+            owned_vinyl_keys = set() # Normalized (artist, title) of VINYLS
+            candidates_for_upgrade = [] # CD items to upgrade
+            
+            import unicodedata
+            import re 
+            def normalize_title(s):
+                if not s: return ""
+                try:
+                    s = unicodedata.normalize('NFKD', str(s)).encode('ASCII', 'ignore').decode('utf-8')
+                except: pass
+                s = s.lower().replace("'", "").replace('"', "")
+                return re.sub(r'[^a-z0-9]', '', s)
+
+            for item in owned_items:
+                title_norm = normalize_title(item['title'])
+                owned_titles_norm.add(title_norm)
+                
+                cat = (item['internal_category'] or "").lower()
+                is_vinyl = "vinyl" in cat or "lp" in cat
+                
+                if is_vinyl:
+                    owned_vinyl_keys.add(title_norm)
+                elif (item['release_type'] or "Other") == "Album":
+                    # Candidate for upgrade if not owned as vinyl
+                    candidates_for_upgrade.append({
+                        "title": item['title'], 
+                        "norm": title_norm
+                    })
+
+            # 2. Fetch Discography (Cache -> MB -> Discogs)
+            discography = get_artist_studio_albums(
+                request.artist_name, discogs_key, discogs_secret, 
+                top_n=50, use_mb=True, cache_only=False
+            )
+            
+            # --- UPGRADE STRATEGY ---
+            for cand in candidates_for_upgrade:
+                # If we don't already own the vinyl
+                if cand['norm'] not in owned_vinyl_keys:
+                    # Look for match in discography
+                    match = next((alb for alb in discography if normalize_title(alb.title) == cand['norm']), None)
+                    if match:
+                         generated_recs.append({
+                             "album_name": match.title,
+                             "artist_name": request.artist_name,
+                             "cover_url": match.cover_image,
+                             "source": "collection_upgrade",
+                             "image_url": match.cover_image,
+                             "reason": "Upgrade CD to Vinyl",
+                             "year": match.year,
+                             "discogs_master_id": match.discogs_master_id
+                         })
+                         # Mark as found so we don't suggest it again in Completion
+                         owned_vinyl_keys.add(cand['norm']) 
+
+            # --- COMPLETION STRATEGY ---
+            completion_count = 0
+            for album in discography:
+                if completion_count >= request.top_albums:
+                    break
+                
+                t_norm = normalize_title(album.title)
+                if t_norm not in owned_titles_norm: # Totally new to collection
+                    generated_recs.append({
+                        "album_name": album.title,
+                        "artist_name": request.artist_name,
+                        "cover_url": album.cover_image,
+                        "source": "discography_completion",
+                        "image_url": album.cover_image,
+                        "year": album.year
+                    })
+                    completion_count += 1
+
+            # 3. Persist
+            saved_count = db_utils.save_recommendations_batch(request.user_id, generated_recs)
+            log_event("recommender-service", "INFO", f"Saved {saved_count} recommendations for {request.artist_name}")
+            
+            return {
+                "recommendations": generated_recs, 
+                "total": len(generated_recs), 
+                "saved": saved_count,
+                "artist_name": request.artist_name
+            }
+
+        except Exception as e:
+            log_event("recommender", "ERROR", f"Single artist generation failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # --- MODE B: Legacy / Simple (No User Context) ---
     try:
         # 1. Try to get from DB (Cache Only)
-        # This is FAST and checks if we already have quality data
         albums = get_artist_studio_albums(
             request.artist_name,
             discogs_key,
             discogs_secret,
             top_n=request.top_albums,
             csv_mode=request.csv_mode,
-            cache_only=True  # FORCE CACHE ONLY - Do not go to Discogs yet
+            cache_only=True
         )
         
         if albums:
-            # CACHE HIT: We have data in DB, return it
+            # CACHE HIT
             recommendations = []
             for album in albums:
                 rec = {
@@ -818,14 +932,12 @@ async def artist_single_recommendation(request: SingleArtistRequest):
                 recommendations.append(rec)
             
             elapsed = time.time() - start_time
-            log_event("recommender-service", "INFO", 
-                     f"✓ Cache HIT for {request.artist_name}: {len(recommendations)} albums in {elapsed:.2f}s")
+            log_event("recommender-service", "INFO", f"✓ Cache HIT for {request.artist_name}")
             return {"recommendations": recommendations, "total": len(recommendations), "artist_name": request.artist_name}
             
         else:
-            # CACHE MISS: Use Discogs Search Fallback (Vinyl only, Top Popularity)
-            log_event("recommender-service", "INFO", 
-                     f"○ Cache MISS for {request.artist_name}. Using Discogs Search Fallback.")
+            # CACHE MISS
+            log_event("recommender-service", "INFO", f"○ Cache MISS for {request.artist_name}. Using Discogs Search.")
             
             discogs_albums = get_top_albums_from_discogs_search(
                 request.artist_name,
@@ -849,7 +961,7 @@ async def artist_single_recommendation(request: SingleArtistRequest):
                     "album_name": album["title"],
                     "artist_name": album["artist_name"],
                     "year": album["year"],
-                    "rating": None, # Search doesn't give rating
+                    "rating": None,
                     "votes": None,
                     "discogs_master_id": album["discogs_master_id"] or album["discogs_release_id"],
                     "discogs_type": "master" if album["discogs_master_id"] else "release",
@@ -860,15 +972,11 @@ async def artist_single_recommendation(request: SingleArtistRequest):
                 recommendations.append(rec)
             
             elapsed = time.time() - start_time
-            log_event("recommender-service", "INFO", 
-                     f"✓ Discogs Fallback for {request.artist_name}: {len(recommendations)} albums in {elapsed:.2f}s")
-            
             return {"recommendations": recommendations, "total": len(recommendations), "artist_name": request.artist_name}
 
     except Exception as e:
         log_event("recommender-service", "ERROR", f"Failed to generate recommendations for {request.artist_name}: {str(e)}")
-        # If Spotify fallback also fails, we return error
-        raise HTTPException(status_code=500, detail=f"Failed to generate recommendations: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 async def _generate_spotify_recommendations(artist_name: str, top_albums: int, user_id: int = None):
