@@ -1456,6 +1456,87 @@
             border-radius: 20px;
             /* Internal content in artist-search.js handles scrolling (usually .results-container) */
         }
+
+        /* Search First Redesign Styles */
+        .hero-search-container {
+            position: relative;
+            max-width: 600px;
+            width: 100%;
+            margin: 2.5rem auto 1.5rem;
+            display: flex;
+            align-items: center;
+        }
+
+        .hero-search-input {
+            width: 100%;
+            padding: 1.2rem 3rem 1.2rem 3.5rem;
+            /* Space for icon */
+            font-size: 1.2rem;
+            color: white;
+            background: rgba(255, 255, 255, 0.15);
+            /* Glassmorphism */
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50px;
+            outline: none;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+            cursor: text;
+        }
+
+        .hero-search-input::placeholder {
+            color: rgba(255, 255, 255, 0.8);
+            font-weight: 300;
+        }
+
+        .hero-search-input:hover {
+            background: rgba(255, 255, 255, 0.2);
+            box-shadow: 0 6px 25px rgba(0, 0, 0, 0.25);
+        }
+
+        .hero-search-input:focus {
+            background: rgba(255, 255, 255, 0.25);
+            border-color: rgba(255, 255, 255, 0.6);
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+        }
+
+        .search-icon-hero {
+            position: absolute;
+            left: 1.3rem;
+            font-size: 1.4rem;
+            color: rgba(255, 255, 255, 0.9);
+            pointer-events: none;
+        }
+
+        .auth-links {
+            display: flex;
+            gap: 2.5rem;
+            justify-content: center;
+            margin-top: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .auth-link-secondary {
+            color: rgba(255, 255, 255, 0.75);
+            text-decoration: none;
+            font-size: 0.95rem;
+            transition: all 0.2s;
+            cursor: pointer;
+            background: transparent;
+            border: none;
+            padding: 0.5rem 1rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-weight: 500;
+            border-radius: 20px;
+        }
+
+        .auth-link-secondary:hover {
+            color: white;
+            background: rgba(255, 255, 255, 0.1);
+        }
     </style>
 </head>
 
@@ -1479,17 +1560,21 @@
                     <h1>Vinilogy</h1>
                     <p>Descubre Vinilos Basados en tu Música</p>
 
-                    <div class="hero-actions"
-                        style="display: flex; gap: 1rem; justify-content: center; margin-top: 2rem; flex-wrap: wrap;">
-                        <button class="lastfm-btn" onclick="loginLastfm()">
-                            <span style="font-size: 1.3em;">🎵</span> Conectar Last.fm
-                        </button>
-                        <button class="discogs-btn" onclick="loginDiscogs()">
-                            <span style="font-size: 1.3em;">💿</span> Conectar Discogs
-                        </button>
-                        <button class="search-artists-btn" onclick="openArtistSearch()">
-                            🔍 Buscar Vinilos
-                        </button>
+                    <div class="hero-actions" style="margin-top: 2rem;">
+                        <!-- Search First Redesign -->
+                        <div class="hero-search-container" onclick="openArtistSearch()" style="cursor: pointer;">
+                            <span class="search-icon-hero">🔍</span>
+                            <input type="text" class="hero-search-input" placeholder="Busca un artista..." readonly>
+                        </div>
+
+                        <div class="auth-links">
+                            <button class="auth-link-secondary" onclick="loginLastfm()">
+                                <span style="font-size: 1.1em;">🎵</span> Conectar Last.fm
+                            </button>
+                            <button class="auth-link-secondary" onclick="loginDiscogs()">
+                                <span style="font-size: 1.1em;">💿</span> Conectar Discogs
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>

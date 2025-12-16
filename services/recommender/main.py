@@ -843,11 +843,13 @@ async def artist_single_recommendation(request: SingleArtistRequest):
                         "norm": title_norm
                     })
 
-            # 2. Fetch Discography (Cache -> MB -> Discogs)
+            # 2. Fetch Discography (Cache -> Discogs Search Only) used to be Cache -> MB -> Discogs
+            # As per user request: DB + Single Discogs Call (No MB)
             discography = get_artist_studio_albums(
                 request.artist_name, discogs_key, discogs_secret, 
-                top_n=50, use_mb=True, cache_only=False
+                top_n=50, use_mb=False, cache_only=False
             )
+
             
             # --- UPGRADE STRATEGY ---
             for cand in candidates_for_upgrade:

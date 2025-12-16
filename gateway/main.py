@@ -1783,45 +1783,8 @@ async def unified_search(q: str, limit: int = 20):
 
 
 
-@app.post("/api/recommendations/artist-single")
-async def get_artist_single_recommendation(request: dict):
-    """Get recommendations for a single artist (canonical source: Discogs/MusicBrainz)"""
-    if not http_client:
-        raise HTTPException(status_code=500, detail="HTTP client not initialized")
-    
-    artist_name = request.get("artist_name")
-    user_id = request.get("user_id")  # Optional: for logging purposes
-    
-    if not artist_name:
-        raise HTTPException(status_code=400, detail="artist_name is required")
-    
-    try:
-        resp = await http_client.post(
-            f"{RECOMMENDER_SERVICE_URL}/artist-single-recommendation",
-            json=request
-        )
-        data = resp.json()
-        
-        # Log the recommendation generation (always log, use user_id=0 if not provided)
-        recommendations = data.get("recommendations", [])
-        if recommendations:
-            recommendation_logger.log_recommendation_generation(
-                user_id=user_id or 0,
-                artist_name=artist_name,
-                source="canonical",
-                recommendations=recommendations,
-                metadata={
-                    "total_returned": data.get("total", 0),
-                    "endpoint": "/api/recommendations/artist-single"
-                }
-            )
-            log_event("gateway", "INFO", 
-                     f"Logged {len(recommendations)} canonical recommendations for {artist_name}")
-        
-        return data
-    except Exception as e:
-        log_event("gateway", "ERROR", f"Artist single recommendation failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get recommendations: {str(e)}")
+
+
 
 
 @app.post("/api/lastfm/top-artists")
@@ -1996,8 +1959,9 @@ async def get_single_artist_recommendations(request: dict):
         recommendations = result.get("recommendations", [])
         
         if not recommendations:
-            log_event("gateway", "WARNING", f"No recommendations found for {artist_name}")
-            raise HTTPException(status_code=404, detail=f"No albums found for artist: {artist_name}")
+            log_event("gateway", "INFO", f"No recommendations found for {artist_name}")
+            # Do not raise 404, return empty list
+
         
         log_event("gateway", "INFO", 
                  f"Got {len(recommendations)} recommendations for {artist_name} in {total_time:.2f}s")
