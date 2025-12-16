@@ -5,8 +5,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vinilogy - Descubre Vinilos</title>
-    <link rel="stylesheet" href="/static/styles.css">
-    <link rel="stylesheet" href="/static/artist-search.css">
+    <link rel="stylesheet" href="static/styles.css?v=2">
+    <link rel="stylesheet" href="/static/artist-search.css?v=8">
     <style>
         :root {
             --bg-primary: #ffffff;
@@ -142,7 +142,35 @@
             transform: translateY(0);
         }
 
+        .discogs-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.75rem;
+            background: #333333;
+            color: white;
+            padding: 1rem 2.5rem;
+            border-radius: 50px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.2s;
+            border: none;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(51, 51, 51, 0.3);
+        }
+
+        .discogs-btn:hover {
+            background: #000000;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+        }
+
+        .discogs-btn:active {
+            transform: translateY(0);
+        }
+
         .lastfm-btn {
+
             display: inline-flex;
             align-items: center;
             gap: 0.75rem;
@@ -395,22 +423,7 @@
             padding: 1rem;
         }
 
-        .album-title {
-            font-size: 1rem;
-            font-weight: 600;
-            margin-bottom: 0.25rem;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
 
-        .album-artist {
-            font-size: 0.9rem;
-            color: var(--text-secondary);
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
 
         #album-detail-view {
             display: none;
@@ -798,16 +811,17 @@
 
         .modal-content {
             background: var(--bg-primary);
-            border-radius: 16px;
-            max-width: 950px;
-            width: 100%;
-            height: 90vh;
-            max-height: 90vh;
-            overflow: hidden;
+            border-radius: 20px;
+            max-width: 600px;
+            width: 90%;
+            height: auto;
+            max-height: 85vh;
+            overflow-y: auto;
             position: relative;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
             display: flex;
             flex-direction: column;
+            padding: 2.5rem;
         }
 
         #artist-search-container {
@@ -1180,13 +1194,281 @@
                 display: none;
             }
         }
+
+        /* Toggle Switch */
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 28px;
+            flex-shrink: 0;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            -webkit-transition: .4s;
+            transition: .4s;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 20px;
+            width: 20px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            -webkit-transition: .4s;
+            transition: .4s;
+        }
+
+        input:checked+.slider {
+            background-color: var(--accent-color);
+        }
+
+        input:focus+.slider {
+            box-shadow: 0 0 1px var(--accent-color);
+        }
+
+        input:checked+.slider:before {
+            -webkit-transform: translateX(22px);
+            -ms-transform: translateX(22px);
+            transform: translateX(22px);
+        }
+
+        .slider.round {
+            border-radius: 34px;
+        }
+
+        .slider.round:before {
+            border-radius: 50%;
+        }
+
+        /* Wizard Specific Styles */
+        .wizard-step {
+            text-align: center;
+            width: 100%;
+        }
+
+        .wizard-step h2 {
+            font-size: 1.8rem;
+            margin-bottom: 0.5rem;
+            color: var(--text-primary);
+        }
+
+        .wizard-step.centered {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 300px;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+            margin: 2rem 0;
+        }
+
+        .stat-card {
+            background: var(--bg-secondary);
+            padding: 2rem 1.5rem;
+            border-radius: 16px;
+            text-align: center;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+            border: 1px solid var(--border-color);
+        }
+
+        .stat-number {
+            display: block;
+            font-size: 3rem;
+            font-weight: 800;
+            color: var(--accent-color);
+            line-height: 1;
+            margin-bottom: 0.5rem;
+        }
+
+        .stat-label {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .strategy-selector {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1rem;
+            margin: 2rem 0;
+            text-align: left;
+        }
+
+        .strategy-option {
+            display: flex;
+            align-items: center;
+            gap: 1.25rem;
+            padding: 1.25rem;
+            border: 2px solid var(--border-color);
+            border-radius: 16px;
+            cursor: pointer;
+            transition: all 0.2s;
+            background: var(--bg-primary);
+        }
+
+        .strategy-option:hover {
+            transform: translateY(-2px);
+            border-color: var(--text-secondary);
+        }
+
+        .strategy-option.selected {
+            border-color: var(--accent-color);
+            background: rgba(229, 50, 56, 0.03);
+            box-shadow: 0 4px 12px rgba(229, 50, 56, 0.1);
+        }
+
+        .strategy-option input {
+            display: none;
+        }
+
+        .strategy-option .icon-box {
+            background: var(--bg-secondary);
+            padding: 0.85rem;
+            border-radius: 12px;
+            color: var(--accent-color);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 50px;
+        }
+
+        .strategy-option strong {
+            display: block;
+            font-size: 1.05rem;
+            margin-bottom: 0.25rem;
+            color: var(--text-primary);
+        }
+
+        .strategy-option small {
+            color: var(--text-secondary);
+            display: block;
+            line-height: 1.4;
+        }
+
+        .artist-list-container {
+            max-height: 300px;
+            overflow-y: auto;
+            text-align: left;
+            margin: 1.5rem 0;
+        }
+
+        .artist-checkbox-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.75rem 0;
+            border-bottom: 1px solid var(--border-color);
+            cursor: pointer;
+        }
+
+        .artist-checkbox-row:hover {
+            background: var(--bg-secondary);
+            padding-left: 0.5rem;
+            padding-right: 0.5rem;
+            border-radius: 4px;
+        }
+
+        /* Restored UI Components */
+        .feature-icon svg {
+            width: 48px;
+            height: 48px;
+            stroke: var(--accent-color);
+            stroke-width: 1.5;
+            fill: none;
+        }
+
+        .vinyl-spinner {
+            display: block;
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background: radial-gradient(circle,
+                    #d51007 15%,
+                    #000 16%,
+                    #181818 20%,
+                    #000 21%,
+                    #181818 25%,
+                    #000 26%,
+                    #181818 30%,
+                    #000 31%,
+                    #181818 35%,
+                    #000 36%,
+                    #181818 45%,
+                    #000 46%);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            animation: spin 1.5s linear infinite;
+            position: relative;
+            margin: 0 auto 1.5rem;
+            border: 1px solid #000;
+        }
+
+        .vinyl-spinner::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 12px;
+            height: 12px;
+            background: #f5f5f5;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            box-shadow: 0 0 2px rgba(0, 0, 0, 0.8) inset;
+            z-index: 2;
+        }
+
+        /* Search Modal Specific Overrides - Needs wide layout */
+        #artist-search-modal .modal-content {
+            max-width: 950px;
+            width: 95%;
+            height: 90vh;
+            max-height: 90vh;
+            padding: 0;
+            overflow: hidden;
+        }
+
+        /* Ensure the container inside fills the modal */
+        #artist-search-container {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            border-radius: 20px;
+            /* Internal content in artist-search.js handles scrolling (usually .results-container) */
+        }
     </style>
 </head>
 
 <body>
     <div class="header">
-        <div class="logo">Vinilogy</div>
-        <button class="theme-toggle" onclick="toggleTheme()">🌓 Cambiar tema</button>
+        <div class="logo" style="cursor: pointer;" onclick="showHome()">Vinilogy</div>
+        <div style="display: flex; gap: 1rem; align-items: center;">
+            <button id="collection-btn" class="theme-toggle" onclick="window.location.href='/collection'"
+                style="display: none;">📀 Mi Colección</button>
+            <button id="profile-btn" class="theme-toggle" onclick="showProfile()" style="display: none;">👤 Mi
+                Perfil</button>
+            <button class="theme-toggle" onclick="toggleTheme()">🌓 Cambiar tema</button>
+        </div>
     </div>
 
     <div id="landing-view">
@@ -1202,6 +1484,9 @@
                         <button class="lastfm-btn" onclick="loginLastfm()">
                             <span style="font-size: 1.3em;">🎵</span> Conectar Last.fm
                         </button>
+                        <button class="discogs-btn" onclick="loginDiscogs()">
+                            <span style="font-size: 1.3em;">💿</span> Conectar Discogs
+                        </button>
                         <button class="search-artists-btn" onclick="openArtistSearch()">
                             🔍 Buscar Vinilos
                         </button>
@@ -1210,28 +1495,45 @@
             </div>
         </div>
 
-        <div class="loading-state" id="loading">
-            <div class="spinner"></div>
-            <p>Cargando tus recomendaciones...</p>
-        </div>
-
         <div class="features">
             <div class="feature-card">
-                <div class="feature-icon">🎵</div>
+                <div class="feature-icon">
+                    <svg viewBox="0 0 24 24">
+                        <path d="M9 18V5l12-2v13"></path>
+                        <circle cx="6" cy="18" r="3"></circle>
+                        <circle cx="18" cy="16" r="3"></circle>
+                    </svg>
+                </div>
                 <h3>Personalizado</h3>
                 <p>Recomendaciones basadas en tu historial de escucha</p>
             </div>
             <div class="feature-card">
-                <div class="feature-icon">💿</div>
+                <div class="feature-icon">
+                    <svg viewBox="0 0 24 24">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <circle cx="12" cy="12" r="3"></circle>
+                    </svg>
+                </div>
                 <h3>Vinilos Reales</h3>
                 <p>Encuentra vinilos disponibles en el mercado con precios actualizados</p>
             </div>
             <div class="feature-card">
-                <div class="feature-icon">🛒</div>
+                <div class="feature-icon">
+                    <svg viewBox="0 0 24 24">
+                        <circle cx="9" cy="21" r="1"></circle>
+                        <circle cx="20" cy="21" r="1"></circle>
+                        <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path>
+                    </svg>
+                </div>
                 <h3>Fácil Compra</h3>
                 <p>Links directos a Discogs, eBay y tiendas locales</p>
             </div>
         </div>
+    </div>
+
+    <div class="loading-state" id="loading">
+        <div class="vinyl-spinner"></div>
+        <p>Girando tus recomendaciones...</p>
     </div>
 
     <div id="recommendations-view" class="container">
@@ -1245,6 +1547,10 @@
                     <button id="lastfm-header-btn" class="spotify-btn-small" onclick="loginLastfm()"
                         style="display: none; background: linear-gradient(135deg, #1DB954 0%, #1ed760 100%); box-shadow: 0 2px 8px rgba(29, 185, 84, 0.3);">
                         🎵 Conectar Last.fm
+                    </button>
+                    <button id="discogs-header-btn" class="spotify-btn-small" onclick="linkDiscogs()"
+                        style="display: none; background: #333333; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);">
+                        💿 Conectar Discogs
                     </button>
                     <button id="artist-search-header-btn" class="spotify-btn-small" onclick="openArtistSearch()"
                         style="display: none; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);">
@@ -1322,6 +1628,103 @@
         </div>
     </div>
 
+    <div id="profile-view" style="display: none;" class="container">
+        <div class="recommendations-header">
+            <button class="back-button" onclick="showRecommendations()">
+                ← Volver
+            </button>
+            <div class="recommendations-title-row">
+                <div>
+                    <h2>Mi Perfil</h2>
+                    <p>Gestiona tus conexiones y preferencias</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="features" style="margin-top: 1rem; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));">
+            <!-- Connections Card -->
+            <div class="feature-card"
+                style="text-align: left; background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 12px;">
+                <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem;">
+                    <div style="font-size: 2rem;">🔗</div>
+                    <h3 style="margin: 0; font-size: 1.4rem;">Conexiones</h3>
+                </div>
+
+                <!-- Last.fm Connection -->
+                <div id="conn-lastfm"
+                    style="display: flex; justify-content: space-between; align-items: center; padding: 1rem 0; border-bottom: 1px solid var(--border-color);">
+                    <div style="display: flex; align-items: center; gap: 1rem;">
+                        <span style="font-size: 1.5rem;">🎵</span>
+                        <div>
+                            <div style="font-weight: 600;">Last.fm</div>
+                            <div class="conn-status" style="font-size: 0.9rem; color: var(--text-secondary);">No
+                                conectado</div>
+                        </div>
+                    </div>
+                    <button class="btn-secondary btn-sm" onclick="loginLastfm()" id="btn-conn-lastfm">Conectar</button>
+                </div>
+
+                <!-- Discogs Connection -->
+                <div id="conn-discogs"
+                    style="display: flex; justify-content: space-between; align-items: center; padding: 1rem 0;">
+                    <div style="display: flex; align-items: center; gap: 1rem;">
+                        <span style="font-size: 1.5rem;">💿</span>
+                        <div>
+                            <div style="font-weight: 600;">Discogs</div>
+                            <div class="conn-status" style="font-size: 0.9rem; color: var(--text-secondary);">No
+                                conectado</div>
+                        </div>
+                    </div>
+                    <button class="btn-secondary btn-sm" onclick="loginDiscogs()"
+                        id="btn-conn-discogs">Conectar</button>
+                </div>
+            </div>
+
+            <!-- Journey Configuration Card -->
+            <div class="feature-card" id="journey-config-card"
+                style="text-align: left; background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 12px; display: none;">
+                <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem;">
+                    <div style="font-size: 2rem;">🧭</div>
+                    <div>
+                        <h3 style="margin: 0; font-size: 1.4rem;">Estrategia</h3>
+                        <p style="margin:0; opacity:0.8; font-size:0.9rem">Configura cómo completar tu colección.</p>
+                    </div>
+                </div>
+                <button class="btn-primary" onclick="DiscogsWizard.launch(true)"
+                    style="width:100%">Reconfigurar</button>
+            </div>
+
+
+            <!-- Settings Card -->
+            <div class="feature-card"
+                style="text-align: left; background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 12px;">
+                <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem;">
+                    <div style="font-size: 2rem;">⚙️</div>
+                    <h3 style="margin: 0; font-size: 1.4rem;">Preferencias</h3>
+                </div>
+
+                <!-- CFM Toggle -->
+                <div
+                    style="display: flex; justify-content: space-between; align-items: start; gap: 1rem; padding: 1rem 0;">
+                    <div>
+                        <div style="font-weight: 600; margin-bottom: 0.25rem;">Priorizar Formato Físico</div>
+                        <div style="font-size: 0.9rem; color: var(--text-secondary); line-height: 1.4;">
+                            Si está activado, <b>sí</b> recomendaremos vinilos de álbumes que ya tengas en CD o Cassette
+                            (mostrando un aviso).
+                            <br>Si está desactivado, no recomendaremos nada que ya tengas en tu colección de Discogs.
+                        </div>
+                    </div>
+                    <div class="toggle-switch">
+                        <label class="switch">
+                            <input type="checkbox" id="setting-cfm" onchange="toggleCFM()">
+                            <span class="slider round"></span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="modal-overlay" id="artist-search-modal">
         <div class="modal-content">
             <button class="modal-close" onclick="closeArtistSearch()">✕</button>
@@ -1353,9 +1756,10 @@
     </div>
 
     <script src="/static/artist-search.js?v=1764005000"></script>
-    <script src="/static/app-user-ext.js?v=1733230005"></script>
-    <script src="/static/app.js?v=1764005000"></script>
-    <script src="/static/app-user.js?v=1733230300"></script>
+    <script src="/static/discogs-wizard.js?v=6"></script>
+    <script src="/static/app.js?v=7" defer></script>
+    <script src="/static/app-user-ext.js?v=3" defer></script>
+    <script src="/static/app-user.js?v=10" defer></script>
 </body>
 
 </html>

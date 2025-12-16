@@ -358,8 +358,8 @@ class ArtistSearch {
                     }
                             </div>
                             <div class="album-info">
-                                <div class="album-title">${album.title}</div>
-                                <div class="album-artist">${album.artist_name || 'Unknown Artist'}</div>
+                                <div class="album-title-full">${album.title}</div>
+                                <div class="album-artist-full">${album.artist_name || 'Unknown Artist'}</div>
                             </div>
                         </div>
                         <button class="add-album-btn" data-album="${albumDataEscaped}">

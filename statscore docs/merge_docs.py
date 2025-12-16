@@ -69,7 +69,25 @@ FILES_ORDER = [
     "extra_14_feed_index_example.html",
     "extra_15_feed_show_example.html",
     "extra_16_incidents_index_example.html",
-    "extra_17_languages_index_example.html"
+    "extra_17_languages_index_example.html",
+    
+    # 6. User Guide
+    "user_guide_00_main.html",
+    "user_guide_01_types_of_coverage.html",
+    "user_guide_02_booking_the_events.html",
+    "user_guide_03_trader_view.html",
+    "user_guide_04_incident_message.html",
+    "user_guide_05_event_message.html",
+    "user_guide_06_key_incidents_confirmation.html",
+    "user_guide_07_incident_attributes.html",
+    "user_guide_08_lineups_formations.html",
+    "user_guide_09_markets_managing.html",
+    "user_guide_10_emergency_incidents.html",
+    "user_guide_11_splitted_statistics.html",
+    "user_guide_12_var_soccer.html",
+    "user_guide_13_expected_goals.html",
+    "user_guide_14_player_ratings.html",
+    "user_guide_15_faq.html"
 ]
 
 def extract_content(html_content):
@@ -152,6 +170,7 @@ def main():
         title = re.sub(r'^\d+\s+', '', title)
         title = re.sub(r'^Api\s+\d+\s+', '', title)
         title = re.sub(r'^Extra\s+\d+\s+', '', title)
+        title = re.sub(r'^User\s+Guide\s+\d+\s+', '', title)
         
         full_content.append(f'<li><a href="#{filename}">{title}</a></li>')
         

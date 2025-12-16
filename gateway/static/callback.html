@@ -2,7 +2,7 @@
 <html>
 
 <head>
-    <title>Conectando con Last.fm...</title>
+    <title>Conectando...</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
@@ -92,153 +92,221 @@
 <body>
     <div class="container" id="container">
         <div class="spinner"></div>
-        <h1>Conectando con Last.fm...</h1>
+        <h1 id="status-title">Conectando...</h1>
         <p>Por favor espera un momento</p>
     </div>
 
     <script>
         async function processCallback() {
             const params = new URLSearchParams(window.location.search);
-            const token = params.get('token');
+            const token = params.get('token'); // Last.fm
+            const oauth_token = params.get('oauth_token'); // Discogs
+            const oauth_verifier = params.get('oauth_verifier'); // Discogs
 
-            if (!token) {
-                showError('No se recibió token de autenticación');
-                return;
+            if (token) {
+                // LAST.FM FLOW
+                document.getElementById('status-title').textContent = 'Conectando con Last.fm...';
+                await handleLastFm(token);
+            } else if (oauth_token && oauth_verifier) {
+                // DISCOGS FLOW
+                document.getElementById('status-title').textContent = 'Conectando con Discogs...';
+                await handleDiscogs(oauth_token, oauth_verifier);
+            } else {
+                showError('No se recibieron parámetros de autenticación válidos.');
+            }
+        }
+
+        async function collectGuestData() {
+            // Reused logic for gathering guest data from localStorage
+            console.log('[Sync Debug] === STARTING GUEST DATA COLLECTION ===');
+
+            // 1. Collect album statuses
+            const albumStatuses = {};
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && key.startsWith('album_status_')) {
+                    const statusKey = key.replace('album_status_', '').replace('::', '|');
+                    albumStatuses[statusKey] = localStorage.getItem(key);
+                }
             }
 
+            // 2. Collect selected artists
+            const selectedArtistNames = localStorage.getItem('selected_artist_names');
+            let selectedArtists = [];
+            if (selectedArtistNames) {
+                try {
+                    selectedArtists = JSON.parse(selectedArtistNames);
+                } catch (e) { console.error(e); }
+            }
+
+            // 3. Collect recommendations
+            const lastRecommendations = localStorage.getItem('last_recommendations');
+            let recommendations = [];
+            if (lastRecommendations) {
+                try {
+                    recommendations = JSON.parse(lastRecommendations);
+                } catch (e) { console.error(e); }
+            }
+
+            // 4. Collect manually added albums
+            const manuallyAddedAlbums = [];
+            const guestUserId = localStorage.getItem('userId');
+            if (guestUserId && guestUserId !== 'null') {
+                try {
+                    const albumsResp = await fetch(`/api/users/${guestUserId}/recommendations`);
+                    if (albumsResp.ok) {
+                        const allRecs = await albumsResp.json();
+                        const manualAlbums = allRecs.filter(rec => rec.source === 'manual');
+                        manuallyAddedAlbums.push(...manualAlbums);
+                    }
+                } catch (e) { console.error(e); }
+            }
+
+            const payload = {};
+            if (Object.keys(albumStatuses).length > 0) payload.album_statuses = albumStatuses;
+            if (selectedArtists.length > 0) payload.selected_artists = selectedArtists;
+            if (recommendations.length > 0) payload.recommendations = recommendations;
+            if (manuallyAddedAlbums.length > 0) payload.manually_added_albums = manuallyAddedAlbums;
+
+            return payload;
+        }
+
+        async function handleLastFm(token) {
             try {
-                // Call backend to complete authentication
                 const response = await fetch(`/auth/lastfm/callback?token=${token}`);
                 const data = await response.json();
 
                 if (response.ok && data.status === 'ok' && data.username) {
-                    // Save to localStorage
+                    // Update LocalStorage
                     localStorage.setItem('lastfm_username', data.username);
-                    localStorage.setItem('has_lastfm_connected', 'true');
-                    localStorage.setItem('vinilogy_lastfm_auth_completed', 'true');
-                    localStorage.removeItem('vinilogy_lastfm_token');
-                    localStorage.removeItem('vinilogy_lastfm_auth_pending');
 
-                    // === COLLECT GUEST DATA ===
-                    console.log('[Sync Debug] === STARTING GUEST DATA COLLECTION ===');
-                    console.log('[Sync Debug] localStorage length:', localStorage.length);
-                    console.log('[Sync Debug] All localStorage keys:', Object.keys(localStorage));
+                    // Guest Sync
+                    const guestData = await collectGuestData();
 
-                    // 1. Collect album statuses
-                    const albumStatuses = {};
-                    for (let i = 0; i < localStorage.length; i++) {
-                        const key = localStorage.key(i);
-                        if (key && key.startsWith('album_status_')) {
-                            const statusKey = key.replace('album_status_', '').replace('::', '|');
-                            albumStatuses[statusKey] = localStorage.getItem(key);
-                        }
-                    }
-                    console.log('[Sync Debug] Album statuses collected:', albumStatuses);
+                    // Check for existing user ID (for account linking)
+                    const existingUserId = localStorage.getItem('userId');
 
-                    // 2. Collect selected artists
-                    const selectedArtistNames = localStorage.getItem('selected_artist_names');
-                    console.log('[Sync Debug] Raw selected_artist_names from localStorage:', selectedArtistNames);
+                    const payload = {
+                        lastfm_username: data.username,
+                        user_id: existingUserId ? parseInt(existingUserId) : null,
+                        ...guestData
+                    };
 
-                    let selectedArtists = [];
-                    if (selectedArtistNames) {
-                        try {
-                            selectedArtists = JSON.parse(selectedArtistNames);
-                            console.log('[Sync Debug] Parsed selected_artist_names:', selectedArtists);
-                            console.log('[Sync Debug] Is array?', Array.isArray(selectedArtists));
-                        } catch (e) {
-                            console.error('[Sync Debug] Error parsing selected_artist_names:', e);
-                        }
-                    }
-                    console.log('[Sync Debug] Recovered selected artists:', selectedArtists);
-
-                    // 3. Collect recommendations
-                    const lastRecommendations = localStorage.getItem('last_recommendations');
-                    let recommendations = [];
-                    if (lastRecommendations) {
-                        try {
-                            recommendations = JSON.parse(lastRecommendations);
-                        } catch (e) {
-                            console.error('[Sync Debug] Error parsing recommendations:', e);
-                        }
-                    }
-
-                    // 4. Collect manually added albums
-                    const manuallyAddedAlbums = [];
-                    const guestUserId = localStorage.getItem('userId');
-                    console.log('[Sync Debug] Guest userId:', guestUserId);
-
-                    if (guestUserId && guestUserId !== 'null' && guestUserId !== 'undefined') {
-                        try {
-                            console.log('[Sync Debug] Fetching manually added albums for guest user:', guestUserId);
-                            const albumsResp = await fetch(`/api/users/${guestUserId}/recommendations`);
-                            if (albumsResp.ok) {
-                                const allRecs = await albumsResp.json();
-                                console.log('[Sync Debug] All recommendations:', allRecs);
-                                // Filter only manual albums
-                                const manualAlbums = allRecs.filter(rec => rec.source === 'manual');
-                                console.log('[Sync Debug] Manual albums found:', manualAlbums);
-                                manuallyAddedAlbums.push(...manualAlbums);
-                            } else {
-                                console.warn('[Sync Debug] Failed to fetch recommendations:', albumsResp.status);
-                            }
-                        } catch (e) {
-                            console.error('[Sync Debug] Error fetching manual albums:', e);
-                        }
-                    } else {
-                        console.log('[Sync Debug] No guest userId found, skipping manual albums fetch');
-                    }
-
-                    // Create/get user in database with guest data
-                    try {
-                        const payload = {
-                            lastfm_username: data.username,
-                            album_statuses_count: Object.keys(albumStatuses).length,
-                            selected_artists_count: selectedArtists.length,
-                            selected_artists_data: selectedArtists
-                        };
-
-                        // Only include non-empty data
-                        if (Object.keys(albumStatuses).length > 0) {
-                            payload.album_statuses = albumStatuses;
-                        }
-                        if (selectedArtists.length > 0) {
-                            payload.selected_artists = selectedArtists;
-                        }
-                        if (recommendations.length > 0) {
-                            payload.recommendations = recommendations;
-                        }
-                        if (manuallyAddedAlbums.length > 0) {
-                            payload.manually_added_albums = manuallyAddedAlbums;
-                            console.log('[Sync Debug] Including manually added albums:', manuallyAddedAlbums);
-                        }
-
-                        console.log('[Sync Debug] Sending login request with data:', payload);
-
-                        const authRes = await fetch('/auth/lastfm', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(payload)
-                        });
-                        const authData = await authRes.json();
-                        if (authData.user_id) {
-                            localStorage.setItem('userId', authData.user_id);
-                        }
-                    } catch (e) {
-                        console.error('Error creating user:', e);
-                    }
+                    const authRes = await fetch('/auth/lastfm', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    const authData = await authRes.json();
+                    if (authData.user_id) localStorage.setItem('userId', authData.user_id);
 
                     showSuccess(data.username);
-
-                    // Redirect back to main app after 2 seconds (give backend time to fetch Last.fm data)
-                    setTimeout(() => {
-                        window.location.href = '/';
-                    }, 2000);
+                    setTimeout(() => window.location.href = '/', 2000);
                 } else {
-                    showError('No se pudo autenticar con Last.fm. Por favor, intenta de nuevo.');
+                    showError('Last.fm authentication failed.');
                 }
-            } catch (error) {
-                console.error('Callback error:', error);
-                showError('Error de conexión. Por favor, intenta de nuevo.');
+            } catch (e) {
+                console.error(e);
+                showError('Error connecting to Last.fm.');
+            }
+        }
+
+        async function handleDiscogs(oauth_token, oauth_verifier) {
+            try {
+                // Check if this is a LINK operation or a LOGIN operation?
+                // For simplicity, we assume LOGIN unless we track state.
+                // However, the backend /auth/discogs/callback handles login/signup/merge.
+                // If it was a LINK operation, we should have known. 
+                // BUT: OAuth 1.0a doesn't easily pass state through params without us handling it manually in callback URL.
+                // The current implementation in backend `discogs_finalize` does `get_or_create_user_via_discogs`.
+                // It does NOT link to *current* user automatically unless we pass current user ID.
+                // To support LINKING, when we start flow, we should perhaps set a flag in localStorage 'pending_discogs_link_user_id'.
+
+                const pendingLinkUserId = localStorage.getItem('pending_discogs_link_user_id');
+
+                if (pendingLinkUserId) {
+                    // LINKING FLOW
+                    const linkPayload = {
+                        user_id: parseInt(pendingLinkUserId),
+                        oauth_token: oauth_token,
+                        oauth_verifier: oauth_verifier
+                    };
+                    const linkRes = await fetch('/auth/discogs/link', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(linkPayload)
+                    });
+
+                    if (linkRes.ok) {
+                        localStorage.removeItem('pending_discogs_link_user_id'); // Clear flag
+                        const data = await linkRes.json();
+                        showSuccess(data.username + ' (Linked)');
+                        // Close popup if applicable, or redirect
+                        if (window.opener) {
+                            window.opener.postMessage({ type: 'DISCOGS_LINK_SUCCESS', username: data.username }, '*');
+                            window.close();
+                        } else {
+                            setTimeout(() => window.location.href = '/', 2000);
+                        }
+                    } else {
+                        showError('Failed to link Discogs account.');
+                    }
+
+                } else {
+                    // LOGIN/SIGNUP/LINK FLOW (Unified)
+                    const guestData = await collectGuestData();
+
+                    // Check for existing user ID
+                    const existingUserId = localStorage.getItem('userId');
+
+                    const payload = {
+                        oauth_token: oauth_token,
+                        oauth_verifier: oauth_verifier,
+                        user_id: existingUserId ? parseInt(existingUserId) : null,
+                        ...guestData
+                    };
+
+                    const authRes = await fetch('/auth/discogs/callback', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (authRes.ok) {
+                        const data = await authRes.json();
+
+                        // Always set localStorage (shared across tabs/windows of same origin)
+                        localStorage.setItem('userId', data.user_id);
+                        localStorage.setItem('discogs_username', data.username);
+                        localStorage.setItem('vinilogy_discogs_auth_completed', 'true');
+
+                        showSuccess(data.username);
+
+                        // Handle popup flow
+                        if (window.opener) {
+                            // Send data to main window (trigger reload)
+                            window.opener.postMessage({
+                                type: 'DISCOGS_AUTH_SUCCESS',
+                                payload: {
+                                    user_id: data.user_id,
+                                    username: data.username,
+                                    completed_flag: 'true'
+                                }
+                            }, '*');
+
+                            setTimeout(() => window.close(), 1500);
+                        } else {
+                            // Fallback for redirect loop
+                            setTimeout(() => window.location.href = '/', 2000);
+                        }
+                    } else {
+                        showError('Discogs authentication failed.');
+                    }
+                }
+
+            } catch (e) {
+                console.error(e);
+                showError('Error connecting to Discogs.');
             }
         }
 

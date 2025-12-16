@@ -74,3 +74,25 @@
 8. [feed.show example](extra_15_feed_show_example.html)
 9. [incidents.index example](extra_16_incidents_index_example.html)
 10. [languages.index example](extra_17_languages_index_example.html)
+
+
+---
+
+## User Guide Pages
+
+1. [User guide](user_guide_00_main.html)
+2. [Types of coverage](user_guide_01_types_of_coverage.html)
+3. [Booking the events](user_guide_02_booking_the_events.html)
+4. [Trader view](user_guide_03_trader_view.html)
+5. [The "Incident" message - key informations](user_guide_04_incident_message.html)
+6. [The "Event" message - key informations](user_guide_05_event_message.html)
+7. [Key incidents confirmation](user_guide_06_key_incidents_confirmation.html)
+8. [Incident attributes](user_guide_07_incident_attributes.html)
+9. [Lineups, formations and appearances](user_guide_08_lineups_formations.html)
+10. [Markets managing - Betstop/Betstart functionality](user_guide_09_markets_managing.html)
+11. [Emergency incidents](user_guide_10_emergency_incidents.html)
+12. [Splitted statistics for specific period of the game](user_guide_11_splitted_statistics.html)
+13. [Video Assistant Referee (VAR) - soccer](user_guide_12_var_soccer.html)
+14. [Expected Goals for soccer](user_guide_13_expected_goals.html)
+15. [Player Ratings for soccer](user_guide_14_player_ratings.html)
+16. [FAQ - ScoutsFeed](user_guide_15_faq.html)

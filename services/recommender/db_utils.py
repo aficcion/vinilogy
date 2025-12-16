@@ -56,6 +56,36 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS recommendation (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            artist_name TEXT NOT NULL,
+            album_title TEXT NOT NULL,
+            album_mbid TEXT,
+            source TEXT NOT NULL CHECK (source IN ('lastfm', 'manual', 'mixed', 'collection_upgrade', 'discography_completion')),
+            status TEXT NOT NULL CHECK (status IN ('neutral', 'favorite', 'disliked', 'owned', 'active')),
+            cover_url TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE,
+            UNIQUE (user_id, artist_name, album_title)
+        )
+        """
+    )
+    
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_preferences (
+            user_id INTEGER PRIMARY KEY,
+            focus_artists TEXT, -- JSON string or comma-separated
+            strategies TEXT, -- JSON string e.g. ["complete", "upgrade"]
+            last_updated TIMESTAMP
+        )
+        """
+    )
     
     # Migration: Add mbid column if it doesn't exist
     try:
@@ -436,6 +466,97 @@ def _get_or_create_artist(cur, artist_name: str, spotify_id: str = None) -> int:
         if result:
             return result['id']
         raise
+
+
+def save_user_preferences(user_id: int, focus_artists: str, strategies: str):
+    """Save user preferences (upsert)"""
+    try:
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO user_preferences (user_id, focus_artists, strategies, last_updated)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    focus_artists=excluded.focus_artists,
+                    strategies=excluded.strategies,
+                    last_updated=excluded.last_updated
+            """, (user_id, focus_artists, strategies, datetime.now()))
+            conn.commit()
+            log_event("recommender-db", "INFO", f"Saved preferences for user {user_id}")
+            return True
+        finally:
+            conn.close()
+    except Exception as e:
+        log_event("recommender-db", "ERROR", f"Failed to save preferences: {e}")
+        return False
+
+def get_user_preferences(user_id: int):
+    """Get user preferences"""
+    try:
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM user_preferences WHERE user_id = ?", (user_id,))
+            return cur.fetchone()
+        finally:
+            conn.close()
+    except Exception as e:
+        log_event("recommender-db", "ERROR", f"Failed to get preferences: {e}")
+        return None
+
+def save_recommendations_batch(user_id: int, recs: list):
+    """Save generated recommendations to the main recommendation table"""
+    if not recs:
+        return 0
+        
+    try:
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            
+            # Check schema
+            cur.execute("PRAGMA table_info(recommendation)")
+            cols = {col['name'] for col in cur.fetchall()}
+            
+            count = 0
+            for r in recs:
+                artist = r.get("artist_name")
+                album = r.get("album_name")
+                source = r.get("source")
+                cover = r.get("image_url")
+                
+                # Check for existing recommendation for this album (ignoring source)
+                cur.execute(
+                    "SELECT id FROM recommendation WHERE user_id = ? AND artist_name = ? AND album_title = ?",
+                    (user_id, artist, album)
+                )
+                existing = cur.fetchone()
+                
+                if existing:
+                    # UPDATE existing record to reflect new source (e.g. upgrade 'manual' -> 'collection_upgrade')
+                    cur.execute("""
+                        UPDATE recommendation 
+                        SET source = ?, cover_url = ?, created_at = ?
+                        WHERE id = ?
+                    """, (source, cover, datetime.now(), existing['id']))
+                else:
+                    # INSERT new record
+                    cur.execute("""
+                        INSERT INTO recommendation (user_id, artist_name, album_title, source, status, created_at, cover_url)
+                        VALUES (?, ?, ?, ?, 'active', ?, ?)
+                    """, (user_id, artist, album, source, datetime.now(), cover))
+                
+                count += 1
+            
+            conn.commit()
+            return count
+
+        finally:
+            conn.close()
+    except Exception as e:
+        log_event("recommender-db", "ERROR", f"Failed to save recs batch: {e}")
+        return 0
 
 def close_pool():
     """No-op for SQLite"""

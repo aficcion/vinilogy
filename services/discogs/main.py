@@ -10,8 +10,25 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from libs.shared.models import DiscogsRelease, DiscogsStats, ServiceHealth
 from libs.shared.utils import create_http_client, log_event
 from .discogs_client import DiscogsClient
+from pydantic import BaseModel
+import logging
+
+logging.basicConfig(level=logging.INFO)
 
 discogs_client = None
+
+class AccessTokenRequest(BaseModel):
+    request_token: str
+    request_token_secret: str
+    verifier: str
+
+class UserCollectionRequest(BaseModel):
+    username: str
+    page: int = 1
+    per_page: int = 50
+    access_token: str
+    access_token_secret: str
+
 
 
 @asynccontextmanager
@@ -184,3 +201,98 @@ async def get_release_tracklist(release_id: int):
         log_event("discogs-service", "INFO", f"No tracklist found for release {release_id}")
     
     return result
+
+
+# ---------------------------------------------------------------------------
+# OAuth Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/auth/url")
+async def get_auth_url(callback_url: str):
+    """
+    Get Request Token and Authorize URL.
+    """
+    if not discogs_client:
+        raise HTTPException(status_code=500, detail="Discogs client not initialized")
+    
+    try:
+        request_token_data = await discogs_client.get_request_token(callback_url)
+        request_token = request_token_data.get('oauth_token')
+        
+        auth_url = discogs_client.get_authorize_url(request_token)
+        
+        return {
+            "oauth_token": request_token_data.get('oauth_token'),
+            "oauth_token_secret": request_token_data.get('oauth_token_secret'),
+            "auth_url": auth_url
+        }
+    except Exception as e:
+        log_event("discogs-service", "ERROR", f"Auth URL generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/auth/access_token")
+async def get_access_token(request: AccessTokenRequest):
+    """
+    Exchange Request Token for Access Token.
+    """
+    if not discogs_client:
+        raise HTTPException(status_code=500, detail="Discogs client not initialized")
+    
+    try:
+        print(f"DEBUG [discogs-service]: Exchanging token {request.request_token} with secret {request.request_token_secret} and verifier {request.verifier}", flush=True)
+        access_token_data = await discogs_client.get_access_token(
+            request.request_token, 
+            request.request_token_secret, 
+            request.verifier
+        )
+        return access_token_data
+    except Exception as e:
+        log_event("discogs-service", "ERROR", f"Access Token exchange failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/auth/identity")
+async def get_identity(token: str, secret: str):
+    """
+    Get Identity of the user.
+    """
+    if not discogs_client:
+        raise HTTPException(status_code=500, detail="Discogs client not initialized")
+    
+    try:
+        identity = await discogs_client.get_identity(token, secret)
+        return identity
+    except Exception as e:
+        log_event("discogs-service", "ERROR", f"Identity fetch failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/user/collection")
+async def get_collection(request: UserCollectionRequest):
+    """
+    Get user collection (this might need user-specific client instance or simple public fetch).
+    Since user collection is public usually, we can fetch it with app credentials if username is known,
+    OR use the user credentials if it's private.
+    However, our `get_user_collection` in client uses the main app client.
+    For typical use cases, app credentials work for public collections.
+    If we strictly need user authentication to see private folders, we would need to reinstantiate the client 
+    or pass auth headers dynamically. The current `discogs_client` uses app auth (key/secret).
+    
+    The `get_user_collection` method in `DiscogsClient` uses `_get_auth_params` which appends APP key/secret.
+    This works for public collections.
+    """
+    if not discogs_client:
+        raise HTTPException(status_code=500, detail="Discogs client not initialized")
+        
+    try:
+        # Currently fetching public collection
+        collection = await discogs_client.get_user_collection(
+            request.username, 
+            request.page, 
+            request.per_page
+        )
+        return collection
+    except Exception as e:
+        log_event("discogs-service", "ERROR", f"Collection fetch failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+

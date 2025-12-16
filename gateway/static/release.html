@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Detalles del Álbum - Vinylbe</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Outfit', 'sans-serif'],
+                    },
+                    colors: {
+                        dark: {
+                            bg: '#0f172a',
+                            card: '#1e293b',
+                            text: '#f1f5f9'
+                        },
+                        accent: {
+                            primary: '#8b5cf6', // Violet
+                            secondary: '#ec4899', // Pink
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            font-family: 'Outfit', sans-serif;
+            background-color: #f8fafc;
+            color: #0f172a;
+            transition: background-color 0.3s, color 0.3s;
+        }
+
+        .dark body {
+            background-color: #0f172a;
+            color: #f1f5f9;
+        }
+
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        .dark .glass-panel {
+            background: rgba(30, 41, 59, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .cover-image {
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+            transition: transform 0.3s ease;
+        }
+
+        .cover-image:hover {
+            transform: scale(1.02);
+        }
+
+        .track-row:hover {
+            background-color: rgba(139, 92, 246, 0.1);
+        }
+    </style>
+</head>
+
+<body class="min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-5xl">
+        <!-- Header / Nav -->
+        <div class="flex justify-between items-center mb-8">
+            <a href="/collection"
+                class="flex items-center gap-2 text-gray-600 dark:text-gray-400 hover:text-accent-primary transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd"
+                        d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z"
+                        clip-rule="evenodd" />
+                </svg>
+                Volver a Colección
+            </a>
+            <h1
+                class="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-accent-primary to-accent-secondary">
+                Detalles de Release
+            </h1>
+            <button id="theme-toggle"
+                class="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+                ☀️
+            </button>
+        </div>
+
+        <!-- Content -->
+        <div id="loading" class="text-center py-20">
+            <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-accent-primary mx-auto mb-4"></div>
+            <p class="text-gray-500">Cargando detalles desde Discogs...</p>
+        </div>
+
+        <div id="content" class="hidden grid grid-cols-1 md:grid-cols-3 gap-8">
+            <!-- Left Column: Cover & Key Info -->
+            <div class="md:col-span-1">
+                <div class="glass-panel p-6 rounded-2xl sticky top-8">
+                    <img id="cover-img" src="" alt="Album Cover"
+                        class="w-full aspect-square object-cover rounded-xl cover-image mb-6 bg-gray-200 dark:bg-gray-800">
+
+                    <h2 id="release-title" class="text-2xl font-bold mb-1 leading-tight"></h2>
+                    <h3 id="release-artist" class="text-xl text-accent-primary mb-4 font-medium"></h3>
+
+                    <div class="space-y-3 text-sm text-gray-600 dark:text-gray-400">
+                        <div class="flex justify-between border-b border-gray-200 dark:border-gray-700 pb-2">
+                            <span>Año</span>
+                            <span id="release-year" class="font-semibold text-gray-800 dark:text-gray-200"></span>
+                        </div>
+                        <div class="flex justify-between border-b border-gray-200 dark:border-gray-700 pb-2">
+                            <span>Sello</span>
+                            <span id="release-label"
+                                class="font-semibold text-gray-800 dark:text-gray-200 truncate max-w-[60%]"></span>
+                        </div>
+                        <div class="flex justify-between border-b border-gray-200 dark:border-gray-700 pb-2">
+                            <span>Formato</span>
+                            <span id="release-format" class="font-semibold text-gray-800 dark:text-gray-200"></span>
+                        </div>
+                        <div class="flex justify-between border-b border-gray-200 dark:border-gray-700 pb-2">
+                            <span>Estilos</span>
+                            <span id="release-styles"
+                                class="font-semibold text-gray-800 dark:text-gray-200 text-right"></span>
+                        </div>
+                        <div class="flex justify-between pt-2">
+                            <span>Discogs ID</span>
+                            <a id="discogs-link" href="#" target="_blank"
+                                class="text-accent-primary hover:underline">Ver en Web</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Column: Tracklist & Notes -->
+            <div class="md:col-span-2 space-y-6">
+                <!-- Tracklist -->
+                <div class="glass-panel p-6 rounded-2xl">
+                    <h3 class="text-xl font-bold mb-4 flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-accent-primary" viewBox="0 0 20 20"
+                            fill="currentColor">
+                            <path fill-rule="evenodd"
+                                d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z"
+                                clip-rule="evenodd" />
+                        </svg>
+                        Tracklist
+                    </h3>
+                    <div id="tracklist" class="space-y-1">
+                        <!-- Tracks injected here -->
+                    </div>
+                </div>
+
+                <!-- Notes (if any) -->
+                <div id="notes-section" class="glass-panel p-6 rounded-2xl hidden">
+                    <h3 class="text-xl font-bold mb-4">Notas</h3>
+                    <p id="release-notes" class="text-gray-600 dark:text-gray-400 whitespace-pre-line text-sm"></p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Theme Toggle Logic
+        const themeToggle = document.getElementById('theme-toggle');
+        const html = document.documentElement;
+
+        if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            html.classList.add('dark');
+            themeToggle.textContent = '🌙';
+        } else {
+            html.classList.remove('dark');
+            themeToggle.textContent = '☀️';
+        }
+
+        themeToggle.addEventListener('click', () => {
+            html.classList.toggle('dark');
+            if (html.classList.contains('dark')) {
+                localStorage.theme = 'dark';
+                themeToggle.textContent = '🌙';
+            } else {
+                localStorage.theme = 'light';
+                themeToggle.textContent = '☀️';
+            }
+        });
+
+        // Fetch Data
+        async function loadRelease() {
+            const params = new URLSearchParams(window.location.search);
+            const releaseId = params.get('id');
+            const userId = localStorage.getItem('userId');
+
+            // Placeholder
+            const placeholderDataUri = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100%25' height='100%25'%3E%3Crect width='100%25' height='100%25' fill='%23cccccc'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='sans-serif' font-size='14' fill='%23666666'%3ENo Cover%3C/text%3E%3C/svg%3E";
+
+            if (!releaseId) {
+                alert('No se especificó un Release ID');
+                window.location.href = '/collection';
+                return;
+            }
+
+            try {
+                // Fetch from our new endpoint
+                const response = await fetch(`/api/release/${releaseId}?user_id=${userId || ''}`);
+                if (!response.ok) throw new Error('Error cargando datos');
+
+                const data = await response.json();
+                renderRelease(data, placeholderDataUri);
+            } catch (error) {
+                console.error(error);
+                document.getElementById('loading').innerHTML = `
+                    <div class="text-red-500 mb-4">Error al cargar los detalles.</div>
+                    <button onclick="location.reload()" class="bg-accent-primary text-white px-4 py-2 rounded-lg">Reintentar</button>
+                `;
+            }
+        }
+
+        function renderRelease(data, placeholderDataUri) {
+            document.getElementById('loading').classList.add('hidden');
+            document.getElementById('content').classList.remove('hidden');
+
+            // Basic Info
+            document.title = `${data.title} - ${data.artists?.[0]?.name || 'Artista'} | Vinylbe`;
+            document.getElementById('release-title').textContent = data.title;
+            document.getElementById('release-artist').textContent = data.artists?.[0]?.name;
+            document.getElementById('release-year').textContent = data.year || 'Unknown';
+
+            // Image (Handle fallback)
+            const imgUrl = data.images?.[0]?.uri || data.thumb || '';
+            const imgEl = document.getElementById('cover-img');
+            imgEl.src = imgUrl || placeholderDataUri;
+            imgEl.onerror = function () { this.src = placeholderDataUri; };
+
+            // Metadata
+            const labels = data.labels?.map(l => l.name).join(', ') || 'Unknown Label';
+            document.getElementById('release-label').textContent = labels;
+            document.getElementById('release-label').title = labels;
+
+            const formats = data.formats?.map(f => `${f.name} (${f.descriptions?.join(', ') || ''})`).join('; ');
+            document.getElementById('release-format').textContent = formats || 'Unknown Format';
+
+            document.getElementById('release-styles').textContent = data.styles?.join(', ') || data.genres?.join(', ') || '-';
+
+            document.getElementById('discogs-link').href = data.uri || `https://www.discogs.com/release/${data.id}`;
+
+            // Tracklist
+            const tracklistEl = document.getElementById('tracklist');
+            tracklistEl.innerHTML = '';
+
+            if (data.tracklist && data.tracklist.length > 0) {
+                data.tracklist.forEach((track, index) => {
+                    const duration = track.duration ? `<span class="text-sm text-gray-400 font-mono">${track.duration}</span>` : '';
+                    const row = document.createElement('div');
+                    row.className = 'track-row flex justify-between items-center py-3 px-4 rounded-lg transition-colors border-b border-gray-100 dark:border-gray-800 last:border-0';
+                    row.innerHTML = `
+                        <div class="flex items-center gap-4">
+                            <span class="text-gray-400 w-6 text-right font-mono text-sm">${track.position || index + 1}</span>
+                            <span class="font-medium text-gray-800 dark:text-gray-200">${track.title}</span>
+                        </div>
+                        ${duration}
+                    `;
+                    tracklistEl.appendChild(row);
+                });
+            } else {
+                tracklistEl.innerHTML = '<div class="text-center text-gray-500 py-4">No tracklist available</div>';
+            }
+
+            // Notes
+            if (data.notes) {
+                document.getElementById('notes-section').classList.remove('hidden');
+                document.getElementById('release-notes').textContent = data.notes;
+            }
+        }
+
+        loadRelease();
+    </script>
+</body>
+
+</html>

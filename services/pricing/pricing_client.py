@@ -329,13 +329,14 @@ class PricingClient:
             log_event("pricing-service", "WARNING", f"Marilians scraping failed: {str(e)}")
             return None
     
-    async def scrape_bajo_el_volcan_price(self, artist: str, album: str) -> Optional[float]:
+    async def scrape_bajo_el_volcan_price(self, artist: str, album: str) -> Optional[Dict[str, Any]]:
         """Scrape price from Bajo el Volcán search results with smart matching."""
         # Clean query: replace / with space to avoid URL issues
         clean_query = f"{artist} {album}".replace("/", " ").replace("  ", " ")
         query = clean_query.replace(" ", "+")
         
-        url = f"https://www.bajoelvolcan.es/busqueda/listaLibros.php?tipoBus=full&palabrasBusqueda={query}"
+        base_url = "https://www.bajoelvolcan.es"
+        url = f"{base_url}/busqueda/listaLibros.php?tipoBus=full&palabrasBusqueda={query}"
         
         try:
             log_event("pricing-service", "INFO", f"Scraping Bajo el Volcán for: {artist} - {album}")
@@ -352,14 +353,12 @@ class PricingClient:
             # Bajo el Volcán uses <li class="item"> for products
             products = soup.find_all('li', class_='item')
             
-            
             if not products:
                 log_event("pricing-service", "INFO", "No products found with strict search. Trying fallback (Artist only)...")
                 
                 # Fallback: search just by artist
-                # This helps when album title has typos (e.g. "What Ever" vs "Whatever")
                 fallback_query = artist.replace(" ", "+")
-                fallback_url = f"https://www.bajoelvolcan.es/busqueda/listaLibros.php?tipoBus=full&palabrasBusqueda={fallback_query}"
+                fallback_url = f"{base_url}/busqueda/listaLibros.php?tipoBus=full&palabrasBusqueda={fallback_query}"
                 
                 response_fallback = await self.http_client.get(fallback_url, timeout=10.0, follow_redirects=True)
                 if response_fallback.status_code == 200:
@@ -380,12 +379,15 @@ class PricingClient:
                 if not title_elem:
                     continue
                 
-                # Get the link text inside the dd
+                # Get the link text and href inside the dd
                 title_link = title_elem.find('a')
                 if not title_link:
                     continue
                 
                 title = title_link.get_text(strip=True)
+                product_path = title_link.get('href')
+                product_url = f"{base_url}{product_path}" if product_path.startswith('/') else product_path
+                
                 title_norm = normalize(title)
                 
                 # Also check creator (artist) field
@@ -399,32 +401,37 @@ class PricingClient:
                 album_words = album_norm.split()
                 
                 # Check if artist name appears in title or creator
-                if any(word in title_norm or word in creator_norm for word in artist_words if len(word) > 2):
+                # Allow words >= 2 chars (fixes "WE" issue)
+                if any(word in title_norm or word in creator_norm for word in artist_words if len(word) >= 2):
                     score += 3  # Higher weight for artist match
                 
                 # Check if album name appears in title
-                album_match_count = sum(1 for word in album_words if len(word) > 2 and word in title_norm)
+                # Allow words >= 2 chars
+                album_match_count = sum(1 for word in album_words if len(word) >= 2 and word in title_norm)
                 score += album_match_count * 2
                 
-                # PENALTY for special editions (deluxe, remaster, reissue, etc.)
+                # PENALTY for special editions
                 special_edition_keywords = ['deluxe', 'remaster', 'remastered', 'reissue', 'anniversary', 
                                            'edition', 'limited', 'expanded', 'collectors', 'box', 'set']
                 for keyword in special_edition_keywords:
                     if keyword in title_norm:
-                        score -= 5  # Heavy penalty for special editions
+                        score -= 5
                 
                 # BONUS for exact match (title contains only artist + album words)
-                title_words = set(title_norm.split())
-                search_words = set(artist_norm.split() + album_norm.split())
-                extra_words = title_words - search_words
-                # Filter out common words
-                extra_words = {w for w in extra_words if len(w) > 2 and w not in ['the', 'and', 'or', 'de', 'la', 'el']}
-                if len(extra_words) == 0:
-                    score += 10  # Big bonus for exact match
-                elif len(extra_words) <= 2:
-                    score += 3  # Small bonus for close match
+                # MUST have found at least some album words to qualify for this bonus
+                if album_match_count > 0:
+                    title_words = set(title_norm.split())
+                    search_words = set(artist_norm.split() + album_norm.split())
+                    extra_words = title_words - search_words
+                    # Filter out common words
+                    extra_words = {w for w in extra_words if len(w) > 2 and w not in ['the', 'and', 'or', 'de', 'la', 'el']}
+                    
+                    if len(extra_words) == 0:
+                        score += 10
+                    elif len(extra_words) <= 2:
+                        score += 3
                 
-                # Find price in this product (in <strong> tag)
+                # Find price in this product
                 price_elem = product.find('strong')
                 if not price_elem:
                     continue
@@ -432,13 +439,24 @@ class PricingClient:
                 price_text = price_elem.get_text(strip=True)
                 price_match = re.search(r'(\d+)[.,](\d+)\s*€?', price_text)
                 
+                # Availability
+                full_text = product.get_text(separator=' ', strip=True).lower()
+                availability = "Disponible"
+                if "consultar disponibilidad" in full_text:
+                    availability = "Consultar disponibilidad"
+                
                 if price_match and score > best_score:
                     best_score = score
-                    best_match = float(f"{price_match.group(1)}.{price_match.group(2)}")
-                    log_event("pricing-service", "INFO", f"Bajo el Volcán match: '{title}' by '{creator}' (score: {score}, price: €{best_match})")
+                    price_val = float(f"{price_match.group(1)}.{price_match.group(2)}")
+                    best_match = {
+                        "price": price_val,
+                        "url": product_url,
+                        "availability": availability
+                    }
+                    log_event("pricing-service", "INFO", f"Bajo el Volcán match: '{title}' (score: {score}, price: €{price_val}, status: {availability})")
             
             if best_match and best_score > 0:
-                log_event("pricing-service", "INFO", f"Found Bajo el Volcán price: €{best_match} (match score: {best_score})")
+                log_event("pricing-service", "INFO", f"Found Bajo el Volcán price: €{best_match['price']} (match score: {best_score})")
                 return best_match
             
             log_event("pricing-service", "INFO", f"No matching product found on Bajo el Volcán for: {artist} - {album}")
@@ -791,9 +809,12 @@ class PricingClient:
                 }
             
             if bajo_volcan_price is not None:
+                # Now bajo_volcan_price is a tuple/dict? No, it used to be float
+                # We updated it to dict.
                 stores["bajo_el_volcan"] = {
-                    "url": f"https://www.bajoelvolcan.es/busqueda/listaLibros.php?tipoBus=full&palabrasBusqueda={query}",
-                    "price": bajo_volcan_price
+                    "url": bajo_volcan_price.get("url", ""),
+                    "price": bajo_volcan_price.get("price", 0.0),
+                    "availability": bajo_volcan_price.get("availability", "Disponible")
                 }
             
             if bora_bora_price is not None:

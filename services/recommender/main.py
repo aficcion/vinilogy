@@ -14,9 +14,15 @@ from libs.shared.utils import log_event
 from . import db_utils
 from .scoring_engine import ScoringEngine
 from .album_aggregator import AlbumAggregator
-from .artist_recommendations import get_artist_based_recommendations, get_artist_studio_albums, get_top_albums_from_discogs_search
+from .artist_recommendations import (
+    get_artist_based_recommendations, 
+    get_artist_studio_albums, 
+    get_top_albums_from_discogs_search,
+    validate_album_with_discogs
+)
 
 SPOTIFY_SERVICE_URL = os.getenv("SPOTIFY_SERVICE_URL", "http://127.0.0.1:3005")
+DISCOGS_SERVICE_URL = os.getenv("DISCOGS_SERVICE_URL", "http://127.0.0.1:3001")
 
 scoring_engine = None
 album_aggregator = None
@@ -32,6 +38,27 @@ progress_state = {
 class ArtistRecommendationRequest(BaseModel):
     artist_names: List[str]
     top_per_artist: int = 3
+
+
+class CollectionPreferencesRequest(BaseModel):
+    user_id: int
+    focus_artists: list[str] = []
+    strategies: list[str] = ["complete", "upgrade"] # complete, upgrade
+
+class CollectionStatsRequest(BaseModel):
+    user_id: int
+    username: str
+
+class RecommendationRequest(BaseModel):
+    user_id: int
+    limit: int = 10
+    offset: int = 0
+    username: str = None
+
+
+class CollectionRecommendationRequest(BaseModel):
+    username: str
+    limit: int = 5
 
 
 class MergeRecommendationsRequest(BaseModel):
@@ -86,6 +113,9 @@ async def lastfm_albums_recommendations(albums: List[dict]):
     
     start_time = time.time()
     log_event("recommender-service", "INFO", f"Processing {len(albums)} Last.fm albums")
+    
+    discogs_key = os.getenv("DISCOGS_KEY")
+    discogs_secret = os.getenv("DISCOGS_SECRET")
     
     all_recommendations = []
     cache_hits = 0
@@ -477,6 +507,274 @@ async def merge_recommendations(request: MergeRecommendationsRequest):
     return {"recommendations": merged, "total": len(merged)}
 
 
+@app.post("/collection-recommendations")
+async def collection_recommendations(request: CollectionRecommendationRequest):
+    import time
+    import httpx
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    
+    start_time = time.time()
+    
+    discogs_key = os.getenv("DISCOGS_KEY")
+    discogs_secret = os.getenv("DISCOGS_SECRET")
+    
+    if not discogs_key or not discogs_secret:
+        raise HTTPException(status_code=500, detail="Discogs credentials not configured")
+        
+    log_event("recommender-service", "INFO", f"Generating collection-based recommendations for user: {request.username}")
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # 1. Fetch User Collection
+        try:
+            resp = await client.post(
+                f"{DISCOGS_SERVICE_URL}/user/collection", 
+                json={
+                    "username": request.username,
+                    "page": 1,
+                    "per_page": 100, # Initial fetch, might need pagination logic for huge collections
+                    "access_token": "", # Using app auth
+                    "access_token_secret": ""
+                }
+            )
+            resp.raise_for_status()
+            collection_data = resp.json()
+            releases = collection_data.get("releases", [])
+        except Exception as e:
+            log_event("recommender-service", "ERROR", f"Failed to fetch collection: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to fetch collection: {str(e)}")
+            
+        if not releases:
+            return {"recommendations": [], "total": 0, "message": "No releases found in collection"}
+            
+        # 2. Analyze Collection
+        # owned_map: Artist -> {AlbumTitle: [Formats]}
+        owned_map = {}
+        all_artists = set()
+        
+        # upgrade_candidates: list of {"artist": str, "album": str, "formats": list}
+        upgrade_candidates = []
+        
+        for item in releases:
+            basic_info = item.get("basic_information", {})
+            title = basic_info.get("title", "")
+            artists = basic_info.get("artists", [])
+            
+            if not artists:
+                continue
+                
+            artist_name = artists[0].get("name", "")
+            # Clean artist name (remove " (2)", etc.)
+            import re
+            clean_artist = re.sub(r'\s*\(\d+\)$', '', artist_name)
+            
+            formats = [f.get("name", "") for f in basic_info.get("formats", [])]
+            descriptions = []
+            for f in basic_info.get("formats", []):
+                descriptions.extend(f.get("descriptions", []))
+            
+            full_format_list = formats + descriptions
+            
+            # Filter out Singles/Maxis/EPs/Compilations - User Upgrade Request
+            # Check desc list against excluded types
+            excluded_types = ["single", "maxi-single", "ep", "mini-album", "compilation"]
+            is_excluded = any(d.lower() in excluded_types for d in [desc.lower() for desc in descriptions])
+            
+            # Also check basic format string if it says "Single" or "Compilation"
+            formats_lower = [f.lower() for f in formats]
+            if "single" in formats_lower or "compilation" in formats_lower:
+                is_excluded = True
+
+            if is_excluded:
+                continue
+
+            # Normalize to lowercase for checking
+            full_formats_lower = [f.lower() for f in full_format_list]
+            
+            has_vinyl = any("vinyl" in f or "lp" in f for f in full_formats_lower)
+            
+            if clean_artist not in owned_map:
+                owned_map[clean_artist] = {}
+            
+            owned_map[clean_artist][title] = full_format_list
+            all_artists.add(clean_artist)
+            
+            if not has_vinyl:
+                upgrade_candidates.append({
+                    "artist": clean_artist,
+                    "album": title,
+                    "current_formats": list(set(formats)) # Show main formats like "CD", "Cassette"
+                })
+
+        recommendations = []
+        
+        # 3. Generate Format Upgrades (Max 5)
+        # Randomly shuffle candidates to vary recommendations
+        import random
+        random.shuffle(upgrade_candidates)
+        
+        log_event("recommender-service", "INFO", f"Found {len(upgrade_candidates)} potential upgrade candidates")
+        
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            
+            # Helper for thread-safe execution
+            def check_upgrade(candidate):
+                artist = candidate["artist"]
+                album = candidate["album"]
+                
+                # Check Discogs directly (or via local DB check inside validate_album_with_discogs wrapper if we had one)
+                # But here we call validate_album_with_discogs which calls API. 
+                # Ideally we check DB first.
+                
+                # DB Check logic (simplified here using db_utils if possible, otherwise rely on helper)
+                cached = db_utils.get_cached_album(artist, album)
+                if cached:
+                    return {
+                        "album_name": cached["title"],
+                        "artist_name": cached["artist_name"],
+                        "year": cached.get("year"),
+                        "rating": cached.get("rating"),
+                        "votes": cached.get("votes"),
+                        "discogs_master_id": cached.get("discogs_master_id"),
+                        "image_url": cached.get("cover_url"),
+                        "source": "collection_upgrade",
+                        "current_formats": candidate["current_formats"]
+                    }
+                
+                # Discogs Fallback
+                valid_data = validate_album_with_discogs(artist, album, discogs_key, discogs_secret)
+                if valid_data:
+                    # Save partial
+                     db_utils.create_basic_album_entry(
+                        artist_name=artist,
+                        album_name=valid_data["title"],
+                        cover_url=valid_data["cover_image"],
+                        discogs_release_id=valid_data["discogs_release_id"],
+                        discogs_master_id=valid_data["discogs_master_id"]
+                    )
+                     
+                     return {
+                        "album_name": valid_data["title"],
+                        "artist_name": artist,
+                        "year": valid_data["year"],
+                        "rating": None,
+                        "votes": None,
+                        "discogs_master_id": valid_data["discogs_master_id"], 
+                        "image_url": valid_data["cover_image"],
+                        "source": "collection_upgrade",
+                        "current_formats": candidate["current_formats"],
+                        "is_partial": 1
+                    }
+                return None
+
+            # Run checks in parallel
+            display_upgrades = []
+            futures = [executor.submit(check_upgrade, c) for c in upgrade_candidates[:50]] # Check top 50 candidates
+            
+            for future in futures:
+                res = future.result()
+                if res:
+                    display_upgrades.append(res)
+                    if len(display_upgrades) >= 10: # Limit to 10 upgrades
+                        break
+            
+            recommendations.extend(display_upgrades)
+
+            # 4. Generate Discography Completion
+            # Pick random collected artists
+            collected_list = list(all_artists)
+            random.shuffle(collected_list)
+            selected_artists = collected_list[:request.limit]
+            
+            log_event("recommender-service", "INFO", f"Checking discography completion for: {selected_artists}")
+            
+            def check_completion(artist):
+                # 1. Get Top Popular Albums (Want+Have) from Discogs Search
+                # db_utils check is implicit if we wrapped it, but get_top_albums_from_discogs_search is purely search.
+                # We should enhance this to check DB first ideally, but per plan: Priority DB -> Discogs.
+                
+                # Let's try DB first for this artist
+                cached_albums = get_artist_studio_albums(artist, discogs_key, discogs_secret, top_n=5, cache_only=True)
+                
+                candidates = []
+                if cached_albums:
+                    for alb in cached_albums:
+                         candidates.append({
+                             "title": alb.title,
+                             "year": alb.year,
+                             "cover_image": alb.cover_image,
+                             "discogs_master_id": alb.discogs_master_id,
+                             "discogs_release_id": alb.discogs_release_id,
+                             "rating": alb.rating,
+                             "votes": alb.votes,
+                             "is_db": True
+                         })
+                else:
+                    # Fallback to Search
+                    search_results = get_top_albums_from_discogs_search(artist, discogs_key, discogs_secret, limit=5)
+                    for alb in search_results:
+                        candidates.append({
+                            "title": alb["title"],
+                            "year": alb["year"],
+                            "cover_image": alb["cover_image"],
+                            "discogs_master_id": alb["discogs_master_id"],
+                            "discogs_release_id": alb["discogs_release_id"],
+                            "rating": None,
+                            "votes": alb["score"], # Use score as pseudo-votes
+                            "is_db": False
+                        })
+                
+                completion_recs = []
+                import unicodedata
+                def normalize(s):
+                    return ''.join(c for c in unicodedata.normalize('NFD', s)
+                                 if unicodedata.category(c) != 'Mn').lower().replace(' ', '')
+                
+                owned_titles_norm = {normalize(t) for t in owned_map.get(artist, {}).keys()}
+                
+                for alb in candidates:
+                    alb_norm = normalize(alb["title"])
+                    if alb_norm in owned_titles_norm:
+                        continue
+                        
+                    # Save if new
+                    if not alb.get("is_db"):
+                         db_utils.create_basic_album_entry(
+                            artist_name=artist,
+                            album_name=alb["title"],
+                            cover_url=alb["cover_image"],
+                            discogs_release_id=alb["discogs_release_id"],
+                            discogs_master_id=alb["discogs_master_id"]
+                        )
+                    
+                    completion_recs.append({
+                        "album_name": alb["title"],
+                        "artist_name": artist,
+                        "year": alb["year"],
+                        "rating": alb["rating"],
+                        "votes": alb["votes"],
+                        "discogs_master_id": alb["discogs_master_id"], 
+                        "image_url": alb["cover_image"],
+                        "source": "discography_completion",
+                        "is_partial": 1 if not alb.get("is_db") else 0
+                    })
+                    
+                return completion_recs
+
+            completion_futures = [executor.submit(check_completion, a) for a in selected_artists]
+            for future in completion_futures:
+                res = future.result()
+                if res:
+                    # Take top 1 per artist to ensure variety
+                    recommendations.extend(res[:1]) 
+    
+    elapsed = time.time() - start_time
+    log_event("recommender-service", "INFO", f"Generated {len(recommendations)} collection recommendations in {elapsed:.2f}s")
+    
+    return {"recommendations": recommendations, "total": len(recommendations)}
+
+
 @app.post("/artist-single-recommendation")
 async def artist_single_recommendation(request: SingleArtistRequest):
     import time
@@ -666,15 +964,315 @@ async def _generate_spotify_recommendations(artist_name: str, top_albums: int, u
         }
 
 
-@app.post("/spotify-recommendations")
-async def spotify_recommendations(request: SingleArtistRequest):
-    """Generate recommendations using Spotify (fast fallback)"""
+@app.post("/collection/stats")
+async def collection_stats(request: CollectionStatsRequest):
+    """Analyze collection and return stats + top artists"""
     try:
-        return await _generate_spotify_recommendations(
-            request.artist_name, 
-            request.top_albums, 
-            user_id=None
-        )
+        conn = db_utils.get_db_connection()
+        try:
+            cur = conn.cursor()
+            
+            # 1. Format Stats
+            # Extract format from 'release_data' JSON or assume CD if not vinyl/cassette? 
+            # Ideally we check 'release_data'. But for specific Upgrade logic we rely on 'internal_category' if updated correctly, 
+            # OR we parse real time.
+            # Let's rely on querying user_collection_discogs.
+            
+            # Count total items
+            cur.execute("SELECT count(*) FROM user_collection_discogs WHERE user_id = ?", (request.user_id,))
+            total_items = cur.fetchone()['count(*)']
+            
+            # Count by internal_category if reliable, or just "Vinyl" check
+            # For stats display we want "Vinyl", "CD", "Other"
+            # Since we iterate loosely in main logic, let's do a group by artist first for focus.
+            
+            # 2. Top Artists
+            # Get artists with > 1 item
+            cur.execute("""
+                SELECT artist, count(*) as count 
+                FROM user_collection_discogs 
+                WHERE user_id = ? 
+                AND artist NOT LIKE 'Various%'
+                AND artist NOT LIKE 'Varios%'
+                GROUP BY artist 
+                HAVING count > 1 
+                ORDER BY count DESC 
+                LIMIT 50
+            """, (request.user_id,))
+            
+            top_artists = [{"name": row["artist"], "count": row["count"]} for row in cur.fetchall()]
+            
+            return {
+                "total_items": total_items,
+                "top_artists": top_artists,
+                "user_id": request.user_id
+            }
+            
+        finally:
+            conn.close()
     except Exception as e:
-        log_event("recommender-service", "ERROR", f"Spotify recommendations failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate recommendations: {str(e)}")
+        log_event("recommender-service", "ERROR", f"Stats fetch failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/collection/preferences")
+async def save_preferences(request: CollectionPreferencesRequest):
+    """Save use focus preferences"""
+    import json
+    try:
+        success = db_utils.save_user_preferences(
+            request.user_id,
+            json.dumps(request.focus_artists),
+            json.dumps(request.strategies)
+        )
+        if success:
+             return {"status": "success", "message": "Preferences saved"}
+        else:
+             raise HTTPException(status_code=500, detail="Failed to save preferences")
+    except Exception as e:
+        log_event("recommender-service", "ERROR", f"Pref save failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/collection/generate")
+async def generate_targeted_recommendations(request: CollectionPreferencesRequest):
+    """
+    Generate recommendations based on saved preferences (or passed ones) and PERSIST them.
+    This replaces the random lottery.
+    """
+    import asyncio
+    import os
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
+    try:
+        conn = db_utils.get_db_connection()
+        
+        # 1. Determine scope
+        focus_artists = request.focus_artists
+        if not focus_artists:
+            # Fallback to Top 10 if not provided
+             cur = conn.cursor()
+             cur.execute("""
+                SELECT artist FROM user_collection_discogs 
+                WHERE user_id = ? 
+                GROUP BY artist 
+                ORDER BY count(*) DESC 
+                LIMIT 10
+            """, (request.user_id,))
+             focus_artists = [row["artist"] for row in cur.fetchall()]
+             conn.close()
+        
+        if not focus_artists:
+            log_event("recommender", "WARNING", "No focus artists found (empty collection?), skipping generation.")
+            return {"count": 0, "status": "no_data"}
+        
+        # 2. Re-use logic from collection_recommendations but restrictive
+        # We need to instantiate a request object that mimics CollectionRecommendationRequest
+        # but focused.
+        
+        # NOTE: To reuse code effectively, we should refactor `collection_recommendations` logic to a helper function.
+        # For now, I will create a focused version here that calls the same helpers.
+        
+        generated_recs = []
+        
+        # A. UPGRADES (If 'upgrade' in strategies)
+        if "upgrade" in request.strategies:
+            log_event("recommender", "INFO", f"Generating UPGRADES for {len(focus_artists)} artists")
+            
+            # Fetch candidates only for these artists
+            conn = db_utils.get_db_connection()
+            cur = conn.cursor()
+            placeholders = ','.join(['?'] * len(focus_artists))
+            query = f"""
+                SELECT title, internal_category, artist, release_type 
+                FROM user_collection_discogs 
+                WHERE user_id = ? AND artist IN ({placeholders})
+            """
+            params = [request.user_id] + focus_artists
+            cur.execute(query, tuple(params))
+            rows = cur.fetchall()
+            conn.close()
+            
+            # 1. Identify all albums currently owned on Vinyl to prevent redundancy
+            owned_vinyl_keys = set()
+            for row in rows:
+                cat = (row['internal_category'] or "").lower()
+                if "vinyl" in cat or "lp" in cat:
+                    # Key: (artist, title) - normalized
+                    k = (row['artist'].strip().lower(), row['title'].strip().lower())
+                    owned_vinyl_keys.add(k)
+
+            candidates = []
+            seen_candidates = set() # To avoid duplicates
+            
+            # Group candidates by artist for batch processing
+            artist_candidates = {} # artist -> [candidates]
+            
+            for row in rows:
+                category = (row['internal_category'] or "").lower()
+                release_type = (row['release_type'] or "Other")
+                
+                # STRICT UPGRADE POLICY: Only Albums
+                if release_type != "Album":
+                    continue
+                
+                # Is this item itself a Vinyl?
+                is_vinyl = "vinyl" in category or "lp" in category
+                
+                if not is_vinyl:
+                    artist = row['artist'].strip()
+                    title = row['title'].strip()
+                    
+                    # Check if we already own a Vinyl version of this album
+                    key_norm = (artist.lower(), title.lower())
+                    
+                    if key_norm in owned_vinyl_keys:
+                        continue 
+                    
+                    if key_norm in seen_candidates:
+                        continue
+                    
+                    seen_candidates.add(key_norm)
+                    
+                    if artist not in artist_candidates:
+                        artist_candidates[artist] = []
+                    
+                    artist_candidates[artist].append({
+                        "artist": artist,
+                        "album": title,
+                        "current_formats": [row['internal_category']]
+                    })
+
+            # Helper for robust title matching (local scope)
+            import unicodedata
+            import re 
+            def match_title(target, source):
+                def norm(s):
+                    if not s: return ""
+                    try:
+                        s = unicodedata.normalize('NFKD', str(s)).encode('ASCII', 'ignore').decode('utf-8')
+                    except: pass
+                    s = s.lower().replace("'", "").replace('"', "")
+                    return re.sub(r'[^a-z0-9]', '', s)
+                return norm(target) == norm(source)
+
+            # Process each artist ONCE
+            upgrades = []
+            for artist, cand_list in artist_candidates.items():
+                try:
+                    # Fetch Vinyl Discography (Cache -> MB -> Discogs)
+                    log_event("recommender", "INFO", f"[UPGRADE] Batch fetching vinyls for {artist}")
+                    
+                    # Use get_artist_studio_albums which handles caching
+                    # Returns list of StudioAlbum objects
+                    vinyls_objs = get_artist_studio_albums(
+                        artist, 
+                        os.getenv("DISCOGS_KEY"), 
+                        os.getenv("DISCOGS_SECRET"), 
+                        top_n=100, # Large enough to cover discography
+                        cache_only=False,
+                        use_mb=False # User requested Discogs-only flow
+                    )
+                    
+                    # Convert to list of dicts for matching logic
+                    vinyls = []
+                    for v in vinyls_objs:
+                         vinyls.append({
+                             "title": v.title,
+                             "cover_image": v.cover_image,
+                             "year": v.year,
+                             "discogs_master_id": v.discogs_master_id
+                         })
+                    
+                    # Match in-memory
+                    for cand in cand_list:
+                        candidate_title = cand['album']
+                        
+                        # Find match in fetched vinyls
+                        match = next((v for v in vinyls if match_title(candidate_title, v['title'])), None)
+                        
+                        if match:
+                             # It exists as Vinyl!
+                             upgrades.append({
+                                "album_name": match["title"],
+                                "artist_name": artist,
+                                "cover_url": match["cover_image"],
+                                "source": "collection_upgrade",
+                                "image_url": match["cover_image"],
+                                "reason": "Upgrade CD to Vinyl",
+                                "year": match["year"],
+                                "discogs_master_id": match["discogs_master_id"]
+                             })
+                except Exception as e:
+                    log_event("recommender", "ERROR", f"[UPGRADE] Error processing batch for {artist}: {e}")
+            
+            # Take top 50 
+            generated_recs.extend(upgrades[:50])
+
+        # B. COMPLETION (If 'complete' in strategies)
+        if "complete" in request.strategies:
+            log_event("recommender", "INFO", f"Generating COMPLETIONS for {len(focus_artists)} artists")
+            discogs_key = os.getenv("DISCOGS_KEY")
+            discogs_secret = os.getenv("DISCOGS_SECRET")
+            
+            import unicodedata
+            
+            # Helper to normalize for comparison (local definition to avoid dependency issues)
+            def normalize_title(s):
+                if not s: return ""
+                try:
+                    s = unicodedata.normalize('NFKD', str(s)).encode('ASCII', 'ignore').decode('utf-8')
+                except: pass
+                s = s.lower().replace("'", "").replace('"', "")
+                import re
+                return re.sub(r'[^a-z0-9]', '', s)
+
+            for artist in focus_artists:
+                # Reuse existing logic: get_artist_studio_albums -> filter owned -> return top missing
+                try:
+                    # Increased limit from 5 to 50 to ensure we find albums the user DOESN'T have
+                    results = get_top_albums_from_discogs_search(artist, discogs_key, discogs_secret, limit=50)
+                    
+                    conn = db_utils.get_db_connection()
+                    cur = conn.cursor()
+                    # Check what we already have for this artist
+                    cur.execute("SELECT title FROM user_collection_discogs WHERE user_id=? AND artist=?", (request.user_id, artist))
+                    
+                    owned_titles_norm = set()
+                    for row in cur.fetchall():
+                        owned_titles_norm.add(normalize_title(row['title']))
+                    
+                    conn.close()
+                    
+                    filtered = []
+                    for res in results:
+                        # Normalize API title to compare
+                        t_norm = normalize_title(res['title'])
+                        if t_norm in owned_titles_norm:
+                            continue
+                        filtered.append(res)
+                    
+                    # Take top 3 missing albums per artist
+                    for res in filtered[:3]:
+                        generated_recs.append({
+                            "album_name": res["title"],
+                            "artist_name": artist,
+                            "cover_url": res["cover_image"],
+                            "source": "discography_completion",
+                            "image_url": res["cover_image"]
+                        })
+                except Exception as e:
+                    log_event("recommender", "ERROR", f"Completion check failed for {artist}: {e}")
+                    continue
+
+        # 3. Persist
+        saved_count = db_utils.save_recommendations_batch(request.user_id, generated_recs)
+        
+        return {
+            "status": "success",
+            "generated": len(generated_recs),
+            "saved": saved_count,
+            "recommendations": generated_recs # Return so frontend can show immediately
+        }
+
+    except Exception as e:
+        log_event("recommender", "ERROR", f"Generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

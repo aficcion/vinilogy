@@ -130,7 +130,7 @@
 
 .artist-search-modal .album-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
     gap: 12px;
 }
 
@@ -558,24 +558,33 @@
 .artist-search-modal .album-info {
     flex: 1;
     min-width: 0;
+    width: 100%;
+    /* Force width expansion */
 }
 
-.artist-search-modal .album-title {
+.artist-search-modal .album-title-full {
     font-size: 15px;
     font-weight: 500;
     color: var(--text);
     margin-bottom: 3px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    display: block;
+    width: 100%;
+    /* Ensure block fills container */
+    overflow-wrap: anywhere;
+    word-break: normal;
+    /* Prevent aggressive word breaking unless necessary */
 }
 
-.artist-search-modal .album-artist {
+.artist-search-modal .album-artist-full {
     font-size: 12px;
     color: var(--text-secondary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    display: block;
 }
 
 .artist-search-modal .add-album-btn {
@@ -754,21 +763,23 @@
 
     /* Enable text wrapping for long titles */
     .artist-search-modal .artist-name,
-    .artist-search-modal .album-title {
+    .artist-search-modal .album-title-full {
         white-space: normal;
         overflow: hidden;
         display: -webkit-box;
         -webkit-line-clamp: 2;
+        line-clamp: 2;
         -webkit-box-orient: vertical;
         line-height: 1.3;
     }
 
     .artist-search-modal .artist-genres,
-    .artist-search-modal .album-artist {
+    .artist-search-modal .album-artist-full {
         white-space: normal;
         overflow: hidden;
         display: -webkit-box;
         -webkit-line-clamp: 2;
+        line-clamp: 2;
         -webkit-box-orient: vertical;
         line-height: 1.3;
     }

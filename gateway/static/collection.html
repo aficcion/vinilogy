@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mi Colección - Vinilogy</title>
+    <style>
+        :root {
+            --bg-primary: #ffffff;
+            --bg-secondary: #f5f5f5;
+            --text-primary: #000000;
+            --text-secondary: #666666;
+            --border-color: #e0e0e0;
+            --accent-vinyl: #8B5CF6;
+            --accent-cd: #3B82F6;
+            --accent-tape: #EF4444;
+            --accent-digital: #10B981;
+            --accent-others: #F59E0B;
+            --card-bg: #ffffff;
+            --hover-color: #f0f0f0;
+        }
+
+        [data-theme="dark"] {
+            --bg-primary: #000000;
+            --bg-secondary: #1a1a1a;
+            --text-primary: #ffffff;
+            --text-secondary: #999999;
+            --border-color: #333333;
+            --card-bg: #0a0a0a;
+            --hover-color: #1f1f1f;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            transition: background-color 0.3s, color 0.3s;
+            min-height: 100vh;
+        }
+
+        .header {
+            padding: 1.5rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            position: sticky;
+            top: 0;
+            background: var(--bg-primary);
+            z-index: 100;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+        }
+
+        .back-button {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            color: var(--text-primary);
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+
+        .back-button:hover {
+            background: var(--border-color);
+        }
+
+        .logo {
+            font-size: 1.5rem;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+        }
+
+        .theme-toggle {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            color: var(--text-primary);
+            transition: all 0.2s;
+        }
+
+        .theme-toggle:hover {
+            background: var(--border-color);
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .page-title {
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin-bottom: 0.5rem;
+            letter-spacing: -1px;
+        }
+
+        .page-subtitle {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+            margin-bottom: 2rem;
+        }
+
+        /* Summary Cards */
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 3rem;
+        }
+
+        .summary-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.5rem;
+            transition: all 0.3s;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .summary-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: var(--accent-color);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .summary-card:hover::before {
+            opacity: 1;
+        }
+
+        .summary-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+        }
+
+        .summary-card.total {
+            --accent-color: #667eea;
+        }
+
+        .summary-card.vinyl {
+            --accent-color: var(--accent-vinyl);
+        }
+
+        .summary-card.cd {
+            --accent-color: var(--accent-cd);
+        }
+
+        .summary-card.tape {
+            --accent-color: var(--accent-tape);
+        }
+
+        .summary-card.digital {
+            --accent-color: var(--accent-digital);
+        }
+
+        .summary-card.others {
+            --accent-color: var(--accent-others);
+        }
+
+        .summary-label {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+        }
+
+        .summary-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--accent-color);
+        }
+
+        /* Format Sections */
+        .format-section {
+            margin-bottom: 3rem;
+        }
+
+        .format-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 1.5rem;
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 1rem;
+        }
+
+        .format-header:hover {
+            background: var(--hover-color);
+        }
+
+        .format-header-left {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .format-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            background: var(--accent-color);
+            color: white;
+        }
+
+        .format-info h2 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 0.25rem;
+        }
+
+        .format-count {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .format-toggle {
+            font-size: 1.5rem;
+            color: var(--text-secondary);
+            transition: transform 0.3s;
+        }
+
+        .format-toggle.expanded {
+            transform: rotate(180deg);
+        }
+
+        .format-content {
+            display: none;
+            animation: slideDown 0.3s ease-out;
+        }
+
+        .format-content.expanded {
+            display: block;
+        }
+
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Albums Grid */
+        .albums-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 1.5rem;
+            padding: 1rem 0;
+        }
+
+        .album-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            overflow: hidden;
+            transition: all 0.2s;
+            cursor: pointer;
+        }
+
+        .album-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
+        }
+
+        .album-cover {
+            width: 100%;
+            aspect-ratio: 1;
+            object-fit: cover;
+            background: var(--bg-secondary);
+        }
+
+        .album-info {
+            padding: 1rem;
+        }
+
+        .album-title {
+            font-weight: 600;
+            font-size: 0.9rem;
+            margin-bottom: 0.25rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .album-artist {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 4rem 2rem;
+            color: var(--text-secondary);
+        }
+
+        .empty-state-icon {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+
+        .loading-state {
+            text-align: center;
+            padding: 4rem 2rem;
+        }
+
+        .spinner {
+            border: 3px solid var(--border-color);
+            border-top: 3px solid var(--accent-vinyl);
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .header {
+                padding: 1rem;
+            }
+
+            .container {
+                padding: 1rem;
+            }
+
+            .page-title {
+                font-size: 2rem;
+            }
+
+            .summary-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .albums-grid {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 1rem;
+            }
+
+            .format-header {
+                padding: 1rem;
+            }
+
+            .format-icon {
+                width: 40px;
+                height: 40px;
+                font-size: 1.25rem;
+            }
+
+            .format-info h2 {
+                font-size: 1.25rem;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .summary-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <div class="header-left">
+            <a href="/" class="back-button">
+                ← Volver
+            </a>
+            <div class="logo">Mi Colección</div>
+        </div>
+        <button class="theme-toggle" onclick="toggleTheme()">
+            🌓 Tema
+        </button>
+    </div>
+
+    <div class="container">
+        <div id="loading-state" class="loading-state">
+            <div class="spinner"></div>
+            <p>Cargando tu colección...</p>
+        </div>
+
+        <div id="main-content" style="display: none;">
+            <h1 class="page-title">Mi Colección</h1>
+            <p class="page-subtitle">Explora tu colección organizada por formato</p>
+
+            <!-- Filters -->
+            <div class="filters-container mb-8 flex flex-wrap gap-4">
+                <button class="filter-btn active" data-filter="All">Todos</button>
+                <button class="filter-btn" data-filter="Album">Álbumes</button>
+                <button class="filter-btn" data-filter="Compilation">Recopilatorios</button>
+                <button class="filter-btn" data-filter="Single">Singles</button>
+                <button class="filter-btn" data-filter="EP">EPs</button>
+                <button class="filter-btn" data-filter="Other">Otros</button>
+            </div>
+
+            <!-- Summary Cards -->
+            <div class="summary-grid" id="summary-grid">
+                <!-- Will be populated by JavaScript -->
+            </div>
+
+            <!-- Format Sections -->
+            <div id="collection-sections">
+                <!-- Will be populated by JavaScript -->
+            </div>
+
+            <!-- Empty State -->
+            <div id="empty-state" class="empty-state" style="display: none;">
+                <div class="empty-state-icon">📀</div>
+                <h2>Tu colección está vacía</h2>
+                <p>Comienza a añadir álbumes marcándolos como "owned" en tus recomendaciones</p>
+            </div>
+        </div>
+    </div>
+
+    <style>
+        .filter-btn {
+            padding: 0.5rem 1.5rem;
+            border-radius: 9999px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .filter-btn:hover {
+            background: var(--border-color);
+        }
+
+        .filter-btn.active {
+            background: var(--accent-vinyl);
+            color: white;
+            border-color: var(--accent-vinyl);
+        }
+
+        .type-badge {
+            font-size: 0.7rem;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: rgba(0, 0, 0, 0.1);
+            color: var(--text-secondary);
+            margin-left: auto;
+        }
+    </style>
+
+    <script>
+        // Theme management
+        function toggleTheme() {
+            const html = document.documentElement;
+            const currentTheme = html.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+        }
+
+        // Load saved theme
+        const savedTheme = localStorage.getItem('theme') || 'light';
+        document.documentElement.setAttribute('data-theme', savedTheme);
+
+        // Get user ID from localStorage
+        const userId = localStorage.getItem('userId');
+
+        if (!userId) {
+            window.location.href = '/';
+        }
+
+        // Placeholder for missing covers
+        // Using %27 instead of single quotes to avoid breaking the inline onerror handler string
+        const placeholderDataUri = "data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%27100%25%27 height=%27100%25%27%3E%3Crect width=%27100%25%27 height=%27100%25%27 fill=%27%23cccccc%27/%3E%3Ctext x=%2750%25%27 y=%2750%25%27 dominant-baseline=%27middle%27 text-anchor=%27middle%27 font-family=%27sans-serif%27 font-size=%2714%27 fill=%27%23666666%27%3ENo Cover%3C/text%3E%3C/svg%3E";
+
+        // Global State
+        let fullCollection = {};
+        let currentFilter = 'All';
+
+        // Format configuration
+        const formatConfig = {
+            'VINYL': {
+                name: 'Vinilos',
+                icon: '💿',
+                color: 'vinyl'
+            },
+            'CD_FORMAT': {
+                name: 'CDs',
+                icon: '💽',
+                color: 'cd'
+            },
+            'TAPE_FORMAT': {
+                name: 'Cassettes',
+                icon: '📼',
+                color: 'tape'
+            },
+            'DIGITAL': {
+                name: 'Digital',
+                icon: '💾',
+                color: 'digital'
+            },
+            'OTHERS': {
+                name: 'Otros',
+                icon: '📀',
+                color: 'others'
+            }
+        };
+
+        // Load collection data
+        async function loadCollection() {
+            try {
+                const [collectionRes, summaryRes] = await Promise.all([
+                    fetch(`/api/collection/${userId}`),
+                    fetch(`/api/collection/${userId}/summary`)
+                ]);
+
+                const collectionData = await collectionRes.json();
+                const summaryData = await summaryRes.json();
+
+                fullCollection = collectionData.collection;
+
+                displaySummary(summaryData);
+                applyFilter(); // Initial Render
+
+                document.getElementById('loading-state').style.display = 'none';
+                document.getElementById('main-content').style.display = 'block';
+
+                if (summaryData.total === 0) {
+                    document.getElementById('empty-state').style.display = 'block';
+                }
+            } catch (error) {
+                console.error('Error loading collection:', error);
+                document.getElementById('loading-state').innerHTML = `
+                    <p style="color: var(--text-secondary);">Error al cargar la colección</p>
+                `;
+            }
+        }
+
+        // Initialize Event Listeners
+        document.addEventListener('DOMContentLoaded', () => {
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const type = e.target.dataset.filter;
+                    setFilter(type);
+                });
+            });
+
+            loadCollection();
+        });
+
+        function setFilter(type) {
+            currentFilter = type;
+
+            // Update UI
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                btn.classList.remove('active');
+                if (btn.dataset.filter === type) btn.classList.add('active');
+            });
+
+            applyFilter();
+        }
+
+        function applyFilter() {
+            const filteredCollection = {};
+
+            for (const [format, items] of Object.entries(fullCollection)) {
+                if (currentFilter === 'All') {
+                    filteredCollection[format] = items;
+                } else {
+                    filteredCollection[format] = items.filter(item => {
+                        // Some might not have release_type set yet if from old data, default to Other or check source
+                        const rType = item.release_type || (item.source === 'recommendation' ? 'Other' : 'Album');
+                        // Note: Defaulting to Album might be safer for legacy, or just 'Other'. 
+                        // Logic: if undefined and source=discogs, implies old data. 
+                        // But we just added the column, so it will be NULL.
+                        // Let's rely on strict check or relaxed check.
+                        // If NULL and user filters by Album, they won't see it?
+                        // Better: Handle NULLs. If NULL, maybe show under 'Other' or 'Album'?
+                        // For now strict check.
+                        return rType === currentFilter;
+                    });
+                }
+            }
+
+            displayCollection(filteredCollection);
+        }
+
+        function displaySummary(summary) {
+            const summaryGrid = document.getElementById('summary-grid');
+
+            // Total card
+            summaryGrid.innerHTML = `
+                <div class="summary-card total">
+                    <div class="summary-label">Total</div>
+                    <div class="summary-value">${summary.total}</div>
+                </div>
+            `;
+
+            // Format cards
+            for (const [format, count] of Object.entries(summary.by_format)) {
+                if (count > 0) {
+                    const config = formatConfig[format];
+                    summaryGrid.innerHTML += `
+                        <div class="summary-card ${config.color}">
+                            <div class="summary-label">${config.name}</div>
+                            <div class="summary-value">${count}</div>
+                        </div>
+                    `;
+                }
+            }
+        }
+
+        function displayCollection(collection) {
+            const sectionsContainer = document.getElementById('collection-sections');
+            sectionsContainer.innerHTML = '';
+
+            let hasItems = false;
+
+            for (const [format, items] of Object.entries(collection)) {
+                if (items.length === 0) continue;
+                hasItems = true;
+
+                const config = formatConfig[format];
+                const sectionId = `section-${format}`;
+
+                const section = document.createElement('div');
+                section.className = 'format-section';
+                section.innerHTML = `
+                    <div class="format-header" onclick="toggleSection('${sectionId}')">
+                        <div class="format-header-left">
+                            <div class="format-icon" style="background: var(--accent-${config.color})">
+                                ${config.icon}
+                            </div>
+                            <div class="format-info">
+                                <h2>${config.name}</h2>
+                                <div class="format-count">${items.length} ${items.length === 1 ? 'release' : 'releases'}</div>
+                            </div>
+                        </div>
+                        <div class="format-toggle expanded" id="toggle-${sectionId}">▼</div>
+                    </div>
+                    <div class="format-content expanded" id="${sectionId}">
+                        <div class="albums-grid">
+                            ${items.map(album => createAlbumCard(album)).join('')}
+                        </div>
+                    </div>
+                `;
+
+                sectionsContainer.appendChild(section);
+            }
+
+            if (!hasItems && currentFilter !== 'All') {
+                sectionsContainer.innerHTML = `<div class="text-center py-10 text-gray-500">No hay items de tipo "${currentFilter}"</div>`;
+            }
+        }
+
+        function createAlbumCard(album) {
+            const coverUrl = album.cover_url || placeholderDataUri;
+            const releaseId = album.release_id;
+            const typeBadge = album.release_type ? `<span class="type-badge">${album.release_type}</span>` : '';
+
+            // Only link if we have a release ID (Discogs items)
+            // Recommendation items might not have a release ID suitable for lookup if they are manual adds/owned
+            // But our db.py sets source='discogs' or 'recommendation'.
+            // If recommendation, we might not have a valid Discogs ID to fetch details.
+            // Check if release_id exists.
+
+            const onClick = releaseId ? `onclick="window.location.href='/release?id=${releaseId}'"` : '';
+            const cursor = releaseId ? 'cursor-pointer' : 'cursor-default';
+
+            return `
+                <div class="album-card ${cursor}" ${onClick}>
+                    <img src="${coverUrl}" alt="${album.title}" class="album-cover" 
+                         onerror="this.src='${placeholderDataUri}'">
+                    <div class="album-info">
+                        <div class="flex justify-between items-start mb-1">
+                             <div class="album-title" title="${album.title}">${album.title}</div>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <div class="album-artist" title="${album.artist}">${album.artist}</div>
+                            ${typeBadge}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function toggleSection(sectionId) {
+            const content = document.getElementById(sectionId);
+            const toggle = document.getElementById(`toggle-${sectionId}`);
+
+            content.classList.toggle('expanded');
+            toggle.classList.toggle('expanded');
+        }
+
+        // Load collection on page load
+        loadCollection();
+    </script>
+</body>
+
+</html>

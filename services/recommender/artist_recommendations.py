@@ -502,7 +502,8 @@ def _discogs_master_data(master_id: str, key: str, secret: str, csv_mode: bool =
 
 
 def get_artist_studio_albums(artist_name: str, discogs_key: str, discogs_secret: str,
-                              top_n: int = 3, csv_mode: bool = False, cache_only: bool = False) -> List[StudioAlbum]:
+                              top_n: int = 3, csv_mode: bool = False, cache_only: bool = False, 
+                              use_mb: bool = True) -> List[StudioAlbum]:
     # When cache_only=True, ignore expiry to prevent unnecessary Discogs searches
     cached_albums = _get_cached_artist_albums(artist_name, ignore_expiry=cache_only)
     if cached_albums:
@@ -527,6 +528,46 @@ def get_artist_studio_albums(artist_name: str, discogs_key: str, discogs_secret:
     if cache_only:
         print(f"[CACHE_ONLY] '{artist_name}' not in cache, skipping MusicBrainz/Discogs lookup")
         return []
+
+    # --- DISCOGS ONLY MODE (Fast, No MB) ---
+    if not use_mb:
+        print(f"[DISCOGS ONLY] Fetching top vinyls for {artist_name} directly from Discogs...")
+        # Use our robust search helper
+        results = get_top_albums_from_discogs_search(
+            artist_name, discogs_key, discogs_secret, limit=100
+        )
+        
+        studio_albums = []
+        for res in results:
+            master_id = res.get("discogs_master_id")
+            release_id = res.get("discogs_release_id")
+            discogs_type = "master" if master_id else "release"
+            
+            # Use 'score' (have+want) as rating proxy if needed, or None
+            # The UI uses rating/votes.
+            rating = 5.0 # Dummy high rating for found items
+            votes = res.get("score", 0)
+            
+            album = StudioAlbum(
+                title=res["title"],
+                year=str(res.get("year", "")),
+                discogs_master_id=master_id,
+                discogs_release_id=release_id,
+                discogs_type=discogs_type,
+                artist_name=artist_name,
+                rating=rating,
+                votes=votes,
+                cover_image=res.get("cover_image")
+            )
+            studio_albums.append(album)
+            
+        # Save to DB for next time!
+        if studio_albums:
+            # Use a placeholder MBID since valid MBID is not fetched
+            artist_img = studio_albums[0].cover_image if studio_albums else None
+            _save_artist_albums(artist_name, f"discogs-{artist_name}", studio_albums, artist_img)
+            
+        return studio_albums[:top_n]
     
     mbid = _find_artist_mbid(artist_name)
     if not mbid:
@@ -707,9 +748,10 @@ def get_top_albums_from_discogs_search(artist_name: str, key: str, secret: str, 
                 continue
                 
             # 2. Filter by format (double check)
+            # 2. Filter by format (double check)
             formats = res.get("format", [])
             format_str = ", ".join(formats).lower()
-            if "promo" in format_str or "unofficial" in format_str:
+            if any(x in format_str for x in ["promo", "unofficial", "compilation", "single", "ep", "maxi-single"]):
                 continue
                 
             # 3. Deduplicate by title (simple normalization)

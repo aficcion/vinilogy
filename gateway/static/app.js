@@ -5,8 +5,12 @@ const API_BASE = "";
 // -------------------------------------------------
 function getUserId() {
     const id = localStorage.getItem('userId');
-    if (!id && window.location.pathname !== '/login.html') {
-        window.location.href = '/login.html';
+    // Allow index.html to be viewed without login
+    if (!id) {
+        if (window.location.pathname !== '/login.html' && window.location.pathname !== '/' && window.location.pathname !== '/index.html') {
+            // window.location.href = '/login.html'; // Disable redirect for now to be safe
+            return null;
+        }
         return null;
     }
     return id;
@@ -154,6 +158,8 @@ async function handleLastFmCallback() {
                 // Now create/get user in our DB
                 const authRes = await apiCall('/auth/lastfm', 'POST', { lastfm_username: res.username });
                 localStorage.setItem('userId', authRes.user_id);
+                if (res.username) localStorage.setItem('lastfm_username', res.username);
+                localStorage.setItem('vinilogy_lastfm_auth_completed', 'true');
 
                 // Clean URL
                 window.history.replaceState({}, document.title, "/index.html");
@@ -394,3 +400,244 @@ async function regenerateRecs() {
         btn.disabled = false;
     }
 }
+
+// -------------------------------------------------
+// Discogs & Profile
+// -------------------------------------------------
+async function loginDiscogs() {
+    // Open popup
+    const popup = window.open('', 'discogs-auth', 'width=600,height=700');
+    if (!popup) {
+        showToast('Popup blocked', 'error');
+        return;
+    }
+
+    try {
+        const res = await apiCall('/auth/discogs/login');
+        if (res.auth_url) {
+            popup.location = res.auth_url;
+        } else {
+            popup.close();
+            showToast('Failed to start Discogs login', 'error');
+        }
+    } catch (e) {
+        if (!popup.closed) popup.close();
+        console.error(e);
+        showToast('Error', 'error');
+    }
+}
+
+async function linkDiscogs() {
+    const uid = getUserId();
+    if (!uid) return;
+
+    // Set flag for callback.html to know this is a LINK operation
+    localStorage.setItem('pending_discogs_link_user_id', uid);
+
+    const popup = window.open('', 'discogs-link', 'width=600,height=700');
+
+    try {
+        const res = await apiCall('/auth/discogs/login'); // Reuse login endpoint to get token
+        if (res.auth_url) {
+            popup.location = res.auth_url;
+
+            // Listen for success message from popup
+            window.addEventListener('message', function (e) {
+                if (e.data.type === 'DISCOGS_LINK_SUCCESS') {
+                    showToast('Discogs linked as ' + e.data.username, 'success');
+
+                    // Trigger Wizard Logic
+                    localStorage.setItem('discogs_username', e.data.username);
+                    localStorage.setItem('vinilogy_discogs_auth_completed', 'true');
+
+                    if (typeof checkDiscogsAuthReturn === 'function') {
+                        checkDiscogsAuthReturn();
+                    }
+
+                    loadConnections(); // Refresh UI
+                }
+            }, { once: true });
+        }
+    } catch (e) {
+        if (!popup.closed) popup.close();
+        console.error(e);
+    }
+}
+
+
+function showProfile() {
+    document.getElementById('landing-view').style.display = 'none';
+    document.getElementById('recommendations-view').style.display = 'none';
+    document.getElementById('album-detail-view').style.display = 'none';
+    document.getElementById('profile-view').style.display = 'block';
+
+    // Update header buttons
+    const profileBtn = document.getElementById('profile-btn');
+    if (profileBtn) profileBtn.style.display = 'none';
+    const collectionBtn = document.getElementById('collection-btn');
+    if (collectionBtn) collectionBtn.style.display = 'none';
+
+    loadSettings();
+    loadConnections();
+}
+
+function showHome() {
+    const uid = getUserId();
+    if (uid) {
+        showRecommendations();
+    } else {
+        window.location.href = '/';
+    }
+}
+
+function showRecommendations() {
+    document.getElementById('profile-view').style.display = 'none';
+    document.getElementById('landing-view').style.display = 'none';
+    document.getElementById('recommendations-view').style.display = 'block';
+
+    const profileBtn = document.getElementById('profile-btn');
+    if (profileBtn) profileBtn.style.display = 'block';
+    const collectionBtn = document.getElementById('collection-btn');
+    if (collectionBtn) collectionBtn.style.display = 'block';
+
+    // Check connections to toggle header buttons
+    loadConnections();
+}
+
+async function loadSettings() {
+    const uid = getUserId();
+    if (!uid) return;
+    try {
+        const settings = await apiCall('/user/' + uid + '/settings');
+        const toggle = document.getElementById('setting-cfm');
+        if (toggle) toggle.checked = !!settings.cf_enabled;
+    } catch (e) { console.error(e); }
+}
+
+async function toggleCFM() {
+    const uid = getUserId();
+    if (!uid) return;
+    const toggle = document.getElementById('setting-cfm');
+    if (!toggle) return;
+    const enabled = toggle.checked;
+    try {
+        await apiCall('/user/' + uid + '/settings', 'POST', { cf_enabled: enabled });
+        showToast('Preferences updated', 'success');
+    } catch (e) {
+        showToast('Failed to update settings', 'error');
+        // Revert toggle
+        toggle.checked = !enabled;
+    }
+}
+
+async function checkSyncStatus(userId) {
+    try {
+        const resp = await fetch(`/user/${userId}/sync-status`);
+        const status = await resp.json();
+
+        const discogsStatus = document.querySelector('#conn-discogs .conn-status');
+        if (!discogsStatus) return;
+
+        // Only update if connected
+        if (!discogsStatus.textContent.includes('Connected')) return;
+
+        if (status.status === 'running') {
+            discogsStatus.innerHTML = `Connected <span style="color:#eab308; margin-left:8px;">Importing... (${status.processed} items)</span>`;
+            setTimeout(() => checkSyncStatus(userId), 2000);
+        } else if (status.status === 'completed') {
+            discogsStatus.innerHTML = `Connected <span style="color:#22c55e; margin-left:8px;">Imported (${status.processed} items)</span>`;
+        } else if (status.status === 'failed') {
+            // Keep connected but show error
+            discogsStatus.innerHTML += ` <span style="color:#ef4444;">(Import failed)</span>`;
+        }
+    } catch (e) {
+        console.error("Sync check failed", e);
+    }
+}
+
+async function loadConnections() {
+    const uid = getUserId();
+    if (!uid) return;
+    try {
+        const conns = await apiCall('/user/' + uid + '/connections');
+
+        // Update Discogs UI (Profile)
+        const discogsBtn = document.getElementById('btn-conn-discogs');
+        const discogsStatus = document.querySelector('#conn-discogs .conn-status');
+        if (discogsBtn && discogsStatus) {
+            if (conns.discogs && conns.discogs.connected) {
+                discogsStatus.textContent = 'Connected as ' + conns.discogs.username;
+                discogsStatus.style.color = '#22c55e';
+                discogsBtn.textContent = 'Disconnect';
+                discogsBtn.onclick = async () => {
+                    await fetch('/auth/discogs/unlink', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ user_id: uid })
+                    });
+                    loadConnections();
+                };
+
+                // Start polling sync status
+                checkSyncStatus(uid);
+
+            } else {
+                discogsStatus.textContent = 'Not connected';
+                discogsStatus.style.color = 'var(--text-secondary)';
+                discogsBtn.textContent = 'Connect with Discogs';
+                discogsBtn.onclick = linkDiscogs;
+            }
+        }
+
+        // Update Discogs Header Button (Recommendations View)
+        const discogsHeaderBtn = document.getElementById('discogs-header-btn');
+        if (discogsHeaderBtn) {
+            if (conns.discogs && conns.discogs.connected) {
+                discogsHeaderBtn.style.display = 'none';
+            } else {
+                discogsHeaderBtn.style.display = 'inline-flex';
+            }
+        }
+
+        // Update Last.fm UI
+        const lastfmBtn = document.getElementById('btn-conn-lastfm');
+        const lastfmStatus = document.querySelector('#conn-lastfm .conn-status');
+        if (lastfmBtn && lastfmStatus) {
+            if (conns.lastfm && conns.lastfm.connected) {
+                lastfmStatus.textContent = 'Connected as ' + conns.lastfm.username;
+                lastfmStatus.style.color = '#22c55e';
+                lastfmBtn.textContent = 'Disconnect';
+                lastfmBtn.onclick = () => showToast('Disconnect not implemented yet', 'info');
+            } else {
+                lastfmStatus.textContent = 'Not connected';
+                lastfmBtn.textContent = 'Connect';
+                lastfmBtn.onclick = loginLastfm;
+            }
+        }
+
+    } catch (e) { console.error(e); }
+}
+
+// Init profile button visibility
+// Init profile button visibility
+document.addEventListener('DOMContentLoaded', () => {
+    const uid = getUserId();
+    console.log('Checking user ID for profile button:', uid);
+    if (uid) {
+        const profileBtn = document.getElementById('profile-btn');
+        if (profileBtn) {
+            profileBtn.style.display = 'block';
+            console.log('Profile button shown');
+        } else {
+            console.error('Profile button not found in DOM');
+        }
+        const collectionBtn = document.getElementById('collection-btn');
+        if (collectionBtn) {
+            collectionBtn.style.display = 'block';
+            console.log('Collection button shown');
+        }
+        // Initial connection check
+        loadConnections();
+    }
+});
+

@@ -1,6 +1,18 @@
 (async () => {
     const uid = localStorage.getItem('userId');
     if (uid) {
+        startSyncMonitor(uid);
+
+        // Check for Wizard completion flag
+        const wizardCompleted = localStorage.getItem('discogs_wizard_completed');
+        if (wizardCompleted) {
+            console.log("Wizard completed logic triggered");
+            localStorage.removeItem('discogs_wizard_completed');
+        }
+
+        // Always fetch recommendations on load
+        fetchUserRecommendations(uid);
+
         try {
             // 2. Sync Last.fm state from backend
             try {
@@ -75,6 +87,16 @@ function checkLastfmAuthReturn() {
             showToast(`¡Conectado con Last.fm como ${lastfmUsername}!`, 'success');
         }
 
+        // FORCE UI UPDATE immediately to avoid Guest+Spinner glitch
+        const landing = document.getElementById('landing-view');
+        if (landing) landing.style.display = 'none';
+        const dashboard = document.getElementById('recommendations-view');
+        if (dashboard) dashboard.style.display = 'block';
+
+        // Hide auth buttons in header
+        document.querySelectorAll('.auth-btn').forEach(b => b.style.display = 'none');
+        document.getElementById('user-menu')?.classList.remove('hidden');
+
         // Load recommendations for the user
         const userId = localStorage.getItem('userId');
         if (userId) {
@@ -83,7 +105,84 @@ function checkLastfmAuthReturn() {
     }
 }
 
+// Check if we just returned from Discogs authentication
+function checkDiscogsAuthReturn() {
+    const authCompleted = localStorage.getItem('vinilogy_discogs_auth_completed');
+    const discogsUsername = localStorage.getItem('discogs_username');
+
+    console.log('[DEBUG] checkDiscogsAuthReturn - Flag:', authCompleted, 'Username:', discogsUsername);
+
+    if (authCompleted === 'true' && discogsUsername) {
+        localStorage.removeItem('vinilogy_discogs_auth_completed');
+        console.log('✓ Returned from Discogs authentication:', discogsUsername);
+
+        if (typeof showToast === 'function') {
+            showToast(`¡Conectado con Discogs como ${discogsUsername}!`, 'success');
+        }
+
+        // Launch Wizard for initial setup
+        setTimeout(() => {
+            if (typeof DiscogsWizard !== 'undefined') {
+                DiscogsWizard.launch();
+            }
+        }, 500);
+    }
+}
+
 // ---------------------------------------------------------------------
+// Sync Monitor Logic
+// ---------------------------------------------------------------------
+let syncMonitorInterval = null;
+
+function startSyncMonitor(userId) {
+    if (!userId) return;
+    if (syncMonitorInterval) clearInterval(syncMonitorInterval);
+
+    const check = async () => {
+        try {
+            const res = await fetch(`/user/${userId}/sync-status`);
+            if (res.ok) {
+                const status = await res.json();
+                updateSyncIndicator(status);
+                // If recently completed/failed, stop polling after a delay or keep checking for restarts?
+                // For now, keep checking at longer interval or stop if completed?
+                // Sync might stop then restart? 
+                // Let's stop if completed to save calls, but maybe restart if user triggers it?
+                // For robustness, we'll keep polling but maybe slower? No, 3s is fine.
+                if (status.status === 'completed' && document.getElementById('sync-indicator')?.textContent.includes('Sincronizando')) {
+                    // Just finished
+                    if (typeof showToast === 'function') showToast('Sincronización completada', 'success');
+                    // Refresh recs?
+                    fetchUserRecommendations(userId);
+                }
+            }
+        } catch (e) { console.warn('Sync monitor error:', e); }
+    };
+
+    check();
+    syncMonitorInterval = setInterval(check, 3000);
+}
+
+function updateSyncIndicator(status) {
+    let el = document.getElementById('sync-indicator');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'sync-indicator';
+        // Styled to be visible but not annoying 
+        el.style.cssText = 'position:fixed;top:0;left:0;right:0;background:linear-gradient(90deg, #3b82f6, #2563eb);color:white;text-align:center;padding:8px;font-size:13px;font-weight:500;z-index:9999;transition:transform 0.3s ease-in-out;transform:translateY(-100%);box-shadow:0 2px 5px rgba(0,0,0,0.1);';
+        document.body.appendChild(el);
+    }
+
+    if (status.status === 'running') {
+        el.textContent = `🔄 Sincronizando colección de Discogs... (${status.processed} ítems)`;
+        el.style.transform = 'translateY(0)';
+    } else {
+        el.style.transform = 'translateY(-100%)';
+    }
+}
+
+// ---------------------------------------------------------------------
+
 // Helper: fetch recommendations for a logged‑in user and sync status map
 // ---------------------------------------------------------------------
 async function fetchUserRecommendations(userId) {
@@ -92,6 +191,14 @@ async function fetchUserRecommendations(userId) {
         console.warn('fetchUserRecommendations called with invalid userId:', userId);
         return;
     }
+
+    // ENFORCE DASHBOARD VIEW
+    const landing = document.getElementById('landing-view');
+    if (landing) landing.style.display = 'none';
+    const dashboard = document.getElementById('recommendations-view');
+    if (dashboard) dashboard.style.display = 'block';
+
+    showLoading(true);
 
     console.log(`Fetching recommendations for user: ${userId} at /api/users/${userId}/recommendations`);
     try {
@@ -259,9 +366,88 @@ async function generateAndSaveRecommendations(userId, lastfmUsername) {
             hideProgressModal();
         }
 
-        // 3. Load existing recommendations to merge (preserve status)
-        console.log('Step 3: Merging with existing recommendations...');
-        let finalRecs = [...newLastfmRecs, ...manualRecs];
+        // 3. Get recommendations from Discogs Collection
+        let discogsUsername = localStorage.getItem('discogs_username');
+
+        // If missing, try to fetch from connections (backend)
+        if (!discogsUsername && userId) {
+            try {
+                const connResp = await fetch(`/user/${userId}/connections`);
+                if (connResp.ok) {
+                    const conns = await connResp.json();
+                    if (conns.discogs && conns.discogs.connected) {
+                        // Use display name (text) if available, otherwise numeric ID as fallback
+                        discogsUsername = conns.discogs.username_text || conns.discogs.username;
+                        if (discogsUsername) {
+                            console.log('✓ Retrieved Discogs username from backend:', discogsUsername);
+                            localStorage.setItem('discogs_username', discogsUsername);
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn('Error fetching connections for Discogs username:', e);
+            }
+        }
+
+        let collectionRecs = [];
+        if (discogsUsername) {
+            console.log('Step 3: Fetching Discogs Collection recommendations for:', discogsUsername);
+            try {
+                // 2. Sync collection (backend)
+                // Ideally we should poll until status is 'completed'
+                const checkSyncLoop = async () => {
+                    let attempts = 0;
+                    while (attempts < 10) {
+                        try {
+                            const res = await fetch(`/api/user/${userId}/sync-status`);
+                            const status = await res.json();
+                            if (status.status === 'completed' || status.status === 'idle') {
+                                // Only launch if we actually have items? 
+                                // Or just launch and let Wizard handle empty state
+                                console.log('Sync ready, launching wizard...');
+                                if (typeof DiscogsWizard !== 'undefined') {
+                                    DiscogsWizard.launch();
+                                }
+                                return;
+                            }
+                        } catch (e) { console.error(e); }
+                        await new Promise(r => setTimeout(r, 2000));
+                        attempts++;
+                    }
+                    console.warn('Sync timed out or taking too long, launching anyway...');
+                    if (typeof DiscogsWizard !== 'undefined') DiscogsWizard.launch();
+                };
+
+                fetch('/api/discogs/sync', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        username: discogsUsername,
+                        user_id: userId
+                    })
+                }).then(() => checkSyncLoop());
+
+                // Legacy collection fetch removed to prevent pollution of recommendations table
+                // The Wizard now handles all recommendation generation.
+            } catch (e) {
+                console.warn('Error fetching collection recommendations:', e);
+            }
+        }
+
+        // 4. Smart Merge: Prioritize Collection Upgrades
+        // If an album is in collectionRecs (Upgrade), we want THAT version (with badges/info),
+        // not the generic one from Last.fm or Artist recommendations.
+
+        const upgradeKeys = new Set(collectionRecs.map(r => `${r.artist_name.toLowerCase()}::${r.album_name.toLowerCase()}`));
+
+        // Filter out generics if we have an upgrade for them
+        const filteredLastFm = newLastfmRecs.filter(r => !upgradeKeys.has(`${r.artist_name.toLowerCase()}::${r.album_name.toLowerCase()}`));
+        const filteredManual = manualRecs.filter(r => !upgradeKeys.has(`${r.artist_name.toLowerCase()}::${r.album_name.toLowerCase()}`));
+
+        console.log('Step 4: Merging with existing recommendations...');
+        // Put collection recs first so they are prominent? Or just merge.
+        // Order: Collection Upgrades -> Last.fm -> Manual
+        let finalRecs = [...collectionRecs, ...filteredLastFm, ...filteredManual];
 
         try {
             const existingResp = await fetch(`/api/users/${userId}/recommendations`);
@@ -464,11 +650,6 @@ function escapeHtml(text) {
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
 }
-
-document.addEventListener('DOMContentLoaded', () => {
-    loadMosaic();
-    // ... existing init code
-});
 
 // Show/hide loading state (legacy, keep for simple loads)
 function showLoading(show, message = 'Cargando tus recomendaciones...') {
@@ -704,7 +885,12 @@ async function loadAllRecommendations() {
             }
         }
 
-        renderRecommendations(finalRecs);
+        if (userId) {
+            console.log('Reloading mixed recommendations from DB...');
+            await fetchUserRecommendations(userId);
+        } else {
+            renderRecommendations(finalRecs);
+        }
 
     } catch (error) {
         console.error('Error loading all recommendations:', error);
@@ -822,10 +1008,27 @@ function renderRecommendations(recommendations) {
     let filtered;
     if (currentFilter === 'all') {
         // Exclude disliked and owned albums from "all" view
+        // BUT allow 'owned' if it's a specific journey recommendation (e.g. Upgrade)
         filtered = allRecommendations.filter(rec => {
             const { artist, album } = getRecArtistAndAlbum(rec);
             const status = typeof window.getAlbumStatus === 'function' ? window.getAlbumStatus(artist, album) : null;
-            return status !== 'disliked' && status !== 'owned';
+
+            if (status === 'disliked') {
+                console.log(`[DEBUG] Hiding disliked item: ${artist} - ${album} (Source: ${rec.source})`);
+                return false;
+            }
+
+            // Allow if it's an upgrade or completion recommendation, even if owned
+            if (rec.source === 'collection_upgrade' || rec.source === 'discography_completion') {
+                return true;
+            }
+
+            if (status === 'owned') {
+                // Log only occasionally or it will flood, but for now we need it
+                console.log(`[DEBUG] Hiding owned item: ${artist} - ${album} (Source: ${rec.source})`);
+                return false;
+            }
+            return true;
         });
     } else if (currentFilter === 'favorites') {
         // Filter only favorites
@@ -895,10 +1098,19 @@ function filterRecommendations(filter) {
     let filtered;
     if (filter === 'all') {
         // Exclude disliked and owned albums from "all" view
+        // BUT allow 'owned' if it's a specific journey recommendation (e.g. Upgrade)
         filtered = allRecommendations.filter(rec => {
             const { artist, album } = getRecArtistAndAlbum(rec);
             const status = typeof window.getAlbumStatus === 'function' ? window.getAlbumStatus(artist, album) : null;
-            return status !== 'disliked' && status !== 'owned';
+
+            if (status === 'disliked') return false;
+
+            // Allow if it's an upgrade or completion recommendation, even if owned
+            if (rec.source === 'collection_upgrade' || rec.source === 'discography_completion') {
+                return true;
+            }
+
+            return status !== 'owned';
         });
     } else if (filter === 'lastfm') {
         // Exclude disliked and owned from lastfm view
@@ -970,10 +1182,16 @@ function createAlbumCard(rec) {
         <div class="album-cover">
             <img src="${cover}" alt="${album}" loading="lazy">
             ${rec.is_partial ? '<div class="partial-badge" title="Información pendiente de enriquecer">⏳</div>' : ''}
+            ${rec.source === 'collection_upgrade' ? '<div class="upgrade-badge" title="Upgrade recomendado">UPGRADE ⬆</div>' : ''}
+            ${rec.source === 'discography_completion' ? '<div class="completion-badge" title="Completar discografía">COMPLETAR</div>' : ''}
         </div>
         <div class="album-info">
             <h3>${album}</h3>
             <p>${artist}</p>
+            ${rec.source === 'collection_upgrade' && rec.current_formats ?
+            `<p class="upgrade-info">Tienes: <span class="format-tag">${rec.current_formats.join(', ')}</span></p>` : ''}
+            ${rec.source === 'discography_completion' ?
+            `<p class="completion-info">Falta en tu colección</p>` : ''}
             <div class="album-actions">
                 <button class="action-btn favorite ${currentStatus === 'favorite' ? 'active' : ''}" title="Guardar en favoritos" data-action="favorite">★</button>
                 <button class="action-btn owned ${currentStatus === 'owned' ? 'active' : ''}" title="Ya lo tengo" data-action="owned">✓</button>
@@ -1066,7 +1284,7 @@ async function openAlbumDetail(rec) {
     }
 
 
-    document.getElementById('recommendations-view').classList.remove('active');
+    document.getElementById('recommendations-view').style.display = 'none';
     document.getElementById('album-detail-view').style.display = 'block';
 
     document.getElementById('detail-cover').src = cover;
@@ -1091,7 +1309,7 @@ async function openAlbumDetail(rec) {
 // Go back to recommendations
 function backToRecommendations() {
     document.getElementById('album-detail-view').style.display = 'none';
-    document.getElementById('recommendations-view').classList.add('active');
+    document.getElementById('recommendations-view').style.display = 'block';
 }
 
 // Render pricing in detail view
@@ -1136,6 +1354,7 @@ function renderDetailPricing(pricing) {
                     logo: storeLogos[key],
                     price: data.price,
                     url: data.url,
+                    availability: data.availability,  // Add availability
                     sortPrice: data.price
                 });
             }
@@ -1174,6 +1393,11 @@ function renderDetailPricing(pricing) {
                 logoHtml = `<div class="store-logo-placeholder"><span>${item.name.substring(0, 2).toUpperCase()}</span></div>`;
             }
 
+            let availabilityHtml = '';
+            if (item.availability && item.availability === 'Consultar disponibilidad') {
+                availabilityHtml = `<span style="font-size: 0.7em; background: #ffc107; color: #333; padding: 2px 5px; border-radius: 4px; margin-right: 5px; white-space: nowrap;">Consultar disp.</span>`;
+            }
+
             // Entire card is now the anchor tag
             html += `
                 <a href="${item.url}" target="_blank" class="price-item-link">
@@ -1184,6 +1408,7 @@ function renderDetailPricing(pricing) {
                         <span class="store-name">${item.name}</span>
                     </div>
                     <div class="price-item-value">
+                        ${availabilityHtml}
                         <span class="price-tag">${priceDisplay}</span>
                         <svg class="chevron-right" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
                             <polyline points="9 18 15 12 9 6"></polyline>
@@ -1669,10 +1894,51 @@ function formatArtistRecommendations(recommendations) {
     });
 }
 
+function updateProfileUI(userId) {
+    if (!userId) return;
+
+    // Update connection buttons
+    fetch(`/user/${userId}/connections`)
+        .then(res => res.json())
+        .then(conns => {
+            const discogsBtn = document.getElementById('btn-conn-discogs');
+            const discogsStatus = document.querySelector('#conn-discogs .conn-status');
+            const discogsCard = document.getElementById('journey-config-card');
+
+            if (conns.discogs && conns.discogs.connected) {
+                if (discogsBtn) discogsBtn.style.display = 'none';
+                if (discogsStatus) {
+                    discogsStatus.textContent = 'Conectado como ' + (conns.discogs.username_text || conns.discogs.username);
+                    discogsStatus.style.color = 'var(--success-color)';
+                }
+                if (discogsCard) discogsCard.style.display = 'block';
+            }
+
+            const lastfmBtn = document.getElementById('btn-conn-lastfm');
+            const lastfmStatus = document.querySelector('#conn-lastfm .conn-status');
+
+            if (conns.lastfm && conns.lastfm.connected) {
+                if (lastfmBtn) lastfmBtn.style.display = 'none';
+                if (lastfmStatus) {
+                    lastfmStatus.textContent = 'Conectado como ' + (conns.lastfm.username);
+                    lastfmStatus.style.color = 'var(--success-color)';
+                }
+            }
+        })
+        .catch(err => console.warn('Error fetching connections:', err));
+}
+
 // Initialize
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
+    loadMosaic();
     initTheme();
+
+    if (typeof DiscogsWizard !== 'undefined') {
+        DiscogsWizard.init();
+    }
+
+    checkDiscogsAuthReturn();
 
     // IMMEDIATELY hide Last.fm button if we can detect connection
     const quickCheckBtn = document.getElementById('lastfm-header-btn');
@@ -1685,11 +1951,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Check if we just returned from Last.fm authentication
     checkLastfmAuthReturn();
 
+    const userId = localStorage.getItem('userId');
+    console.log('[DEBUG] App Start. Found userId:', userId);
+
+    if (userId) {
+        console.log('[DEBUG] Calling updateProfileUI with userId:', userId);
+        updateProfileUI(userId);
+    }
+
     handleLastfmCallback();
 
 
     // If user is logged in, load fresh recommendations from DB
-    const userId = localStorage.getItem('userId');
     const lastfmUsername = localStorage.getItem('lastfm_username'); // Ensure we have this
 
     if (userId) {
@@ -1740,5 +2013,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else {
         // No user yet, keep any cached recommendations
         checkCachedRecommendations();
+    }
+});
+
+// Listener for Discogs Auth Popup
+window.addEventListener('message', function (event) {
+    if (event.data.type === 'DISCOGS_AUTH_SUCCESS') {
+        const payload = event.data.payload;
+        localStorage.setItem('userId', payload.user_id);
+        localStorage.setItem('discogs_username', payload.username);
+        // Set flag for wizard
+        localStorage.setItem('vinilogy_discogs_auth_completed', 'true');
+
+        // Reload main window to trigger initialization and Wizard
+        window.location.reload();
     }
 });
