@@ -4,7 +4,8 @@ from contextlib import asynccontextmanager
 import sys
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Optional
+
 from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -71,6 +72,8 @@ class SingleArtistRequest(BaseModel):
     top_albums: int = 3
     csv_mode: bool = False
     cache_only: bool = False
+    user_id: Optional[int] = None # Added for user context
+
 
 
 @asynccontextmanager
@@ -775,12 +778,7 @@ async def collection_recommendations(request: CollectionRecommendationRequest):
     return {"recommendations": recommendations, "total": len(recommendations)}
 
 
-class SingleArtistRequest(BaseModel):
-    artist_name: str
-    top_albums: int = 3
-    csv_mode: bool = False
-    cache_only: bool = False
-    user_id: int = None
+
 
 
 @app.post("/artist-single-recommendation")
@@ -873,12 +871,17 @@ async def artist_single_recommendation(request: SingleArtistRequest):
 
             # --- COMPLETION STRATEGY ---
             completion_count = 0
+            added_titles_norm = set() # Track added titles to prevent duplicates in current response
+            
             for album in discography:
                 if completion_count >= request.top_albums:
                     break
                 
                 t_norm = normalize_title(album.title)
-                if t_norm not in owned_titles_norm: # Totally new to collection
+                
+                # Check if already owned OR already added in this batch
+                # Also check against owned_vinyl_keys just in case an Upgrade was already added for this title
+                if t_norm not in owned_titles_norm and t_norm not in added_titles_norm and t_norm not in owned_vinyl_keys:
                     generated_recs.append({
                         "album_name": album.title,
                         "artist_name": request.artist_name,
@@ -887,6 +890,7 @@ async def artist_single_recommendation(request: SingleArtistRequest):
                         "image_url": album.cover_image,
                         "year": album.year
                     })
+                    added_titles_norm.add(t_norm)
                     completion_count += 1
 
             # 3. Persist
