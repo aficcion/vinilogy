@@ -157,8 +157,24 @@ cython_debug/
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/vinylbe.db-shm
+#.idea/
+
+# Vinylbe local state — never commit
+vinylbe.db
+vinylbe.db-shm
 vinylbe.db-wal
+vinylbe.db.backup*
+vinylbe.db.railway.backup*
 logs/
+backups/
 recovery_points/
+attached_assets/
 request_tokens.json
+service_logs.txt
+start_output.txt
+
+# Local env files (only .env.example is tracked)
+.env
+.env.*
+!.env.example
+

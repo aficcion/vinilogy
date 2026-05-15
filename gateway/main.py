@@ -30,14 +30,42 @@ PRICING_SERVICE_URL = os.getenv("PRICING_SERVICE_URL", "http://127.0.0.1:3003")
 LASTFM_SERVICE_URL = os.getenv("LASTFM_SERVICE_URL", "http://127.0.0.1:3004")
 SPOTIFY_SERVICE_URL = os.getenv("SPOTIFY_SERVICE_URL", "http://127.0.0.1:3005")
 
+REQUIRED_ENV_VARS = ("DISCOGS_KEY", "LASTFM_API_KEY", "LASTFM_API_SECRET")
+OPTIONAL_ENV_VARS = (
+    "DISCOGS_SECRET", "EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET",
+    "SCRAPINGBOT_API_KEY", "GOOGLE_CUSTOM_SEARCH_API_KEY",
+    "GOOGLE_CUSTOM_SEARCH_ENGINE_ID", "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET",
+)
+
+
+def _check_env() -> None:
+    missing_required = [v for v in REQUIRED_ENV_VARS if not os.getenv(v)]
+    missing_optional = [v for v in OPTIONAL_ENV_VARS if not os.getenv(v)]
+    if missing_optional:
+        logging.warning("Optional env vars not set: %s", ", ".join(missing_optional))
+    if missing_required:
+        raise RuntimeError(
+            f"Missing required environment variables: {', '.join(missing_required)}. "
+            f"Copy .env.example to .env and fill the values."
+        )
+
+
+_ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://localhost:5000,http://127.0.0.1:5000"
+    ).split(",") if o.strip()
+]
+
 http_client: Optional[httpx.AsyncClient] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _check_env()
     # Initialize DB tables on startup
     db.init_db()
-    
+
     global http_client
     http_client = httpx.AsyncClient(timeout=60.0)
     log_event("gateway", "INFO", "API Gateway started")
@@ -50,10 +78,10 @@ app = FastAPI(lifespan=lifespan, title="Vinyl Recommendation API Gateway")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 # Mount static files
@@ -1049,8 +1077,9 @@ async def get_release_details(release_id: int, user_id: Optional[int] = None):
     # Valid auth?
     headers = {"User-Agent": "Vinylbe/1.0"}
     
-    # Use environment token or hardcoded fallback
-    token = os.getenv("DISCOGS_KEY", "aWZbvONUDQtNKhHEQDAVxSHePAEeLSfFhJILcmvt")
+    token = os.getenv("DISCOGS_KEY")
+    if not token:
+        raise HTTPException(status_code=500, detail="DISCOGS_KEY not configured")
     
     try:
         url = f"https://api.discogs.com/releases/{release_id}"
