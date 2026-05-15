@@ -1548,7 +1548,7 @@
                 style="display: none;">📀 Mi Colección</button>
             <button id="profile-btn" class="theme-toggle" onclick="showProfile()" style="display: none;">👤 Mi
                 Perfil</button>
-            <button class="theme-toggle" onclick="toggleTheme()">🌓 Cambiar tema</button>
+            <button class="theme-toggle" onclick="toggleTheme()" aria-label="Cambiar tema claro/oscuro">🌓 Cambiar tema</button>
         </div>
     </div>
 
@@ -1693,7 +1693,7 @@
 
     <div id="album-detail-view">
         <div class="detail-container">
-            <button class="back-button" onclick="backToRecommendations()">
+            <button class="back-button" onclick="backToRecommendations()" aria-label="Volver a recomendaciones">
                 ← Volver a recomendaciones
             </button>
 
@@ -1715,7 +1715,7 @@
 
     <div id="profile-view" style="display: none;" class="container">
         <div class="recommendations-header">
-            <button class="back-button" onclick="showRecommendations()">
+            <button class="back-button" onclick="showRecommendations()" aria-label="Volver a recomendaciones">
                 ← Volver
             </button>
             <div class="recommendations-title-row">
@@ -1812,7 +1812,7 @@
 
     <div class="modal-overlay" id="artist-search-modal">
         <div class="modal-content">
-            <button class="modal-close" onclick="closeArtistSearch()">✕</button>
+            <button class="modal-close" onclick="closeArtistSearch()" aria-label="Cerrar búsqueda de artistas">✕</button>
             <div id="artist-search-container"></div>
         </div>
     </div>

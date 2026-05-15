@@ -1,8 +1,11 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Query
+from fastapi import FastAPI, HTTPException, UploadFile, File, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from contextlib import asynccontextmanager
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import os
 import sys
 from pathlib import Path
@@ -30,14 +33,44 @@ PRICING_SERVICE_URL = os.getenv("PRICING_SERVICE_URL", "http://127.0.0.1:3003")
 LASTFM_SERVICE_URL = os.getenv("LASTFM_SERVICE_URL", "http://127.0.0.1:3004")
 SPOTIFY_SERVICE_URL = os.getenv("SPOTIFY_SERVICE_URL", "http://127.0.0.1:3005")
 
+REQUIRED_ENV_VARS = ("DISCOGS_KEY", "LASTFM_API_KEY", "LASTFM_API_SECRET")
+OPTIONAL_ENV_VARS = (
+    "DISCOGS_SECRET", "EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET",
+    "SCRAPINGBOT_API_KEY", "GOOGLE_CUSTOM_SEARCH_API_KEY",
+    "GOOGLE_CUSTOM_SEARCH_ENGINE_ID", "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET",
+)
+
+
+def _check_env() -> None:
+    missing_required = [v for v in REQUIRED_ENV_VARS if not os.getenv(v)]
+    missing_optional = [v for v in OPTIONAL_ENV_VARS if not os.getenv(v)]
+    if missing_optional:
+        logging.warning("Optional env vars not set: %s", ", ".join(missing_optional))
+    if missing_required:
+        raise RuntimeError(
+            f"Missing required environment variables: {', '.join(missing_required)}. "
+            f"Copy .env.example to .env and fill the values."
+        )
+
+
+_ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://localhost:5000,http://127.0.0.1:5000"
+    ).split(",") if o.strip()
+]
+
+limiter = Limiter(key_func=get_remote_address)
+
 http_client: Optional[httpx.AsyncClient] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _check_env()
     # Initialize DB tables on startup
     db.init_db()
-    
+
     global http_client
     http_client = httpx.AsyncClient(timeout=60.0)
     log_event("gateway", "INFO", "API Gateway started")
@@ -48,12 +81,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan, title="Vinyl Recommendation API Gateway")
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 # Mount static files
@@ -123,7 +159,8 @@ async def health_check():
 
 
 @app.get("/auth/lastfm/login")
-async def lastfm_login():
+@limiter.limit("10/minute")
+async def lastfm_login(request: Request):
     if not http_client:
         raise HTTPException(status_code=500, detail="HTTP client not initialized")
     try:
@@ -179,21 +216,23 @@ class LinkLastFmRequest(BaseModel):
     lastfm_username: str = Field(..., description="Last.fm username to link")
 
 @app.post("/auth/google")
-async def auth_google(request: GoogleLoginRequest):
+@limiter.limit("10/minute")
+async def auth_google(request: Request, body: GoogleLoginRequest):
     """Create or retrieve a user via Google OAuth credentials."""
     try:
         user_id = db.get_or_create_user_via_google(
-            email=request.email,
-            display_name=request.display_name,
-            google_sub=request.google_sub,
+            email=body.email,
+            display_name=body.display_name,
+            google_sub=body.google_sub,
         )
-        return {"user_id": user_id, "display_name": request.display_name}
+        return {"user_id": user_id, "display_name": body.display_name}
     except Exception as e:
         log_event("gateway", "ERROR", f"Google login failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Google login error: {str(e)}")
 
 @app.post("/auth/guest")
-async def create_guest_user():
+@limiter.limit("10/minute")
+async def create_guest_user(request: Request):
     """Create a guest user for anonymous usage."""
     try:
         # Create a guest user with a unique display name
@@ -974,10 +1013,11 @@ async def update_recommendation_status(user_id: int, rec_id: int, update: Recomm
         raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
 
 @app.post("/users/{user_id}/recommendations/regenerate")
-async def regenerate_recommendations_endpoint(user_id: int, request: RegenerateRecommendationsRequest):
+@limiter.limit("5/minute")
+async def regenerate_recommendations_endpoint(request: Request, user_id: int, body: RegenerateRecommendationsRequest):
     """Regenerate recommendations based on new data."""
     try:
-        db.regenerate_recommendations(user_id, request.new_recs)
+        db.regenerate_recommendations(user_id, body.new_recs)
         return {"status": "regenerated"}
     except Exception as e:
         log_event("gateway", "ERROR", f"Regenerate failed: {str(e)}")
@@ -1049,8 +1089,9 @@ async def get_release_details(release_id: int, user_id: Optional[int] = None):
     # Valid auth?
     headers = {"User-Agent": "Vinylbe/1.0"}
     
-    # Use environment token or hardcoded fallback
-    token = os.getenv("DISCOGS_KEY", "aWZbvONUDQtNKhHEQDAVxSHePAEeLSfFhJILcmvt")
+    token = os.getenv("DISCOGS_KEY")
+    if not token:
+        raise HTTPException(status_code=500, detail="DISCOGS_KEY not configured")
     
     try:
         url = f"https://api.discogs.com/releases/{release_id}"
@@ -1649,7 +1690,8 @@ async def search_spotify_artists(q: str, limit: int = 10):
 
 
 @app.get("/api/search")
-async def unified_search(q: str, limit: int = 20):
+@limiter.limit("30/minute")
+async def unified_search(request: Request, q: str, limit: int = 20):
     """
     Unified search endpoint for both artists and albums.
     Searches Spotify for artists and database+Discogs for albums, then deduplicates results.
@@ -1850,17 +1892,18 @@ async def get_spotify_recommendations(request: dict):
 
 
 @app.post("/api/lastfm/recommendations")
-async def get_lastfm_recommendations(request: dict):
+@limiter.limit("5/minute")
+async def get_lastfm_recommendations(request: Request, body: dict):
     if not http_client:
         raise HTTPException(status_code=500, detail="HTTP client not initialized")
     
     start_time = time.time()
-    time_range = request.get("time_range", "medium_term")
-    username = request.get("username")
-    
+    time_range = body.get("time_range", "medium_term")
+    username = body.get("username")
+
     if not username:
         raise HTTPException(status_code=400, detail="username is required")
-    
+
     log_event("gateway", "INFO", f"Starting Last.fm recommendation flow for {username} (time_range={time_range})")
     
     try:
@@ -1924,15 +1967,16 @@ async def get_recommendations_progress():
 
 
 @app.post("/api/recommendations/artist-single")
-async def get_single_artist_recommendations(request: dict):
+@limiter.limit("5/minute")
+async def get_single_artist_recommendations(request: Request, body: dict):
     if not http_client:
         raise HTTPException(status_code=500, detail="HTTP client not initialized")
     
-    artist_name = request.get("artist_name")
-    top_albums = request.get("top_albums", 3)
-    csv_mode = request.get("csv_mode", False)
-    user_id = request.get("user_id")
-    
+    artist_name = body.get("artist_name")
+    top_albums = body.get("top_albums", 3)
+    csv_mode = body.get("csv_mode", False)
+    user_id = body.get("user_id")
+
     if not artist_name:
         raise HTTPException(status_code=400, detail="artist_name is required")
     

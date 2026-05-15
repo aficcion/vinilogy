@@ -1,6 +1,8 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import asyncio
+import functools
 import sys
 import os
 from pathlib import Path
@@ -425,16 +427,19 @@ async def artist_recommendations(request: ArtistRecommendationRequest):
         progress_state["current_artist"] = artist_name
     
     try:
-        recommendations = get_artist_based_recommendations(
-            request.artist_names,
-            discogs_key,
-            discogs_secret,
-            top_per_artist=request.top_per_artist,
-            progress_callback=update_progress
+        recommendations = await asyncio.to_thread(
+            functools.partial(
+                get_artist_based_recommendations,
+                request.artist_names,
+                discogs_key,
+                discogs_secret,
+                top_per_artist=request.top_per_artist,
+                progress_callback=update_progress,
+            )
         )
-        
+
         progress_state["status"] = "completed"
-        
+
         elapsed = time.time() - start_time
         log_event("recommender-service", "INFO", f"Generated {len(recommendations)} artist-based recommendations in {elapsed:.2f}s")
         return {"recommendations": recommendations, "total": len(recommendations)}
@@ -843,9 +848,12 @@ async def artist_single_recommendation(request: SingleArtistRequest):
 
             # 2. Fetch Discography (Cache -> Discogs Search Only) used to be Cache -> MB -> Discogs
             # As per user request: DB + Single Discogs Call (No MB)
-            discography = get_artist_studio_albums(
-                request.artist_name, discogs_key, discogs_secret, 
-                top_n=50, use_mb=False, cache_only=False
+            discography = await asyncio.to_thread(
+                functools.partial(
+                    get_artist_studio_albums,
+                    request.artist_name, discogs_key, discogs_secret,
+                    top_n=50, use_mb=False, cache_only=False,
+                )
             )
 
             
@@ -911,15 +919,18 @@ async def artist_single_recommendation(request: SingleArtistRequest):
     # --- MODE B: Legacy / Simple (No User Context) ---
     try:
         # 1. Try to get from DB (Cache Only)
-        albums = get_artist_studio_albums(
-            request.artist_name,
-            discogs_key,
-            discogs_secret,
-            top_n=request.top_albums,
-            csv_mode=request.csv_mode,
-            cache_only=True
+        albums = await asyncio.to_thread(
+            functools.partial(
+                get_artist_studio_albums,
+                request.artist_name,
+                discogs_key,
+                discogs_secret,
+                top_n=request.top_albums,
+                csv_mode=request.csv_mode,
+                cache_only=True,
+            )
         )
-        
+
         if albums:
             # CACHE HIT
             recommendations = []
@@ -936,20 +947,23 @@ async def artist_single_recommendation(request: SingleArtistRequest):
                     "source": "artist_based"
                 }
                 recommendations.append(rec)
-            
+
             elapsed = time.time() - start_time
             log_event("recommender-service", "INFO", f"✓ Cache HIT for {request.artist_name}")
             return {"recommendations": recommendations, "total": len(recommendations), "artist_name": request.artist_name}
-            
+
         else:
             # CACHE MISS
             log_event("recommender-service", "INFO", f"○ Cache MISS for {request.artist_name}. Using Discogs Search.")
-            
-            discogs_albums = get_top_albums_from_discogs_search(
-                request.artist_name,
-                discogs_key,
-                discogs_secret,
-                limit=request.top_albums
+
+            discogs_albums = await asyncio.to_thread(
+                functools.partial(
+                    get_top_albums_from_discogs_search,
+                    request.artist_name,
+                    discogs_key,
+                    discogs_secret,
+                    limit=request.top_albums,
+                )
             )
             
             recommendations = []
@@ -1277,13 +1291,16 @@ async def generate_targeted_recommendations(request: CollectionPreferencesReques
                     
                     # Use get_artist_studio_albums which handles caching
                     # Returns list of StudioAlbum objects
-                    vinyls_objs = get_artist_studio_albums(
-                        artist, 
-                        os.getenv("DISCOGS_KEY"), 
-                        os.getenv("DISCOGS_SECRET"), 
-                        top_n=100, # Large enough to cover discography
-                        cache_only=False,
-                        use_mb=False # User requested Discogs-only flow
+                    vinyls_objs = await asyncio.to_thread(
+                        functools.partial(
+                            get_artist_studio_albums,
+                            artist,
+                            os.getenv("DISCOGS_KEY"),
+                            os.getenv("DISCOGS_SECRET"),
+                            top_n=100,
+                            cache_only=False,
+                            use_mb=False,
+                        )
                     )
                     
                     # Convert to list of dicts for matching logic
@@ -1343,7 +1360,12 @@ async def generate_targeted_recommendations(request: CollectionPreferencesReques
                 # Reuse existing logic: get_artist_studio_albums -> filter owned -> return top missing
                 try:
                     # Increased limit from 5 to 50 to ensure we find albums the user DOESN'T have
-                    results = get_top_albums_from_discogs_search(artist, discogs_key, discogs_secret, limit=50)
+                    results = await asyncio.to_thread(
+                        functools.partial(
+                            get_top_albums_from_discogs_search,
+                            artist, discogs_key, discogs_secret, limit=50,
+                        )
+                    )
                     
                     conn = db_utils.get_db_connection()
                     cur = conn.cursor()
