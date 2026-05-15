@@ -1,31 +1,32 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Query, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
-from contextlib import asynccontextmanager
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
-import os
-import sys
-from pathlib import Path
-import httpx
 import asyncio
-import time
 import csv
 import json
-import re
-from typing import AsyncGenerator, Optional, List, Dict, Any
 import logging
+import os
+import re
+import sys
+import time
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import httpx
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 logging.basicConfig(level=logging.INFO)
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from libs.shared.models import ServiceHealth
+from gateway import db, db_utils, recommendation_logger, seeder
 from libs.shared.utils import log_event
-from gateway import db_utils, seeder, db, recommendation_logger
 
 DISCOGS_SERVICE_URL = os.getenv("DISCOGS_SERVICE_URL", "http://127.0.0.1:3001")
 RECOMMENDER_SERVICE_URL = os.getenv("RECOMMENDER_SERVICE_URL", "http://127.0.0.1:3002")
@@ -62,7 +63,7 @@ _ALLOWED_ORIGINS = [
 
 limiter = Limiter(key_func=get_remote_address)
 
-http_client: Optional[httpx.AsyncClient] = None
+http_client: httpx.AsyncClient | None = None
 
 
 @asynccontextmanager
@@ -127,9 +128,9 @@ async def release_page():
 async def health_check():
     if not http_client:
         raise HTTPException(status_code=500, detail="HTTP client not initialized")
-    
+
     services_health = {}
-    
+
     for service_name, service_url in [
         ("discogs", DISCOGS_SERVICE_URL),
         ("recommender", RECOMMENDER_SERVICE_URL),
@@ -146,9 +147,9 @@ async def health_check():
                 "status": "unhealthy",
                 "error": str(e)
             }
-    
+
     all_healthy = all(s.get("status") == "healthy" for s in services_health.values())
-    
+
     return {
         "gateway": "healthy",
         "services": services_health,
@@ -180,7 +181,7 @@ async def lastfm_callback(token: str):
     try:
         resp = await http_client.post(f"{LASTFM_SERVICE_URL}/auth/callback?token={token}")
         data = resp.json()
-        
+
         if data.get("status") == "success":
             log_event("gateway", "INFO", f"Last.fm authentication successful for user: {data.get('username')}")
             return {"status": "ok", "username": data.get("username")}
@@ -198,6 +199,7 @@ async def lastfm_callback(token: str):
 
 from pydantic import BaseModel, Field
 
+
 class GoogleLoginRequest(BaseModel):
     email: str = Field(..., description="User email from Google OAuth")
     display_name: str = Field(..., description="User display name from Google")
@@ -205,11 +207,11 @@ class GoogleLoginRequest(BaseModel):
 
 class LastFmLoginRequest(BaseModel):
     lastfm_username: str = Field(..., description="Last.fm username for login")
-    user_id: Optional[int] = Field(default=None, description="Existing user ID to link account to")
-    selected_artists: Optional[List[str]] = Field(default=None, description="Guest selected artists to sync")
-    album_statuses: Optional[Dict[str, str]] = Field(default=None, description="Guest album statuses to sync")
-    recommendations: Optional[List[Dict[str, Any]]] = Field(default=None, description="Guest recommendations to sync")
-    manually_added_albums: Optional[List[Dict[str, Any]]] = Field(default=None, description="Guest manually added albums to sync")
+    user_id: int | None = Field(default=None, description="Existing user ID to link account to")
+    selected_artists: list[str] | None = Field(default=None, description="Guest selected artists to sync")
+    album_statuses: dict[str, str] | None = Field(default=None, description="Guest album statuses to sync")
+    recommendations: list[dict[str, Any]] | None = Field(default=None, description="Guest recommendations to sync")
+    manually_added_albums: list[dict[str, Any]] | None = Field(default=None, description="Guest manually added albums to sync")
 
 class LinkLastFmRequest(BaseModel):
     user_id: int = Field(..., description="Existing user ID to link Last.fm identity to")
@@ -238,7 +240,7 @@ async def create_guest_user(request: Request):
         # Create a guest user with a unique display name
         import uuid
         guest_name = f"Guest_{uuid.uuid4().hex[:8]}"
-        
+
         conn = db.get_connection()
         try:
             cur = conn.cursor()
@@ -266,7 +268,7 @@ async def create_guest_user(request: Request):
 request_tokens = {}
 if os.path.exists("request_tokens.json"):
     try:
-        with open("request_tokens.json", "r") as f:
+        with open("request_tokens.json") as f:
             request_tokens = json.load(f)
         print(f"DEBUG: Loaded {len(request_tokens)} tokens from disk.", flush=True)
     except Exception as e:
@@ -275,13 +277,13 @@ if os.path.exists("request_tokens.json"):
 class DiscogsLoginRequest(BaseModel):
     # For handling guest merge, we might need manual data in body if not using cookie session
     # But usually callback is a GET.
-    # We will handle guest merge in a separate POST if needed, OR we rely on client sending guest data 
-    # AFTER login is confirmed. 
-    # Current Last.fm flow does POST /auth/lastfm with body. 
+    # We will handle guest merge in a separate POST if needed, OR we rely on client sending guest data
+    # AFTER login is confirmed.
+    # Current Last.fm flow does POST /auth/lastfm with body.
     # Discogs flow is 3-legged OAuth involving redirect.
     # The callback returns to frontend, frontend calls backend to finalize?
     # Or backend handles callback directly?
-    # Standard OAuth 1.0a: 
+    # Standard OAuth 1.0a:
     # 1. Backend gets Request Token, redirects User.
     # 2. User authorizes, redirects to Callback URL (Frontend or Backend).
     # 3. If Frontend, it extracts verifier and calls Backend.
@@ -293,24 +295,24 @@ async def discogs_login():
     """Step 1: Get Auth URL for Discogs."""
     if not http_client:
         raise HTTPException(status_code=500, detail="HTTP client not initialized")
-    
-    # Callback URL should point to FRONTEND to handle the flow smoothly 
-    # or BACKEND if we want server-side only. 
+
+    # Callback URL should point to FRONTEND to handle the flow smoothly
+    # or BACKEND if we want server-side only.
     # Given the app architecture (SPA-like), forwarding to Frontend callback.html is best.
-    # callback_url = "http://localhost:8000/callback.html?provider=discogs" 
+    # callback_url = "http://localhost:8000/callback.html?provider=discogs"
     # We need to ensure the domain matches.
     # For now, hardcoding or using referer logic.
     base_url = os.getenv("PUBLIC_URL", "http://localhost:5000").rstrip("/")
     callback_url = f"{base_url}/callback.html"
-    
+
     try:
         resp = await http_client.get(f"{DISCOGS_SERVICE_URL}/auth/url", params={"callback_url": callback_url})
         data = resp.json()
-        
+
         # Store secret locally (naively)
         # oauth_token is the key
         request_tokens[data['oauth_token']] = data['oauth_token_secret']
-        
+
         return data
     except Exception as e:
         log_event("gateway", "ERROR", f"Discogs login init failed: {e}")
@@ -324,32 +326,32 @@ async def discogs_login():
                 json.dump(request_tokens, f)
         except Exception as ex:
             print(f"DEBUG: Failed to save tokens: {ex}", flush=True)
-            
+
         log_event("gateway", "INFO", f"Stored request token: {data.get('oauth_token')}")
 
 class DiscogsCallbackRequest(BaseModel):
     oauth_token: str
     oauth_verifier: str
-    user_id: Optional[int] = Field(default=None, description="Existing user ID for account linking")
+    user_id: int | None = Field(default=None, description="Existing user ID for account linking")
     # Fields for guest sync
-    selected_artists: Optional[List[str]] = Field(default=None)
-    album_statuses: Optional[Dict[str, str]] = Field(default=None)
-    recommendations: Optional[List[Dict[str, Any]]] = Field(default=None)
-    manually_added_albums: Optional[List[Dict[str, Any]]] = Field(default=None)
+    selected_artists: list[str] | None = Field(default=None)
+    album_statuses: dict[str, str] | None = Field(default=None)
+    recommendations: list[dict[str, Any]] | None = Field(default=None)
+    manually_added_albums: list[dict[str, Any]] | None = Field(default=None)
 
 @app.post("/auth/discogs/callback")
 async def discogs_finalize(request: DiscogsCallbackRequest):
     """Step 3: Exchange verifier for access token and login/create user."""
     if not http_client:
         raise HTTPException(status_code=500, detail="HTTP client not initialized")
-    
+
     # Retrieve secret
     print(f"DEBUG: Finalizing Discogs. Token: {request.oauth_token} in dict {id(request_tokens)}. Available keys: {list(request_tokens.keys())}", flush=True)
-    
+
     if request.oauth_token not in request_tokens:
         # Reload from disk (handle multi-worker case)
         try:
-             with open("request_tokens.json", "r") as f:
+             with open("request_tokens.json") as f:
                 request_tokens.update(json.load(f))
              print(f"DEBUG: Reloaded tokens from disk. Keys: {list(request_tokens.keys())}", flush=True)
         except Exception as e:
@@ -357,7 +359,7 @@ async def discogs_finalize(request: DiscogsCallbackRequest):
 
     req_secret = request_tokens.pop(request.oauth_token, None)
     print(f"DEBUG: Retrieved secret for {request.oauth_token}: {req_secret}", flush=True)
-    
+
     # Persist removal
     try:
         with open("request_tokens.json", "w") as f:
@@ -367,7 +369,7 @@ async def discogs_finalize(request: DiscogsCallbackRequest):
     if not req_secret:
         print(f"DEBUG: Token {request.oauth_token} not found.", flush=True)
         raise HTTPException(status_code=400, detail="Invalid or expired request token")
-    
+
     try:
         # Exchange for Access Token
         resp = await http_client.post(
@@ -380,23 +382,23 @@ async def discogs_finalize(request: DiscogsCallbackRequest):
         )
         if resp.status_code != 200:
              raise HTTPException(status_code=400, detail="Failed to verify with Discogs")
-        
+
         token_data = resp.json()
         access_token = token_data['oauth_token']
         access_token_secret = token_data['oauth_token_secret']
-        
+
         # Get Identity
         id_resp = await http_client.get(
-            f"{DISCOGS_SERVICE_URL}/auth/identity", 
+            f"{DISCOGS_SERVICE_URL}/auth/identity",
             params={"token": access_token, "secret": access_token_secret}
         )
         identity = id_resp.json()
         username = identity['username']
         discogs_id = identity['id']
-        
+
         # Login/Create User
         user_id = db.get_or_create_user_via_discogs(username, discogs_id, access_token, access_token_secret, existing_user_id=request.user_id)
-        
+
         # --- GUEST DATA SYNC (Copied & Adapted from Last.fm flow) ---
         # Reuse the logic!
         if request.selected_artists:
@@ -414,9 +416,9 @@ async def discogs_finalize(request: DiscogsCallbackRequest):
                     finally:
                          conn.close()
                     db.add_user_selected_artist(user_id, artist_name, source="manual")
-                except Exception as e:
+                except Exception:
                     pass
-        
+
         if request.album_statuses:
              for key, status in request.album_statuses.items():
                 try:
@@ -424,7 +426,7 @@ async def discogs_finalize(request: DiscogsCallbackRequest):
                     if len(parts) >= 2:
                         db.upsert_recommendation_status(user_id, parts[0], parts[1], status)
                 except: pass
-        
+
         if request.manually_added_albums:
              for album in request.manually_added_albums:
                 try:
@@ -433,7 +435,7 @@ async def discogs_finalize(request: DiscogsCallbackRequest):
                      # Ideally we'd factor out the 'add album' logic.
                      # Let's trust the logic is similar to Last.fm login block.
                      # For now, minimal sync to avoid massive code duplication without refactoring.
-                     pass 
+                     pass
                 except: pass
 
         if request.recommendations:
@@ -480,7 +482,7 @@ async def get_connections(user_id: int):
         cur = conn.cursor()
         cur.execute("SELECT provider, provider_user_id FROM auth_identity WHERE user_id = ?", (user_id,))
         rows = cur.fetchall()
-        
+
         # Get user display name (which is the username for Discogs users)
         cur.execute("SELECT display_name FROM user WHERE id = ?", (user_id,))
         user_res = cur.fetchone()
@@ -514,7 +516,7 @@ async def link_discogs(request: LinkDiscogsRequest):
     """Link Discogs to existing user."""
     if not http_client:
         raise HTTPException(status_code=500, detail="HTTP client not initialized")
-    
+
     # Retrieve secret
     print(f"DEBUG: Linking Discogs. Token: {request.oauth_token} in dict {id(request_tokens)}. Available keys: {list(request_tokens.keys())}", flush=True)
     req_secret = request_tokens.pop(request.oauth_token, None)
@@ -530,7 +532,7 @@ async def link_discogs(request: LinkDiscogsRequest):
         print(f"DEBUG: Token {request.oauth_token} not found.", flush=True)
         log_event("gateway", "ERROR", f"Token {request.oauth_token} not found in {list(request_tokens.keys())}")
         raise HTTPException(status_code=400, detail="Invalid or expired request token")
-    
+
     try:
         # Exchange for Access Token
         resp = await http_client.post(
@@ -543,14 +545,14 @@ async def link_discogs(request: LinkDiscogsRequest):
         )
         if resp.status_code != 200:
              raise HTTPException(status_code=400, detail="Failed to verify with Discogs")
-        
+
         token_data = resp.json()
         access_token = token_data['oauth_token']
         access_token_secret = token_data['oauth_token_secret']
-        
+
         # Get Identity
         id_resp = await http_client.get(
-            f"{DISCOGS_SERVICE_URL}/auth/identity", 
+            f"{DISCOGS_SERVICE_URL}/auth/identity",
             params={"token": access_token, "secret": access_token_secret}
         )
         identity = id_resp.json()
@@ -559,10 +561,10 @@ async def link_discogs(request: LinkDiscogsRequest):
 
         # Link
         db.link_discogs_to_existing_user(request.user_id, username, discogs_id, access_token, access_token_secret)
-        
+
         # Start background sync of collection
         asyncio.create_task(sync_user_collection_task(request.user_id, username, access_token, access_token_secret))
-        
+
         return {"status": "success", "username": username}
     except Exception as e:
         log_event("gateway", "ERROR", f"Discogs link failed: {e}")
@@ -584,12 +586,12 @@ async def sync_user_collection_task(user_id: int, username: str, token: str, sec
         log_event("gateway", "INFO", f"Starting background sync for user {username} ({user_id})")
         page = 1
         total_items = 0
-        
+
         while page <= 10: # Limit to 10 pages (~500 items) for safety
             msg = f"Syncing page {page}..."
             SYNC_STATUS[user_id]["message"] = msg
             log_event("gateway", "INFO", f"{msg} for {username}")
-            
+
             try:
                 resp = await http_client.post(
                     f"{DISCOGS_SERVICE_URL}/user/collection",
@@ -606,12 +608,12 @@ async def sync_user_collection_task(user_id: int, username: str, token: str, sec
                     log_event("gateway", "WARNING", f"Sync page {page} failed: {resp.text}")
                     SYNC_STATUS[user_id]["message"] = f"Error on page {page}"
                     break
-                
+
                 data = resp.json()
                 releases = data.get("releases", [])
                 if not releases:
                     break
-                
+
                 # Transform data for DB
                 items = []
                 for rel in releases:
@@ -620,11 +622,11 @@ async def sync_user_collection_task(user_id: int, username: str, token: str, sec
                     fmt_str = "OTHERS"
                     formats = basic.get("formats", [])
                     fmt_descriptions = []
-                    
+
                     if formats:
                         f_name = formats[0].get("name", "").upper()
                         fmt_descriptions = formats[0].get("descriptions", [])
-                        
+
                         if "VINYL" in f_name or "LP" in f_name or "7\"" in f_name:
                             fmt_str = "VINYL"
                         elif "CD" in f_name:
@@ -660,27 +662,27 @@ async def sync_user_collection_task(user_id: int, username: str, token: str, sec
                         "year": year,
                         "label": label
                     })
-                
+
                 # Sync to DB
                 db.sync_discogs_collection_items(user_id, items)
-                
+
                 total_items += len(items)
                 SYNC_STATUS[user_id]["processed"] = total_items
-                
+
                 pagination = data.get("pagination", {})
                 if page >= pagination.get("pages", 1):
                     break
                 page += 1
                 await asyncio.sleep(1) # Polite delay
-                
+
             except Exception as e:
                 log_event("gateway", "ERROR", f"Sync loop error on page {page}: {e}")
                 SYNC_STATUS[user_id]["message"] = f"Error: {str(e)}"
                 break
-                
+
         log_event("gateway", "INFO", f"Completed background sync for {username}")
         SYNC_STATUS[user_id] = {"status": "completed", "processed": total_items, "message": "Import completed"}
-        
+
     except Exception as e:
         log_event("gateway", "ERROR", f"Background sync failed: {e}")
         SYNC_STATUS[user_id] = {"status": "failed", "processed": 0, "message": str(e)}
@@ -690,12 +692,12 @@ async def lastfm_login_endpoint(request: LastFmLoginRequest):
     """Create or retrieve a user via Last.fm username and sync guest data."""
     try:
         user_id = db.get_or_create_user_via_lastfm(request.lastfm_username, existing_user_id=request.user_id)
-        
+
         # Sync guest data if provided
         # DEBUG: Write to file for debugging
         with open("/tmp/vinylbe_sync_debug.log", "a") as f:
             f.write(f"[{datetime.now()}] Endpoint called. selected_artists: {request.selected_artists}\n")
-        
+
         if request.selected_artists:
             log_event("gateway", "INFO", f"Syncing {len(request.selected_artists)} guest artists for user {user_id}")
             print(f"[DEBUG] Syncing guest artists: {request.selected_artists}")
@@ -705,7 +707,7 @@ async def lastfm_login_endpoint(request: LastFmLoginRequest):
                 try:
                     with open("/tmp/vinylbe_sync_debug.log", "a") as f:
                         f.write(f"[{datetime.now()}] Processing artist: {artist_name}\n")
-                    
+
                     # First, ensure the artist exists in the artists table (create partial record if needed)
                     conn = db.get_connection()
                     try:
@@ -724,7 +726,7 @@ async def lastfm_login_endpoint(request: LastFmLoginRequest):
                                 f.write(f"[{datetime.now()}] Created partial artist: {artist_name}\n")
                     finally:
                         conn.close()
-                    
+
                     # Now add to user's selected artists
                     with open("/tmp/vinylbe_sync_debug.log", "a") as f:
                         f.write(f"[{datetime.now()}] Calling add_user_selected_artist for: {artist_name}\n")
@@ -737,12 +739,12 @@ async def lastfm_login_endpoint(request: LastFmLoginRequest):
                     print(f"[DEBUG] Failed to add guest artist {artist_name}: {e}")
                     with open("/tmp/vinylbe_sync_debug.log", "a") as f:
                         f.write(f"[{datetime.now()}] ERROR for {artist_name}: {str(e)}\n")
-                    
+
         if request.album_statuses:
             log_event("gateway", "INFO", f"Syncing {len(request.album_statuses)} guest album statuses for user {user_id}")
             with open("/tmp/vinylbe_sync_debug.log", "a") as f:
                 f.write(f"[{datetime.now()}] Syncing {len(request.album_statuses)} album statuses: {request.album_statuses}\n")
-            
+
             for key, status in request.album_statuses.items():
                 try:
                     # Key format: "artist|album"
@@ -760,7 +762,7 @@ async def lastfm_login_endpoint(request: LastFmLoginRequest):
         else:
             with open("/tmp/vinylbe_sync_debug.log", "a") as f:
                 f.write(f"[{datetime.now()}] No album_statuses in request\n")
-        
+
         # Sync guest recommendations if provided
         if request.recommendations:
             try:
@@ -776,11 +778,11 @@ async def lastfm_login_endpoint(request: LastFmLoginRequest):
                 try:
                     artist_name = album.get('artist_name')
                     album_title = album.get('album_title') or album.get('album_name')
-                    
+
                     if not artist_name or not album_title:
                         log_event("gateway", "WARNING", f"Skipping album with missing data: {album}")
                         continue
-                    
+
                     # Check if recommendation already exists
                     conn = db.get_connection()
                     try:
@@ -790,7 +792,7 @@ async def lastfm_login_endpoint(request: LastFmLoginRequest):
                             (user_id, artist_name, album_title)
                         )
                         existing = cur.fetchone()
-                        
+
                         if not existing:
                             # Add new manual recommendation
                             cur.execute(
@@ -845,12 +847,12 @@ async def link_lastfm(request: LinkLastFmRequest):
 
 class LastFmProfileUpdate(BaseModel):
     lastfm_username: str
-    top_artists: List[Dict[str, Any]]
+    top_artists: list[dict[str, Any]]
 
 class SelectedArtistCreate(BaseModel):
     artist_name: str
-    mbid: Optional[str] = None
-    spotify_id: Optional[str] = None
+    mbid: str | None = None
+    spotify_id: str | None = None
     source: str = "manual"
 
 @app.get("/users/{user_id}/profile/lastfm")
@@ -902,34 +904,34 @@ class RecommendationStatusUpdate(BaseModel):
     new_status: str
 
 class RegenerateRecommendationsRequest(BaseModel):
-    new_recs: List[Dict[str, Any]]
+    new_recs: list[dict[str, Any]]
 
 @app.get("/users/{user_id}/recommendations")
 async def get_recommendations(user_id: int, include_favorites: bool = True):
     """Get recommendations for the user."""
     recommendations = db.get_recommendations_for_user(user_id, include_favorites)
-    
+
     # Map album_title (DB field) to album_name (frontend field) for compatibility
     for rec in recommendations:
         if 'album_title' in rec and 'album_name' not in rec:
             rec['album_name'] = rec['album_title']
         if 'cover_url' in rec and rec['cover_url']:
             rec['image_url'] = rec['cover_url']
-    
+
     return recommendations
 
 @app.get("/users/{user_id}/recommendations/favorites")
 async def get_favorites(user_id: int):
     """Get only favorite recommendations."""
     favorites = db.get_favorite_recommendations(user_id)
-    
+
     # Map album_title (DB field) to album_name (frontend field) for compatibility
     for rec in favorites:
         if 'album_title' in rec and 'album_name' not in rec:
             rec['album_name'] = rec['album_title']
         if 'cover_url' in rec and rec['cover_url']:
             rec['image_url'] = rec['cover_url']
-    
+
     return favorites
 
 @app.patch("/users/{user_id}/recommendations/{rec_id}")
@@ -938,7 +940,7 @@ async def update_recommendation_status(user_id: int, rec_id: int, update: Recomm
     try:
         # 1. Update status in DB
         db.update_recommendation_status(user_id, rec_id, update.new_status)
-        
+
         # 2. If 'owned', sync to collection
         if update.new_status == "owned":
             try:
@@ -948,10 +950,10 @@ async def update_recommendation_status(user_id: int, rec_id: int, update: Recomm
                     artist = rec['artist_name']
                     title = rec['album_title']
                     cover = rec.get('cover_url')
-                    
+
                     # Try local DB lookup for Discogs IDs
                     local_ids = db.get_album_discogs_ids(artist, title)
-                    
+
                     discogs_data = {}
                     if local_ids:
                         discogs_data = {
@@ -967,7 +969,7 @@ async def update_recommendation_status(user_id: int, rec_id: int, update: Recomm
                         log_event("gateway", "INFO", f"Searching Discogs for owned item fallback: {artist} - {title}")
                         if http_client:
                              resp = await http_client.get(
-                                f"{DISCOGS_SERVICE_URL}/search_album_only", 
+                                f"{DISCOGS_SERVICE_URL}/search_album_only",
                                 params={"q": f"{artist} \"{title}\"", "limit": 1}
                              )
                              if resp.status_code == 200:
@@ -1075,7 +1077,7 @@ async def get_collection_summary(user_id: int):
 
 
 @app.get("/api/release/{release_id}")
-async def get_release_details(release_id: int, user_id: Optional[int] = None):
+async def get_release_details(release_id: int, user_id: int | None = None):
     """
     Get full details for a release.
     Uses permanent cache to avoid Discogs API rate limits.
@@ -1084,20 +1086,20 @@ async def get_release_details(release_id: int, user_id: Optional[int] = None):
     cached = db.get_cached_release(release_id)
     if cached:
         return cached
-        
+
     # 2. Fetch from Discogs
     # Valid auth?
     headers = {"User-Agent": "Vinylbe/1.0"}
-    
+
     token = os.getenv("DISCOGS_KEY")
     if not token:
         raise HTTPException(status_code=500, detail="DISCOGS_KEY not configured")
-    
+
     try:
         url = f"https://api.discogs.com/releases/{release_id}"
         async with httpx.AsyncClient() as client:
             resp = await client.get(url, headers={"Authorization": f"Discogs token={token}", "User-Agent": "Vinylbe/1.0"})
-            
+
         if resp.status_code == 200:
             data = resp.json()
             # Cache it
@@ -1107,7 +1109,7 @@ async def get_release_details(release_id: int, user_id: Optional[int] = None):
             raise HTTPException(status_code=404, detail="Release not found on Discogs")
         else:
             raise HTTPException(status_code=resp.status_code, detail="Failed to fetch from Discogs")
-            
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1159,18 +1161,18 @@ async def add_album_to_user(user_id: int, album_data: dict):
         artist_name = album_data.get("artist_name")
         cover_url = album_data.get("cover_url")
         discogs_id = album_data.get("discogs_id")
-        
+
         if not album_title or not artist_name:
             raise HTTPException(status_code=400, detail="title and artist_name are required")
-        
+
         conn = db.get_connection()
         try:
             cur = conn.cursor()
-            
+
             # Check if artist exists
             cur.execute("SELECT id FROM artists WHERE name = ? COLLATE NOCASE", (artist_name,))
             artist_row = cur.fetchone()
-            
+
             if not artist_row:
                 # Create partial artist
                 cur.execute(
@@ -1181,14 +1183,14 @@ async def add_album_to_user(user_id: int, album_data: dict):
                 log_event("gateway", "INFO", f"Created partial artist: {artist_name}")
             else:
                 artist_id = artist_row["id"]
-            
+
             # Check if album exists
             cur.execute(
                 "SELECT id FROM albums WHERE artist_id = ? AND title = ? COLLATE NOCASE",
                 (artist_id, album_title)
             )
             album_row = cur.fetchone()
-            
+
             if not album_row:
                 # Create album
                 cur.execute(
@@ -1200,7 +1202,7 @@ async def add_album_to_user(user_id: int, album_data: dict):
             else:
                 album_id = album_row["id"]
                 log_event("gateway", "INFO", f"Album already exists: {album_title} by {artist_name}")
-            
+
             # Add to user's recommendations as neutral
             cur.execute(
                 """
@@ -1209,9 +1211,9 @@ async def add_album_to_user(user_id: int, album_data: dict):
                 """,
                 (user_id, artist_name, album_title)
             )
-            
+
             conn.commit()
-            
+
             return {
                 "status": "added",
                 "artist_id": artist_id,
@@ -1221,7 +1223,7 @@ async def add_album_to_user(user_id: int, album_data: dict):
             }
         finally:
             conn.close()
-            
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1252,16 +1254,16 @@ async def get_album_pricing(artist: str = Query(..., description="Artist name"),
     """
     if not http_client:
         raise HTTPException(status_code=500, detail="HTTP client not initialized")
-    
+
     start_time = time.time()
     log_event("gateway", "INFO", f"Getting pricing for: {artist} - {album}")
-    
+
     try:
         # Step 1: Check database for existing Discogs IDs
         conn = db.get_connection()
         try:
             cur = conn.cursor()
-            
+
             # Query for album in database
             cur.execute("""
                 SELECT a.discogs_master_id, a.discogs_release_id, a.spotify_id
@@ -1270,22 +1272,22 @@ async def get_album_pricing(artist: str = Query(..., description="Artist name"),
                 WHERE LOWER(ar.name) = LOWER(?) AND LOWER(a.title) = LOWER(?)
                 LIMIT 1
             """, (artist, album))
-            
+
             db_result = cur.fetchone()
         finally:
             conn.close()
-        
+
         # Step 2: Determine which Discogs ID to use and get Spotify ID
         discogs_type = None
         discogs_id = None
         discogs_url = None
         spotify_id = None
-        
+
         if db_result:
             db_master_id = db_result["discogs_master_id"]
             db_release_id = db_result["discogs_release_id"]
             spotify_id = db_result.get("spotify_id")
-            
+
             # Prioritize release over master (releases are more specific)
             if db_release_id:
                 discogs_type = "release"
@@ -1297,7 +1299,7 @@ async def get_album_pricing(artist: str = Query(..., description="Artist name"),
                 discogs_id = db_master_id
                 discogs_url = f"https://www.discogs.com/master/{db_master_id}"
                 log_event("gateway", "INFO", f"Using master ID from database: {db_master_id}")
-        
+
         # Step 3: If no IDs in database, search Discogs
         if not discogs_id:
             log_event("gateway", "INFO", f"No Discogs IDs in database, searching Discogs for: {artist} - {album}")
@@ -1310,12 +1312,12 @@ async def get_album_pricing(artist: str = Query(..., description="Artist name"),
             except Exception as e:
                 log_event("gateway", "WARNING", f"Discogs search failed: {str(e)}")
                 discogs_data = {"type": None, "id": None, "url": None}
-        
+
         # Step 4: Fetch tracklist and other data in parallel
         ebay_task = http_client.get(f"{PRICING_SERVICE_URL}/ebay-price", params={"artist": artist, "album": album})
         # Exclude FNAC from initial load to avoid 30s delay
         stores_task = http_client.get(f"{PRICING_SERVICE_URL}/local-stores", params={"artist": artist, "album": album, "exclude_fnac": True})
-        
+
         # If no spotify_id in database, search Spotify as fallback
         spotify_task = None
         if not spotify_id:
@@ -1324,31 +1326,31 @@ async def get_album_pricing(artist: str = Query(..., description="Artist name"),
                 f"{SPOTIFY_SERVICE_URL}/search/album",
                 params={"artist": artist, "album": album}
             )
-        
+
         # Gather all parallel tasks
         tasks = [ebay_task, stores_task]
         if spotify_task:
             tasks.append(spotify_task)
-        
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
         ebay_resp = results[0]
         stores_resp = results[1]
         spotify_resp = results[2] if len(results) > 2 else None
-        
+
         # Parse eBay response
         if isinstance(ebay_resp, Exception):
             log_event("gateway", "WARNING", f"eBay pricing failed: {str(ebay_resp)}")
             ebay_data = {"offer": None, "message": str(ebay_resp)}
         else:
             ebay_data = ebay_resp.json()
-        
+
         # Parse local stores response
         if isinstance(stores_resp, Exception):
             log_event("gateway", "WARNING", f"Local stores failed: {str(stores_resp)}")
             stores_data = {"stores": {}}
         else:
             stores_data = stores_resp.json()
-        
+
         # Parse Spotify response (fallback search)
         if spotify_resp and not isinstance(spotify_resp, Exception):
             try:
@@ -1360,11 +1362,11 @@ async def get_album_pricing(artist: str = Query(..., description="Artist name"),
                 log_event("gateway", "WARNING", f"Spotify search parsing failed: {str(e)}")
         elif spotify_resp and isinstance(spotify_resp, Exception):
             log_event("gateway", "WARNING", f"Spotify search failed: {str(spotify_resp)}")
-        
+
         # Step 5: Fetch tracklist based on type (release takes priority)
         tracklist_data = {"tracklist": []}
         discogs_sell_url = None
-        
+
         if discogs_type == "release" and discogs_id:
             try:
                 tracklist_resp = await http_client.get(f"{DISCOGS_SERVICE_URL}/release-tracklist/{discogs_id}")
@@ -1372,9 +1374,9 @@ async def get_album_pricing(artist: str = Query(..., description="Artist name"),
                 log_event("gateway", "INFO", f"Tracklist fetched for release {discogs_id}: {len(tracklist_data.get('tracklist', []))} tracks")
             except Exception as e:
                 log_event("gateway", "WARNING", f"Tracklist fetch failed for release: {str(e)}")
-            
+
             discogs_sell_url = f"https://www.discogs.com/sell/list?release_id={discogs_id}&currency=EUR&format=Vinyl"
-            
+
         elif discogs_type == "master" and discogs_id:
             try:
                 tracklist_resp = await http_client.get(f"{DISCOGS_SERVICE_URL}/master-tracklist/{discogs_id}")
@@ -1382,14 +1384,14 @@ async def get_album_pricing(artist: str = Query(..., description="Artist name"),
                 log_event("gateway", "INFO", f"Tracklist fetched for master {discogs_id}: {len(tracklist_data.get('tracklist', []))} tracks")
             except Exception as e:
                 log_event("gateway", "WARNING", f"Tracklist fetch failed for master: {str(e)}")
-            
+
             discogs_sell_url = f"https://www.discogs.com/sell/list?master_id={discogs_id}&currency=EUR&format=Vinyl"
         else:
             log_event("gateway", "INFO", f"No Discogs master or release found for {artist} - {album}")
-        
+
         elapsed = time.time() - start_time
         log_event("gateway", "INFO", f"Album info fetched for {artist} - {album} in {elapsed:.2f}s (type: {discogs_type or 'none'}, id: {discogs_id or 'none'})")
-        
+
         return {
             "artist": artist,
             "album": album,
@@ -1414,7 +1416,7 @@ async def get_album_pricing(artist: str = Query(..., description="Artist name"),
                 "used_id": discogs_id
             }
         }
-    
+
     except Exception as e:
         elapsed = time.time() - start_time
         log_event("gateway", "ERROR", f"Album pricing failed: {str(e)}")
@@ -1433,13 +1435,13 @@ async def get_fnac_pricing(artist: str = Query(..., description="Artist name"), 
     """
     # DISABLED per user request
     return {"fnac": None}
-    
+
     # try:
     #     async with httpx.AsyncClient(timeout=65.0) as client:
     #         response = await client.get(
     #             f"{PRICING_SERVICE_URL}/local-stores",
     #             params={
-    #                 "artist": artist, 
+    #                 "artist": artist,
     #                 "album": album,
     #                 "only_fnac": True
     #             }
@@ -1460,46 +1462,46 @@ async def get_fnac_pricing(artist: str = Query(..., description="Artist name"), 
         "total_releases_found": len(releases),
         "vinyl_releases_found": 0,
     }
-    
+
     if not releases:
         return [], debug_info
-    
+
     preferred_formats = ["LP", "Album", "Vinyl"]
-    
+
     vinyl_releases = []
     for release in releases:
         format_value = release.get("format", "")
-        
+
         if isinstance(format_value, list):
             format_str = " ".join(format_value).lower()
         else:
             format_str = str(format_value).lower()
-        
+
         is_vinyl = any(pref.lower() in format_str for pref in preferred_formats)
         if is_vinyl:
             vinyl_releases.append(release)
-    
+
     debug_info["vinyl_releases_found"] = len(vinyl_releases)
-    
+
     # Sort: originals first, then reissues/remasters
     originals = []
     reissues = []
-    
+
     for release in vinyl_releases:
         format_value = release.get("format", "")
         if isinstance(format_value, list):
             format_str = " ".join(format_value).lower()
         else:
             format_str = str(format_value).lower()
-            
+
         if "reissue" in format_str or "remaster" in format_str:
             reissues.append(release)
         else:
             originals.append(release)
-    
+
     # Return originals first, then reissues
     ordered_releases = originals + reissues
-    
+
     return ordered_releases, debug_info
 
 
@@ -1509,22 +1511,22 @@ async def enrich_album_with_discogs(album: dict, idx: int, total: int, semaphore
         album_info = album.get("album_info", {})
         artist_name = album_info.get("artists", [{}])[0].get("name", "Unknown")
         album_name = album_info.get("name", "Unknown")
-        
+
         log_event("gateway", "INFO", f"[{idx}/{total}] Processing: {artist_name} - {album_name}")
-        
+
         debug_info = {
             "status": None,
             "message": None,
             "details": {}
         }
-        
+
         try:
             search_resp = await http_client.get(
                 f"{DISCOGS_SERVICE_URL}/search",
                 params={"artist": artist_name, "title": album_name}
             )
             search_results = search_resp.json().get("results", [])
-            
+
             if not search_results:
                 album["discogs_release"] = None
                 album["discogs_stats"] = None
@@ -1534,11 +1536,11 @@ async def enrich_album_with_discogs(album: dict, idx: int, total: int, semaphore
                 log_event("gateway", "INFO", f"[{idx}/{total}] ○ Not found on Discogs: {album_name}")
                 album["discogs_debug_info"] = debug_info
                 return album
-            
+
             # Get all vinyl releases ordered by preference
             vinyl_releases, search_debug = get_vinyl_releases(search_results)
             debug_info["details"] = search_debug
-            
+
             if not vinyl_releases:
                 album["discogs_release"] = None
                 album["discogs_stats"] = None
@@ -1547,15 +1549,15 @@ async def enrich_album_with_discogs(album: dict, idx: int, total: int, semaphore
                 log_event("gateway", "INFO", f"[{idx}/{total}] ○ No vinyl: {album_name}")
                 album["discogs_debug_info"] = debug_info
                 return album
-            
+
             # Try up to 5 releases to find one with price
             max_attempts = min(5, len(vinyl_releases))
             debug_info["details"]["releases_tried"] = 0
             debug_info["details"]["releases_with_price"] = 0
-            
+
             selected_release = None
             selected_stats = None
-            
+
             for attempt_idx, release in enumerate(vinyl_releases[:max_attempts], 1):
                 release_id = release.get("id")
                 format_value = release.get("format", "")
@@ -1563,18 +1565,18 @@ async def enrich_album_with_discogs(album: dict, idx: int, total: int, semaphore
                     format_str = " ".join(format_value)
                 else:
                     format_str = str(format_value)
-                
+
                 log_event("gateway", "INFO", f"[{idx}/{total}] Trying release {attempt_idx}/{max_attempts}: ID {release_id} ({format_str})")
-                
+
                 try:
                     stats_resp = await http_client.get(
                         f"{DISCOGS_SERVICE_URL}/stats/{release_id}"
                     )
                     stats = stats_resp.json()
                     debug_info["details"]["releases_tried"] = attempt_idx
-                    
+
                     has_price = stats.get("lowest_price_eur") is not None and stats.get("lowest_price_eur") > 0
-                    
+
                     if has_price:
                         debug_info["details"]["releases_with_price"] += 1
                         selected_release = release
@@ -1585,16 +1587,16 @@ async def enrich_album_with_discogs(album: dict, idx: int, total: int, semaphore
                         break
                     else:
                         log_event("gateway", "INFO", f"[{idx}/{total}] ○ Release {release_id} has no price, trying next...")
-                        
+
                 except Exception as e:
                     log_event("gateway", "WARNING", f"[{idx}/{total}] Failed to get stats for release {release_id}: {str(e)}")
                     continue
-            
+
             # If we didn't find any with price, use the first release anyway
             if not selected_release:
                 selected_release = vinyl_releases[0]
                 release_id = selected_release.get("id")
-                
+
                 # Set debug info for fallback selection
                 debug_info["details"]["selected_release_index"] = 1
                 format_value = selected_release.get("format", "")
@@ -1602,7 +1604,7 @@ async def enrich_album_with_discogs(album: dict, idx: int, total: int, semaphore
                     debug_info["details"]["selected_format"] = " ".join(format_value)
                 else:
                     debug_info["details"]["selected_format"] = str(format_value)
-                
+
                 try:
                     stats_resp = await http_client.get(
                         f"{DISCOGS_SERVICE_URL}/stats/{release_id}"
@@ -1610,7 +1612,7 @@ async def enrich_album_with_discogs(album: dict, idx: int, total: int, semaphore
                     selected_stats = stats_resp.json()
                 except Exception as e:
                     log_event("gateway", "WARNING", f"[{idx}/{total}] Failed to get stats for fallback release: {str(e)}")
-                    
+
                     # Get sell list URL with master_id from Discogs service
                     sell_url = f"https://www.discogs.com/sell/list?release_id={release_id}&currency=EUR&format=Vinyl"
                     try:
@@ -1618,19 +1620,19 @@ async def enrich_album_with_discogs(album: dict, idx: int, total: int, semaphore
                         sell_url = url_resp.json().get("url", sell_url)
                     except:
                         pass
-                    
+
                     selected_stats = {
                         "release_id": release_id,
                         "lowest_price_eur": None,
                         "num_for_sale": 0,
                         "sell_list_url": sell_url
                     }
-            
+
             album["discogs_release"] = selected_release
             album["discogs_stats"] = selected_stats
-            
+
             has_price = selected_stats.get("lowest_price_eur") is not None and selected_stats.get("lowest_price_eur") > 0
-            
+
             if has_price:
                 debug_info["status"] = "success"
                 format_val = selected_release.get("format", "")
@@ -1644,7 +1646,7 @@ async def enrich_album_with_discogs(album: dict, idx: int, total: int, semaphore
                 debug_info["status"] = "no_price"
                 debug_info["message"] = f"Probados {debug_info['details']['releases_tried']} releases, ninguno con precio"
                 log_event("gateway", "INFO", f"[{idx}/{total}] ⚠ No price found after trying {debug_info['details']['releases_tried']} releases: {album_name}")
-                
+
         except Exception as e:
             log_event("gateway", "WARNING", f"[{idx}/{total}] ✗ Failed: {album_name} - {str(e)}")
             album["discogs_release"] = None
@@ -1652,7 +1654,7 @@ async def enrich_album_with_discogs(album: dict, idx: int, total: int, semaphore
             debug_info["status"] = "error"
             debug_info["message"] = f"Error: {str(e)}"
             debug_info["details"] = {}
-        
+
         album["discogs_debug_info"] = debug_info
         return album
 
@@ -1668,7 +1670,7 @@ async def search_spotify_artists(q: str, limit: int = 10):
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.get(
-                f"{SPOTIFY_SERVICE_URL}/search/artists", 
+                f"{SPOTIFY_SERVICE_URL}/search/artists",
                 params={"q": q, "limit": limit},
                 timeout=10.0
             )
@@ -1698,10 +1700,10 @@ async def unified_search(request: Request, q: str, limit: int = 20):
     """
     if not http_client:
         raise HTTPException(status_code=500, detail="HTTP client not initialized")
-    
+
     if len(q) < 3:
         return {"artists": [], "albums": []}
-    
+
     try:
         # Search Spotify for artists (not database)
         spotify_artists = []
@@ -1716,10 +1718,10 @@ async def unified_search(request: Request, q: str, limit: int = 20):
                 spotify_artists = spotify_data.get("artists", [])
         except Exception as e:
             log_event("gateway", "WARNING", f"Spotify search failed: {str(e)}")
-        
+
         # Search database for albums
         db_albums = db.search_albums(q, limit=20)
-        
+
         # Search Discogs for albums
         discogs_albums = []
         try:
@@ -1736,23 +1738,23 @@ async def unified_search(request: Request, q: str, limit: int = 20):
                 log_event("gateway", "WARNING", "Discogs rate limit hit, using DB results only")
         except Exception as e:
             log_event("gateway", "WARNING", f"Discogs search failed: {str(e)}")
-        
+
         # Helper function to normalize artist names (remove numbers in parentheses)
         def normalize_artist_name(name: str) -> str:
             import re
             # Remove patterns like " (11)" or " (2)" at the end
             return re.sub(r'\s*\(\d+\)$', '', name).strip()
-        
+
         # Helper function to create deduplication key
         def create_album_key(artist: str, title: str) -> str:
             # Normalize both artist and title for better matching
             artist_norm = normalize_artist_name(artist).lower().strip()
             title_norm = title.lower().strip()
             return f"{artist_norm}|{title_norm}"
-        
+
         # Format and deduplicate albums
         albums_map = {}
-        
+
         # Add DB albums first (they have priority)
         for album in db_albums:
             artist_name = album.get('artist_name', '')
@@ -1765,7 +1767,7 @@ async def unified_search(request: Request, q: str, limit: int = 20):
                 "source": "database",
                 "is_partial": album.get("is_partial", 0)
             }
-        
+
         # Add Discogs albums (if not already in DB)
         for album in discogs_albums:
             title = album.get("title", "")
@@ -1777,7 +1779,7 @@ async def unified_search(request: Request, q: str, limit: int = 20):
             else:
                 artist_name = ""
                 album_title = title
-            
+
             key = create_album_key(artist_name, album_title)
             if key not in albums_map:
                 albums_map[key] = {
@@ -1788,21 +1790,21 @@ async def unified_search(request: Request, q: str, limit: int = 20):
                     "discogs_id": album.get("id"),
                     "is_partial": 1  # Discogs results are partial until added
                 }
-        
+
         # Format artists from Spotify with custom ordering:
         # First result stays first, rest sorted by popularity
         if spotify_artists:
             first_artist = spotify_artists[0]
             remaining_artists = spotify_artists[1:]
-            
+
             # Sort remaining by popularity (highest first)
             remaining_artists.sort(key=lambda x: x.get("popularity", 0), reverse=True)
-            
+
             # Reconstruct list: first + sorted rest
             ordered_spotify_artists = [first_artist] + remaining_artists
         else:
             ordered_spotify_artists = []
-        
+
         artists = [
             {
                 "name": artist.get("name"),
@@ -1813,12 +1815,12 @@ async def unified_search(request: Request, q: str, limit: int = 20):
             }
             for artist in ordered_spotify_artists
         ]
-        
+
         return {
             "artists": artists,
             "albums": list(albums_map.values())[:limit]
         }
-        
+
     except Exception as e:
         log_event("gateway", "ERROR", f"Unified search failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
@@ -1833,12 +1835,12 @@ async def unified_search(request: Request, q: str, limit: int = 20):
 async def get_lastfm_top_artists(request: dict):
     if not http_client:
         raise HTTPException(status_code=500, detail="HTTP client not initialized")
-    
+
     artist_name = request.get("artist_name")
-    
+
     if not artist_name:
         raise HTTPException(status_code=400, detail="artist_name is required")
-    
+
     try:
         resp = await http_client.post(
             f"{RECOMMENDER_SERVICE_URL}/artist-single-recommendation",
@@ -1855,20 +1857,20 @@ async def get_spotify_recommendations(request: dict):
     """Get recommendations using Spotify (fast fallback)"""
     if not http_client:
         raise HTTPException(status_code=500, detail="HTTP client not initialized")
-    
+
     artist_name = request.get("artist_name")
     user_id = request.get("user_id")  # Optional: for logging purposes
-    
+
     if not artist_name:
         raise HTTPException(status_code=400, detail="artist_name is required")
-    
+
     try:
         resp = await http_client.post(
             f"{RECOMMENDER_SERVICE_URL}/spotify-recommendations",
             json=request
         )
         data = resp.json()
-        
+
         # Log the recommendation generation (always log, use user_id=0 if not provided)
         recommendations = data.get("recommendations", [])
         if recommendations:
@@ -1882,9 +1884,9 @@ async def get_spotify_recommendations(request: dict):
                     "endpoint": "/api/recommendations/spotify"
                 }
             )
-            log_event("gateway", "INFO", 
+            log_event("gateway", "INFO",
                      f"Logged {len(recommendations)} Spotify recommendations for {artist_name}")
-        
+
         return data
     except Exception as e:
         log_event("gateway", "ERROR", f"Spotify recommendation failed: {str(e)}")
@@ -1896,7 +1898,7 @@ async def get_spotify_recommendations(request: dict):
 async def get_lastfm_recommendations(request: Request, body: dict):
     if not http_client:
         raise HTTPException(status_code=500, detail="HTTP client not initialized")
-    
+
     start_time = time.time()
     time_range = body.get("time_range", "medium_term")
     username = body.get("username")
@@ -1905,7 +1907,7 @@ async def get_lastfm_recommendations(request: Request, body: dict):
         raise HTTPException(status_code=400, detail="username is required")
 
     log_event("gateway", "INFO", f"Starting Last.fm recommendation flow for {username} (time_range={time_range})")
-    
+
     try:
         log_event("gateway", "INFO", "Step 1: Fetching top albums from Last.fm (simplified)")
         albums_resp = await http_client.post(
@@ -1915,7 +1917,7 @@ async def get_lastfm_recommendations(request: Request, body: dict):
         albums_data = albums_resp.json()
         all_albums = albums_data.get("albums", [])
         log_event("gateway", "INFO", f"Fetched {len(all_albums)} Last.fm top albums")
-        
+
         log_event("gateway", "INFO", "Step 2: Processing albums (cache-first + cover fetch)")
         recommendations_resp = await http_client.post(
             f"{RECOMMENDER_SERVICE_URL}/lastfm-albums-recommendations",
@@ -1924,17 +1926,17 @@ async def get_lastfm_recommendations(request: Request, body: dict):
         recommendations_data = recommendations_resp.json()
         albums = recommendations_data.get("albums", [])
         stats = recommendations_data.get("stats", {})
-        
-        log_event("gateway", "INFO", 
+
+        log_event("gateway", "INFO",
                  f"Processed {len(albums)} Last.fm recommendations "
                  f"(cache: {stats.get('cache_hits', 0)}, "
                  f"new: {stats.get('cache_misses', 0)}, "
                  f"covers fetched: {stats.get('covers_fetched', 0)})")
-        
+
         end_time = time.time()
         total_time = end_time - start_time
         log_event("gateway", "INFO", f"Last.fm recommendation flow complete: {len(albums)} albums in {total_time:.2f}s")
-        
+
         return {
             "albums": albums,
             "total": len(albums),
@@ -1947,7 +1949,7 @@ async def get_lastfm_recommendations(request: Request, body: dict):
                 "covers_fetched": stats.get("covers_fetched", 0)
             }
         }
-    
+
     except Exception as e:
         log_event("gateway", "ERROR", f"Last.fm recommendation flow failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Last.fm recommendation failed: {str(e)}")
@@ -1957,7 +1959,7 @@ async def get_lastfm_recommendations(request: Request, body: dict):
 async def get_recommendations_progress():
     if not http_client:
         raise HTTPException(status_code=500, detail="HTTP client not initialized")
-    
+
     try:
         resp = await http_client.get(f"{RECOMMENDER_SERVICE_URL}/progress")
         return resp.json()
@@ -1971,7 +1973,7 @@ async def get_recommendations_progress():
 async def get_single_artist_recommendations(request: Request, body: dict):
     if not http_client:
         raise HTTPException(status_code=500, detail="HTTP client not initialized")
-    
+
     artist_name = body.get("artist_name")
     top_albums = body.get("top_albums", 3)
     csv_mode = body.get("csv_mode", False)
@@ -1979,37 +1981,37 @@ async def get_single_artist_recommendations(request: Request, body: dict):
 
     if not artist_name:
         raise HTTPException(status_code=400, detail="artist_name is required")
-    
+
     start_time = time.time()
     mode_label = " (CSV mode)" if csv_mode else ""
     log_event("gateway", "INFO", f"Getting recommendations for artist: {artist_name}{mode_label}")
-    
+
     try:
         resp = await http_client.post(
             f"{RECOMMENDER_SERVICE_URL}/artist-single-recommendation",
             json={
-                "artist_name": artist_name, 
-                "top_albums": top_albums, 
+                "artist_name": artist_name,
+                "top_albums": top_albums,
                 "csv_mode": csv_mode,
                 "user_id": user_id
             }
         )
         resp.raise_for_status()
         result = resp.json()
-        
+
         end_time = time.time()
         total_time = end_time - start_time
-        
+
         recommendations = result.get("recommendations", [])
-        
+
         if not recommendations:
             log_event("gateway", "INFO", f"No recommendations found for {artist_name}")
             # Do not raise 404, return empty list
 
-        
-        log_event("gateway", "INFO", 
+
+        log_event("gateway", "INFO",
                  f"Got {len(recommendations)} recommendations for {artist_name} in {total_time:.2f}s")
-        
+
         return {
             "recommendations": recommendations,
             "total": len(recommendations),
@@ -2017,7 +2019,7 @@ async def get_single_artist_recommendations(request: Request, body: dict):
             "total_time_seconds": round(total_time, 2),
             "status": "success"
         }
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2029,21 +2031,21 @@ async def get_single_artist_recommendations(request: Request, body: dict):
 async def get_artist_recommendations(request: dict):
     if not http_client:
         raise HTTPException(status_code=500, detail="HTTP client not initialized")
-    
+
     artist_names = request.get("artist_names", [])
-    
+
     if not artist_names:
         raise HTTPException(status_code=400, detail="artist_names is required")
-    
+
     if len(artist_names) < 3:
         raise HTTPException(status_code=400, detail="Minimum 3 artists required")
-    
+
     if len(artist_names) > 10:
         raise HTTPException(status_code=400, detail="Maximum 10 artists allowed")
-    
+
     start_time = time.time()
     log_event("gateway", "INFO", f"Getting recommendations for {len(artist_names)} artists")
-    
+
     try:
         artist_recs_resp = await http_client.post(
             f"{RECOMMENDER_SERVICE_URL}/artist-recommendations",
@@ -2051,7 +2053,7 @@ async def get_artist_recommendations(request: dict):
         )
         artist_recs = artist_recs_resp.json().get("recommendations", [])
         log_event("gateway", "INFO", f"Got {len(artist_recs)} artist-based recommendations")
-        
+
         merge_resp = await http_client.post(
             f"{RECOMMENDER_SERVICE_URL}/merge-recommendations",
             json={
@@ -2059,11 +2061,11 @@ async def get_artist_recommendations(request: dict):
             }
         )
         merged = merge_resp.json().get("recommendations", [])
-        
+
         end_time = time.time()
         total_time = end_time - start_time
         log_event("gateway", "INFO", f"Artist recommendations complete: {len(merged)} total in {total_time:.2f}s")
-        
+
         return {
             "recommendations": merged,
             "total": len(merged),
@@ -2073,7 +2075,7 @@ async def get_artist_recommendations(request: dict):
                 "total": len(merged)
             }
         }
-    
+
     except Exception as e:
         log_event("gateway", "ERROR", f"Artist recommendations failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Recommendations failed: {str(e)}")
@@ -2083,14 +2085,14 @@ async def get_artist_recommendations(request: dict):
 async def merge_recommendations(request: dict):
     if not http_client:
         raise HTTPException(status_code=500, detail="HTTP client not initialized")
-    
+
     try:
         lastfm_recs = request.get("lastfm_recommendations", [])
         artist_recs = request.get("artist_recommendations", [])
-        
-        log_event("gateway", "INFO", 
+
+        log_event("gateway", "INFO",
                   f"Merging {len(lastfm_recs)} Last.fm + {len(artist_recs)} artist recommendations")
-        
+
         response = await http_client.post(
             f"{RECOMMENDER_SERVICE_URL}/merge-recommendations",
             json={
@@ -2098,11 +2100,11 @@ async def merge_recommendations(request: dict):
                 "artist_recommendations": artist_recs
             }
         )
-        
+
         data = response.json()
         log_event("gateway", "INFO", f"Merged into {data.get('total', 0)} recommendations")
         return data
-    
+
     except Exception as e:
         log_event("gateway", "ERROR", f"Merge recommendations failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Merge failed: {str(e)}")
@@ -2112,12 +2114,12 @@ async def get_collection_recommendations(request: dict):
     """Get recommendations based on user's Discogs collection."""
     if not http_client:
         raise HTTPException(status_code=500, detail="HTTP client not initialized")
-    
+
     username = request.get("username")
     limit = request.get("limit", 5)
-    
+
     log_event("gateway", "INFO", f"Fetching collection recommendations for {username}")
-    
+
     try:
         start_time = time.time()
         resp = await http_client.post(
@@ -2125,17 +2127,17 @@ async def get_collection_recommendations(request: dict):
             json={"username": username, "limit": limit},
             timeout=60.0
         )
-        
+
         if resp.status_code != 200:
             log_event("gateway", "ERROR", f"Collection recommendations failed: {resp.text}")
             raise HTTPException(status_code=resp.status_code, detail="Failed to fetch collection recommendations")
-            
+
         data = resp.json()
         total_time = time.time() - start_time
-        
+
         recommendations = data.get("recommendations", [])
         log_event("gateway", "INFO", f"Got {len(recommendations)} collection recommendations in {total_time:.2f}s")
-        
+
         # Log for dashboard
         if recommendations:
             recommendation_logger.log_recommendation_batch(
@@ -2144,9 +2146,9 @@ async def get_collection_recommendations(request: dict):
                 recommendations=recommendations,
                 endpoint="/api/recommendations/collection"
             )
-            
+
         return data
-        
+
     except Exception as e:
         log_event("gateway", "ERROR", f"Collection recommendations error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Collection recommendations error: {str(e)}")
@@ -2157,41 +2159,41 @@ async def get_collection_recommendations(request: dict):
 async def admin_search(q: str = "", type: str = "all", limit: int = 50, offset: int = 0):
     """Search for artists, albums or both in the database"""
     results = {}
-    
+
     if type in ["artist", "all"]:
         if q:
             artists = db_utils.search_artists(q)
         else:
             artists = db_utils.get_all_artists(limit, offset)
         results["artists"] = artists
-        
+
     if type in ["album", "all"]:
         if q:
             albums = db_utils.search_albums(q)
         else:
             albums = db_utils.get_all_albums(limit, offset)
         results["albums"] = albums
-        
+
     return results
 
 
 
 @app.post("/api/admin/explorer/update/{entity_type}/{entity_id}")
-async def admin_update_entity(entity_type: str, entity_id: int, data: Dict[str, Any] = {}):
+async def admin_update_entity(entity_type: str, entity_id: int, data: dict[str, Any] = {}):
     """Update an entity by syncing with external sources (MusicBrainz/Discogs)"""
-    
+
     if entity_type == "artist":
         result = await seeder.sync_artist(entity_id)
         if result["status"] == "error":
             raise HTTPException(status_code=500, detail=result["message"])
         return result
-        
+
     elif entity_type == "album":
         result = await seeder.sync_album(entity_id)
         if result["status"] == "error":
             raise HTTPException(status_code=500, detail=result["message"])
         return result
-        
+
     else:
         raise HTTPException(status_code=400, detail="Invalid entity type")
 
@@ -2200,142 +2202,142 @@ async def admin_update_entity(entity_type: str, entity_id: int, data: Dict[str, 
 @app.post("/api/admin/import-csv")
 async def import_artists_csv(file: UploadFile = File(...)):
     """Import artists from CSV file with real-time progress updates via SSE"""
-    
+
     if not http_client:
         raise HTTPException(status_code=500, detail="HTTP client not initialized")
-    
+
     if not file.filename or not file.filename.endswith('.csv'):
         raise HTTPException(status_code=400, detail="File must be a CSV")
-    
+
     # Read file content before creating the stream
     content = await file.read()
     csv_text = content.decode('utf-8')
     csv_reader = csv.DictReader(csv_text.splitlines())
-    
+
     if not csv_reader.fieldnames or 'name' not in csv_reader.fieldnames:
         raise HTTPException(status_code=400, detail="CSV must have a 'name' column")
-    
+
     artists = [row['name'].strip() for row in csv_reader if row.get('name', '').strip()]
-    
+
     if not artists:
         raise HTTPException(status_code=400, detail="No artists found in CSV")
-    
+
     async def event_stream() -> AsyncGenerator[str, None]:
         """Server-Sent Events stream for progress updates"""
         try:
             total = len(artists)
             yield f"data: {json.dumps({'type': 'start', 'total': total})}\n\n"
-            
+
             successful = 0
             cached = 0
             failed = 0
             failed_artists = []
-            
+
             for i, artist_name in enumerate(artists, 1):
                 try:
                     start_time = time.time()
-                    
+
                     response = await http_client.post(
                         f"{RECOMMENDER_SERVICE_URL}/artist-recommendations",
                         json={"artist_name": artist_name, "top_albums": 10, "csv_mode": True},
                         timeout=180.0
                     )
-                    
+
                     elapsed = time.time() - start_time
-                    
+
                     if response.status_code == 200:
                         data = response.json()
                         total_albums = data.get('total', 0)
                         top_album = None
                         rating = None
-                        
+
                         if data.get('recommendations'):
                             top_album = data['recommendations'][0].get('album_name')
                             rating = data['recommendations'][0].get('rating')
-                        
+
                         if elapsed < 1.0:
                             cached += 1
                             status = 'cached'
                         else:
                             successful += 1
                             status = 'success'
-                        
+
                         yield f"data: {json.dumps({'type': 'progress', 'current': i, 'total': total, 'artist': artist_name, 'status': status, 'albums': total_albums, 'time': round(elapsed, 2), 'top_album': top_album, 'rating': rating})}\n\n"
-                    
+
                     elif response.status_code == 404:
                         failed += 1
                         failed_artists.append(artist_name)
                         yield f"data: {json.dumps({'type': 'progress', 'current': i, 'total': total, 'artist': artist_name, 'status': 'not_found', 'error': 'No albums found'})}\n\n"
-                    
+
                     else:
                         failed += 1
                         failed_artists.append(artist_name)
                         error_msg = response.text[:100]
                         yield f"data: {json.dumps({'type': 'progress', 'current': i, 'total': total, 'artist': artist_name, 'status': 'error', 'error': error_msg})}\n\n"
-                
-                except asyncio.TimeoutError:
+
+                except TimeoutError:
                     failed += 1
                     failed_artists.append(artist_name)
                     yield f"data: {json.dumps({'type': 'progress', 'current': i, 'total': total, 'artist': artist_name, 'status': 'timeout', 'error': 'Request timeout'})}\n\n"
-                
+
                 except Exception as e:
                     failed += 1
                     failed_artists.append(artist_name)
                     yield f"data: {json.dumps({'type': 'progress', 'current': i, 'total': total, 'artist': artist_name, 'status': 'error', 'error': str(e)})}\n\n"
-                
+
                 await asyncio.sleep(0.1)
-            
+
             if failed_artists:
                 yield f"data: {json.dumps({'type': 'retry_start', 'failed_count': len(failed_artists), 'artists': failed_artists})}\n\n"
-                
+
                 retry_successful = 0
                 retry_failed = 0
-                
+
                 for i, artist_name in enumerate(failed_artists, 1):
                     try:
                         start_time = time.time()
-                        
+
                         response = await http_client.post(
                             f"{RECOMMENDER_SERVICE_URL}/artist-single-recommendation",
                             json={"artist_name": artist_name, "top_albums": 10, "csv_mode": True},
                             timeout=180.0
                         )
-                        
+
                         elapsed = time.time() - start_time
-                        
+
                         if response.status_code == 200:
                             data = response.json()
                             total_albums = data.get('total', 0)
                             top_album = None
                             rating = None
-                            
+
                             if data.get('recommendations'):
                                 top_album = data['recommendations'][0].get('album_name')
                                 rating = data['recommendations'][0].get('rating')
-                            
+
                             retry_successful += 1
                             successful += 1
                             failed -= 1
-                            
+
                             yield f"data: {json.dumps({'type': 'retry_progress', 'current': i, 'total': len(failed_artists), 'artist': artist_name, 'status': 'success', 'albums': total_albums, 'time': round(elapsed, 2), 'top_album': top_album, 'rating': rating})}\n\n"
                         else:
                             retry_failed += 1
                             error_msg = response.text[:100] if hasattr(response, 'text') else 'Unknown error'
                             yield f"data: {json.dumps({'type': 'retry_progress', 'current': i, 'total': len(failed_artists), 'artist': artist_name, 'status': 'error', 'error': error_msg})}\n\n"
-                    
+
                     except Exception as e:
                         retry_failed += 1
                         yield f"data: {json.dumps({'type': 'retry_progress', 'current': i, 'total': len(failed_artists), 'artist': artist_name, 'status': 'error', 'error': str(e)})}\n\n"
-                    
+
                     await asyncio.sleep(0.1)
-                
+
                 yield f"data: {json.dumps({'type': 'retry_complete', 'retry_successful': retry_successful, 'retry_failed': retry_failed})}\n\n"
-            
+
             yield f"data: {json.dumps({'type': 'complete', 'successful': successful, 'cached': cached, 'failed': failed, 'total': total})}\n\n"
-        
+
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-    
+
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
@@ -2406,10 +2408,10 @@ async def proxy_generate_recommendations(request: CollectionPreferencesRequest):
 async def download_database():
     """Download the current database file for backup purposes."""
     db_path = Path(__file__).parent.parent / "vinylbe.db"
-    
+
     if not db_path.exists():
         raise HTTPException(status_code=404, detail="Database file not found")
-    
+
     log_event("gateway", "INFO", "Database download requested")
     return FileResponse(
         path=str(db_path),
@@ -2423,33 +2425,33 @@ async def upload_database(database: UploadFile = File(...)):
     """Upload and replace the production database. USE WITH CAUTION!"""
     db_path = Path(__file__).parent.parent / "vinylbe.db"
     backup_path = Path(__file__).parent.parent / f"vinylbe.db.backup.{int(time.time())}"
-    
+
     try:
         # Create backup of current database
         if db_path.exists():
             import shutil
             shutil.copy2(db_path, backup_path)
             log_event("gateway", "INFO", f"Created database backup: {backup_path.name}")
-        
+
         # Write uploaded file
         content = await database.read()
-        
+
         # Validate it's a SQLite database
         if not content.startswith(b'SQLite format 3'):
             raise HTTPException(status_code=400, detail="Invalid SQLite database file")
-        
+
         with open(db_path, "wb") as f:
             f.write(content)
-        
+
         log_event("gateway", "INFO", f"Database updated successfully (size: {len(content)} bytes)")
-        
+
         return {
             "status": "success",
             "message": "Database updated successfully",
             "backup_created": backup_path.name,
             "size_bytes": len(content)
         }
-    
+
     except HTTPException:
         raise
     except Exception as e:

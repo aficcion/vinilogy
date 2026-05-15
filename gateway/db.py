@@ -1,8 +1,10 @@
-import os
 import json
+import os
 import sqlite3
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import Any
+
+from libs.shared.utils import log_event
 
 # Path to the SQLite database file (same as used elsewhere in the project)
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "vinylbe.db")
@@ -130,7 +132,7 @@ def init_db() -> None:
             );
             """
         )
-        
+
         # Migration: Add spotify_id column if it doesn't exist
         try:
             cur.execute("ALTER TABLE user_selected_artist ADD COLUMN spotify_id TEXT")
@@ -152,27 +154,27 @@ def init_db() -> None:
 
         # Migration: update auth_identity check constraint to support 'discogs'
         # SQLite doesn't support altering constraints easily, so we largely rely on code validation or recreation.
-        # For simplicity in this iteration, we won't force a table re-creation to avoid data loss, 
+        # For simplicity in this iteration, we won't force a table re-creation to avoid data loss,
         # but the code logic will insert 'discogs' which might fail if strict CHECK is enforced.
-        # However, SQLite CHECK constraints are per-row. We can try to modify it if needed, 
+        # However, SQLite CHECK constraints are per-row. We can try to modify it if needed,
         # but typically 'provider' CHECK constraint might need to be dropped or updated.
-        # Since the original CREATE TABLE had "CHECK (provider IN ('google', 'lastfm'))", 
+        # Since the original CREATE TABLE had "CHECK (provider IN ('google', 'lastfm'))",
         # inserting 'discogs' will fail. We need to disable the check or recreate.
         # Strategy: We will create a temp table, copy data, drop old, rename new.
-        
+
         # Check if we need to migrate auth_identity
         cur.execute("PRAGMA table_info(auth_identity)")
         # This is hard to check via pragma for check constraints. We'll attempt a dummy insert or just check if 'discogs' works?
         # A safer way creates the table with the new definition if it doesn't exist, but if it exists we are stuck.
         # Let's perform a Safe Migration for auth_identity if needed.
-        
+
         # Only migrate if we can't insert 'discogs' (or we just always migrate to be safe/sure)
         # But that's heavy on startup. Let's start by assuming we might need it.
         # Actually, let's keep it simple: we'll run a quick schema check/update script or block.
         pass # Migration logic can be handled in a dedicated migration function if strictly needed.
         # For now, let's assume we might need to recreate auth_identity to allow 'discogs'
 
-            
+
         conn.commit()
     finally:
         conn.close()
@@ -181,7 +183,7 @@ def init_db() -> None:
 # User and authentication helper functions
 # ---------------------------------------------------------------------------
 
-def _create_user(display_name: str, email: Optional[str] = None) -> int:
+def _create_user(display_name: str, email: str | None = None) -> int:
     """Insert a new user row and return its id."""
     conn = get_connection()
     try:
@@ -234,7 +236,7 @@ def get_or_create_user_via_google(email: str, display_name: str, google_sub: str
         conn.close()
 
 
-def get_or_create_user_via_lastfm(lastfm_username: str, existing_user_id: Optional[int] = None) -> int:
+def get_or_create_user_via_lastfm(lastfm_username: str, existing_user_id: int | None = None) -> int:
     """Return the user id for a Last.fm login, creating rows as needed.
 
     If existing_user_id is provided, links the Last.fm identity to that user.
@@ -261,7 +263,7 @@ def get_or_create_user_via_lastfm(lastfm_username: str, existing_user_id: Option
             )
             conn.commit()
             return user_id
-            
+
         # No existing identity – create a new user and link the identity
         if existing_user_id:
             user_id = existing_user_id
@@ -272,7 +274,7 @@ def get_or_create_user_via_lastfm(lastfm_username: str, existing_user_id: Option
             )
         else:
             user_id = _create_user(display_name=lastfm_username)
-            
+
         cur.execute(
             "INSERT INTO auth_identity (user_id, provider, provider_user_id) VALUES (?, 'lastfm', ?)",
             (user_id, lastfm_username),
@@ -302,7 +304,7 @@ def link_lastfm_to_existing_user(user_id: int, lastfm_username: str) -> None:
         conn.close()
 
 
-def get_or_create_user_via_discogs(discogs_username: str, discogs_id: str, token: str = None, secret: str = None, existing_user_id: Optional[int] = None) -> int:
+def get_or_create_user_via_discogs(discogs_username: str, discogs_id: str, token: str = None, secret: str = None, existing_user_id: int | None = None) -> int:
     """Return the user id for a Discogs login/signup.
     
     Creates user if needed, or links to existing_user_id.
@@ -326,7 +328,7 @@ def get_or_create_user_via_discogs(discogs_username: str, discogs_id: str, token
             cur.execute("UPDATE user SET last_login_at = datetime('now') WHERE id = ?", (user_id,))
             conn.commit()
             return user_id
-            
+
         # Create new user OR link to existing
         if existing_user_id:
             user_id = existing_user_id
@@ -334,7 +336,7 @@ def get_or_create_user_via_discogs(discogs_username: str, discogs_id: str, token
         else:
             # We use discogs_username as display_name for fresh users
             user_id = _create_user(display_name=discogs_username)
-        
+
         cur.execute(
             "INSERT INTO auth_identity (user_id, provider, provider_user_id, access_token, refresh_token) VALUES (?, 'discogs', ?, ?, ?)",
             (user_id, str(discogs_id), token, secret),
@@ -373,7 +375,7 @@ def link_discogs_to_existing_user(user_id: int, discogs_username: str, discogs_i
 # Last.fm profile handling
 # ---------------------------------------------------------------------------
 
-def upsert_user_profile_lastfm(user_id: int, lastfm_username: str, top_artists: List[Dict[str, Any]]) -> None:
+def upsert_user_profile_lastfm(user_id: int, lastfm_username: str, top_artists: list[dict[str, Any]]) -> None:
     """Insert or update the Last.fm profile snapshot for a user.
 
     * top_artists is stored as JSON text.
@@ -406,7 +408,7 @@ def upsert_user_profile_lastfm(user_id: int, lastfm_username: str, top_artists: 
         conn.close()
 
 
-def get_user_profile_lastfm(user_id: int) -> Optional[Dict[str, Any]]:
+def get_user_profile_lastfm(user_id: int) -> dict[str, Any] | None:
     """Retrieve the Last.fm profile snapshot for a user."""
     conn = get_connection()
     try:
@@ -434,9 +436,9 @@ def get_user_profile_lastfm(user_id: int) -> Optional[Dict[str, Any]]:
 def add_user_selected_artist(
     user_id: int,
     artist_name: str,
-    mbid: Optional[str] = None,
+    mbid: str | None = None,
     source: str = "manual",
-    spotify_id: Optional[str] = None,  # Keep parameter for backward compatibility but don't use it
+    spotify_id: str | None = None,  # Keep parameter for backward compatibility but don't use it
 ) -> None:
     """Insert a new selected artist for the user.
 
@@ -467,7 +469,7 @@ def add_user_selected_artist(
 
 
 
-def get_user_selected_artists(user_id: int) -> List[Dict[str, Any]]:
+def get_user_selected_artists(user_id: int) -> list[dict[str, Any]]:
     """Retrieve all selected artists for a user."""
     conn = get_connection()
     try:
@@ -508,7 +510,7 @@ def upsert_recommendation_status(
             (user_id, artist_name, album_title),
         )
         row = cur.fetchone()
-        
+
         if row:
             # Update existing
             cur.execute(
@@ -532,7 +534,7 @@ def upsert_recommendation_status(
 # Recommendation handling
 # ---------------------------------------------------------------------------
 
-def regenerate_recommendations(user_id: int, new_recs: List[Dict[str, Any]]) -> None:
+def regenerate_recommendations(user_id: int, new_recs: list[dict[str, Any]]) -> None:
     """Update the recommendation table according to the business rules.
 
     * new_recs is a list of dicts with keys: artist_name, album_title, album_mbid (optional), source.
@@ -552,7 +554,7 @@ def regenerate_recommendations(user_id: int, new_recs: List[Dict[str, Any]]) -> 
             # Handle both album_title (DB convention) and album_name (API convention)
             album = rec.get("album_title") or rec.get("album_name")
             mbid = rec.get("album_mbid")
-            
+
             # Sanitize source field to ensure it matches DB constraints
             # Valid values: 'lastfm', 'manual', 'mixed'
             raw_source = rec.get("source", "mixed")
@@ -629,7 +631,7 @@ def regenerate_recommendations(user_id: int, new_recs: List[Dict[str, Any]]) -> 
         conn.close()
 
 
-def get_recommendations_for_user(user_id: int, include_favorites: bool = True) -> List[Dict[str, Any]]:
+def get_recommendations_for_user(user_id: int, include_favorites: bool = True) -> list[dict[str, Any]]:
     """Return a list of recommendation dicts for the user.
 
     Returns ALL recommendations regardless of status. The frontend will handle filtering
@@ -639,7 +641,7 @@ def get_recommendations_for_user(user_id: int, include_favorites: bool = True) -
     conn = get_connection()
     try:
         cur = conn.cursor()
-        
+
         # Base query with JOINs to fetch cover_url from albums table
         # Using COLLATE NOCASE to ensure we match even if capitalization differs
         # Also try matching by MBID if available
@@ -660,13 +662,13 @@ def get_recommendations_for_user(user_id: int, include_favorites: bool = True) -
             GROUP BY r.id
             ORDER BY r.created_at DESC
         """
-            
+
         cur.execute(query, (user_id,))
         return cur.fetchall()
     finally:
         conn.close()
 
-def get_favorite_recommendations(user_id: int) -> List[Dict[str, Any]]:
+def get_favorite_recommendations(user_id: int) -> list[dict[str, Any]]:
     """Return only the recommendations marked as ``favorite`` for the user."""
     conn = get_connection()
     try:
@@ -702,11 +704,11 @@ def update_recommendation_status(user_id: int, recommendation_id: int, new_statu
         if new_status == "active": pass # Allow active
         elif new_status not in {"neutral", "favorite", "disliked", "owned"}:
              raise ValueError("Invalid status value")
-             
+
     conn = get_connection()
     try:
         cur = conn.cursor()
-        
+
         cur.execute(
             "UPDATE recommendation SET status = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?",
             (new_status, recommendation_id, user_id),
@@ -721,7 +723,7 @@ def update_recommendation_status(user_id: int, recommendation_id: int, new_statu
 # Convenience helpers (optional)
 # ---------------------------------------------------------------------------
 
-def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
+def get_user_by_email(email: str) -> dict[str, Any] | None:
     """Return a user record matching the given email, or ``None`` if not found."""
     conn = get_connection()
     try:
@@ -731,7 +733,7 @@ def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
     finally:
         conn.close()
 
-def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
+def get_user_by_id(user_id: int) -> dict[str, Any] | None:
     """Return a user record by its primary key, or ``None`` if not found."""
     conn = get_connection()
     try:
@@ -742,7 +744,7 @@ def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
         conn.close()
 
 
-def get_random_albums_with_covers(limit: int = 50) -> List[Dict[str, Any]]:
+def get_random_albums_with_covers(limit: int = 50) -> list[dict[str, Any]]:
     """Fetch random albums that have a cover URL."""
     conn = get_connection()
     try:
@@ -765,7 +767,7 @@ def get_random_albums_with_covers(limit: int = 50) -> List[Dict[str, Any]]:
         conn.close()
 
 
-def search_artists(query: str, limit: int = 10) -> List[Dict[str, Any]]:
+def search_artists(query: str, limit: int = 10) -> list[dict[str, Any]]:
     """Search for artists by name in the database."""
     conn = get_connection()
     try:
@@ -787,7 +789,7 @@ def search_artists(query: str, limit: int = 10) -> List[Dict[str, Any]]:
         conn.close()
 
 
-def search_albums(query: str, limit: int = 20) -> List[Dict[str, Any]]:
+def search_albums(query: str, limit: int = 20) -> list[dict[str, Any]]:
     """Search for albums by title in the database."""
     conn = get_connection()
     try:
@@ -814,7 +816,7 @@ def search_albums(query: str, limit: int = 20) -> List[Dict[str, Any]]:
 # Discogs Collection & Settings
 # ---------------------------------------------------------------------------
 
-def get_user_settings(user_id: int) -> Dict[str, Any]:
+def get_user_settings(user_id: int) -> dict[str, Any]:
     """Get user settings (e.g. CFM toggle). Defaults if not set."""
     conn = get_connection()
     try:
@@ -845,7 +847,7 @@ def update_user_settings(user_id: int, cf_enabled: bool) -> None:
     finally:
         conn.close()
 
-def sync_discogs_collection_items(user_id: int, items: List[Dict[str, Any]]) -> None:
+def sync_discogs_collection_items(user_id: int, items: list[dict[str, Any]]) -> None:
     """
     Sync a batch of items from Discogs to DB.
     items: list of dicts with {release_id, master_id, artist, title, internal_category, cover_url}
@@ -859,7 +861,7 @@ def sync_discogs_collection_items(user_id: int, items: List[Dict[str, Any]]) -> 
         # 1. Fetch all existing recommendations for user to match against
         cur.execute("SELECT id, artist_name, album_title FROM recommendation WHERE user_id = ?", (user_id,))
         existing_recs = cur.fetchall()
-        
+
         # Helper for normalization
         def normalize(s):
             if not s: return ""
@@ -869,10 +871,10 @@ def sync_discogs_collection_items(user_id: int, items: List[Dict[str, Any]]) -> 
                 s = unicodedata.normalize('NFKD', str(s)).encode('ASCII', 'ignore').decode('utf-8')
             except Exception:
                 pass
-            
+
             # Replace smart quotes with straight quotes
             s = s.replace('’', "'").replace('“', '"').replace('”', '"')
-            
+
             # Remove symbols/punctuation that often differ
             import re
             return re.sub(r'[^a-z0-9]', '', s.lower())
@@ -891,14 +893,14 @@ def sync_discogs_collection_items(user_id: int, items: List[Dict[str, Any]]) -> 
             master_id = item.get('master_id')
             release_id = item.get('release_id')
             internal_category = item.get('internal_category', 'others')
-            
+
             if not artist_name or not album_title:
                 continue
-            
+
             # --- NEW: Ensure artist exists in cache (create as partial if not) ---
             cur.execute("SELECT id FROM artists WHERE name = ?", (artist_name,))
             artist_row = cur.fetchone()
-            
+
             if artist_row:
                 artist_id = artist_row['id']
             else:
@@ -908,14 +910,14 @@ def sync_discogs_collection_items(user_id: int, items: List[Dict[str, Any]]) -> 
                     VALUES (?, 1, CURRENT_TIMESTAMP)
                 """, (artist_name,))
                 artist_id = cur.lastrowid
-            
+
             # --- NEW: Ensure album exists in cache (create as partial if not) ---
             cur.execute("""
                 SELECT id FROM albums 
                 WHERE artist_id = ? AND title = ?
             """, (artist_id, album_title))
             album_row = cur.fetchone()
-            
+
             if not album_row:
                 # Create partial album with Discogs data
                 cur.execute("""
@@ -936,7 +938,7 @@ def sync_discogs_collection_items(user_id: int, items: List[Dict[str, Any]]) -> 
                         last_updated = CURRENT_TIMESTAMP
                     WHERE id = ?
                 """, (cover_url, master_id, release_id, album_row['id']))
-            
+
             # --- EXISTING: Sync to Collection Table ---
             cur.execute(
                 """
@@ -951,11 +953,11 @@ def sync_discogs_collection_items(user_id: int, items: List[Dict[str, Any]]) -> 
                     label=excluded.label
                 """,
                 (
-                    user_id, 
-                    release_id, 
-                    master_id, 
-                    artist_name, 
-                    album_title, 
+                    user_id,
+                    release_id,
+                    master_id,
+                    artist_name,
+                    album_title,
                     internal_category,
                     cover_url,
                     item.get('release_type'),
@@ -974,7 +976,7 @@ def sync_discogs_collection_items(user_id: int, items: List[Dict[str, Any]]) -> 
     finally:
         conn.close()
 
-def get_user_discogs_collection_stats(user_id: int) -> Dict[str, int]:
+def get_user_discogs_collection_stats(user_id: int) -> dict[str, int]:
     """Get basic stats about user's Discogs collection."""
     conn = get_connection()
     try:
@@ -986,7 +988,7 @@ def get_user_discogs_collection_stats(user_id: int) -> Dict[str, int]:
         conn.close()
 
 
-def get_user_collection_by_format(user_id: int) -> Dict[str, List[Dict[str, Any]]]:
+def get_user_collection_by_format(user_id: int) -> dict[str, list[dict[str, Any]]]:
     """Get user's collection grouped by format.
     
     Combines:
@@ -998,7 +1000,7 @@ def get_user_collection_by_format(user_id: int) -> Dict[str, List[Dict[str, Any]
     conn = get_connection()
     try:
         cur = conn.cursor()
-        
+
         # Initialize result structure
         collection = {
             "VINYL": [],
@@ -1007,7 +1009,7 @@ def get_user_collection_by_format(user_id: int) -> Dict[str, List[Dict[str, Any]
             "DIGITAL": [],
             "OTHERS": []
         }
-        
+
         # Helper for normalization
         def normalize(s):
             if not s: return ""
@@ -1033,20 +1035,20 @@ def get_user_collection_by_format(user_id: int) -> Dict[str, List[Dict[str, Any]
             WHERE user_id = ?
             ORDER BY added_at DESC
         """, (user_id,))
-        
+
         discogs_items = cur.fetchall()
-        
+
         # Track what we've already added from Discogs to avoid duplicates
         added_albums = set()
-        
+
         for item in discogs_items:
             cat = item['internal_category']
             if cat not in collection:
                 cat = "OTHERS"
-            
+
             # Normalize for dedup checking
             added_albums.add((normalize(item['artist']), normalize(item['title'])))
-            
+
             collection[cat].append({
                 'artist': item['artist'],
                 'title': item['title'],
@@ -1059,7 +1061,7 @@ def get_user_collection_by_format(user_id: int) -> Dict[str, List[Dict[str, Any]
                 'label': item.get('label'),
                 'added_at': item.get('added_at')
             })
-        
+
         # 2. Get owned recommendations (for all users, including those without Discogs)
         cur.execute("""
             SELECT 
@@ -1077,17 +1079,17 @@ def get_user_collection_by_format(user_id: int) -> Dict[str, List[Dict[str, Any]
             GROUP BY r.id
             ORDER BY r.created_at DESC
         """, (user_id,))
-        
+
         owned_recs = cur.fetchall()
-        
+
         for rec in owned_recs:
             album_key = (normalize(rec['artist_name']), normalize(rec['album_title']))
-            
+
             # Skip if already added from Discogs
             if album_key in added_albums:
                 continue
-            
-            # For owned recommendations without Discogs data, 
+
+            # For owned recommendations without Discogs data,
             # we'll put them in OTHERS by default
             # (could be enhanced with format detection from album title)
             collection['OTHERS'].append({
@@ -1097,7 +1099,7 @@ def get_user_collection_by_format(user_id: int) -> Dict[str, List[Dict[str, Any]
                 'source': 'recommendation',
                 'added_at': rec.get('created_at')
             })
-        
+
         # 3. Enrich Discogs items with cover URLs from albums table
         for format_key in collection:
             for item in collection[format_key]:
@@ -1112,33 +1114,33 @@ def get_user_collection_by_format(user_id: int) -> Dict[str, List[Dict[str, Any]
                         AND a.cover_url IS NOT NULL
                         LIMIT 1
                     """, (item['artist'], item['title']))
-                    
+
                     cover_row = cur.fetchone()
                     if cover_row:
                         item['cover_url'] = cover_row['cover_url']
-        
+
         return collection
     finally:
         conn.close()
 
 
-def get_user_collection_summary(user_id: int) -> Dict[str, Any]:
+def get_user_collection_summary(user_id: int) -> dict[str, Any]:
     """
     Get summary statistics for user's collection.
     Returns total count and breakdown by format.
     """
     collection = get_user_collection_by_format(user_id)
-    
+
     summary = {
         'total': 0,
         'by_format': {}
     }
-    
+
     for format_key, items in collection.items():
         count = len(items)
         summary['by_format'][format_key] = count
         summary['total'] += count
-    
+
     return summary
 
 
@@ -1146,7 +1148,7 @@ def get_user_collection_summary(user_id: int) -> Dict[str, Any]:
 # Discogs Release Cache
 # ---------------------------------------------------------------------------
 
-def get_cached_release(release_id: int) -> Optional[Dict[str, Any]]:
+def get_cached_release(release_id: int) -> dict[str, Any] | None:
     """Get full release details from cache if available."""
     conn = get_connection()
     try:
@@ -1160,7 +1162,7 @@ def get_cached_release(release_id: int) -> Optional[Dict[str, Any]]:
     finally:
         conn.close()
 
-def cache_release(release_id: int, data: Dict[str, Any]) -> None:
+def cache_release(release_id: int, data: dict[str, Any]) -> None:
     """Cache release details permanently."""
     import json
     conn = get_connection()
@@ -1181,7 +1183,7 @@ def cache_release(release_id: int, data: Dict[str, Any]) -> None:
         conn.close()
 
 
-def get_recommendation(user_id: int, rec_id: int) -> Optional[Dict[str, Any]]:
+def get_recommendation(user_id: int, rec_id: int) -> dict[str, Any] | None:
     """Get recommendation details."""
     conn = get_connection()
     try:
@@ -1192,7 +1194,7 @@ def get_recommendation(user_id: int, rec_id: int) -> Optional[Dict[str, Any]]:
         conn.close()
 
 
-def get_album_discogs_ids(artist_name: str, album_title: str) -> Optional[Dict[str, Any]]:
+def get_album_discogs_ids(artist_name: str, album_title: str) -> dict[str, Any] | None:
     """Try to find Discogs IDs from the local albums cache."""
     conn = get_connection()
     try:
@@ -1210,7 +1212,7 @@ def get_album_discogs_ids(artist_name: str, album_title: str) -> Optional[Dict[s
         conn.close()
 
 
-def add_to_collection(user_id: int, data: Dict[str, Any]) -> None:
+def add_to_collection(user_id: int, data: dict[str, Any]) -> None:
     """Add an item to the user's Discogs collection table."""
     conn = get_connection()
     try:
@@ -1224,10 +1226,10 @@ def add_to_collection(user_id: int, data: Dict[str, Any]) -> None:
                 cover_url=COALESCE(excluded.cover_url, cover_url),
                 added_at=datetime('now')
         """, (
-            user_id, 
-            data.get('release_id'), 
-            data.get('master_id'), 
-            data.get('artist'), 
+            user_id,
+            data.get('release_id'),
+            data.get('master_id'),
+            data.get('artist'),
             data.get('title'),
             data.get('format', 'OTHERS'),
             data.get('type', 'Album'),
