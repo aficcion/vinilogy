@@ -5,14 +5,7 @@ const API_BASE = "";
 // -------------------------------------------------
 function getUserId() {
     const id = localStorage.getItem('userId');
-    // Allow index.html to be viewed without login
-    if (!id) {
-        if (window.location.pathname !== '/login.html' && window.location.pathname !== '/' && window.location.pathname !== '/index.html') {
-            // window.location.href = '/login.html'; // Disable redirect for now to be safe
-            return null;
-        }
-        return null;
-    }
+    if (!id) return null;
     return id;
 }
 
@@ -35,20 +28,61 @@ function showToast(message, type = 'info') {
     }, 3000);
 }
 
-async function apiCall(endpoint, method = 'GET', body = null) {
+// Tracks in-flight GET requests to avoid duplicate concurrent fetches
+const _pendingRequests = new Map();
+
+async function apiCall(endpoint, method = 'GET', body = null, { timeoutMs = 30000, retries = 1, signal } = {}) {
+    // Deduplicate identical concurrent GET requests
+    const dedupeKey = method === 'GET' ? endpoint : null;
+    if (dedupeKey && _pendingRequests.has(dedupeKey)) {
+        return _pendingRequests.get(dedupeKey);
+    }
+
+    const controller = new AbortController();
+    if (signal) signal.addEventListener('abort', () => controller.abort());
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
     const options = {
         method,
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
     };
     if (body) options.body = JSON.stringify(body);
 
-    try {
-        const res = await fetch(API_BASE + endpoint, options);
-        if (!res.ok) {
-            const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
-            throw new Error(err.detail || `Error ${res.status}`);
+    const execute = async (attempt) => {
+        try {
+            const res = await fetch(API_BASE + endpoint, options);
+
+            if (res.status === 429) {
+                const retryAfter = parseInt(res.headers.get('Retry-After') || '60', 10);
+                showToast(`Demasiadas peticiones. Espera ${retryAfter}s.`, 'error');
+                throw new Error(`Rate limited. Retry after ${retryAfter}s`);
+            }
+
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
+                throw new Error(err.detail || `Error ${res.status}`);
+            }
+            return await res.json();
+        } catch (e) {
+            if (e.name === 'AbortError') throw new Error('La petición tardó demasiado o fue cancelada');
+            if (attempt < retries) {
+                await new Promise(r => setTimeout(r, 500 * attempt));
+                return execute(attempt + 1);
+            }
+            throw e;
         }
-        return await res.json();
+    };
+
+    const promise = execute(1).finally(() => {
+        clearTimeout(timeoutId);
+        if (dedupeKey) _pendingRequests.delete(dedupeKey);
+    });
+
+    if (dedupeKey) _pendingRequests.set(dedupeKey, promise);
+
+    try {
+        return await promise;
     } catch (e) {
         showToast(e.message, 'error');
         throw e;
