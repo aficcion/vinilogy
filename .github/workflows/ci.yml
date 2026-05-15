@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint with ruff
+        run: ruff check gateway/ services/ libs/ tests/unit/
+
+      - name: Run tests
+        env:
+          DISCOGS_KEY: test_key
+          LASTFM_API_KEY: test_key
+          LASTFM_API_SECRET: test_secret
+        run: pytest tests/unit/ -v --tb=short
