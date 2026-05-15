@@ -151,7 +151,7 @@ class ArtistSearch {
                 clearTimeout(this.searchTimeout);
             }
 
-            if (query.length >= 4) {
+            if (query.length >= 2) {
                 this.searchTimeout = setTimeout(() => {
                     this.performSearch(query);
                 }, 300);
@@ -240,18 +240,24 @@ class ArtistSearch {
 
     async performSearch(query) {
         const resultsGrid = document.getElementById('search-results-grid');
-        resultsGrid.innerHTML = '<div class="loading">Buscando...</div>';
+        // Skeleton rows while waiting
+        resultsGrid.innerHTML = Array(4).fill(`
+            <div style="display:flex;align-items:center;gap:0.75rem;padding:0.5rem 0;border-bottom:1px solid var(--border-color,#eee)">
+                <div class="skeleton" style="width:48px;height:48px;border-radius:50%;flex-shrink:0"></div>
+                <div style="flex:1">
+                    <div class="skeleton" style="height:14px;width:60%;margin-bottom:6px;border-radius:4px"></div>
+                    <div class="skeleton" style="height:12px;width:40%;border-radius:4px"></div>
+                </div>
+            </div>`).join('');
 
         try {
-            const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
-            const data = await response.json();
-
+            const data = await apiCall(`/api/search?q=${encodeURIComponent(query)}`);
             this.searchResults = data.artists || [];
             this.albumResults = data.albums || [];
             this.renderSearchResults();
         } catch (error) {
             console.error('Search failed:', error);
-            resultsGrid.innerHTML = '<div class="error">Error al buscar</div>';
+            resultsGrid.innerHTML = '<div class="error" style="padding:1rem;color:var(--error,#dc3545)">Error al buscar. Inténtalo de nuevo.</div>';
         }
     }
 
