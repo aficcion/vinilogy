@@ -618,26 +618,26 @@ class ArtistSearch {
                                 recommendations: recs,
                                 timestamp: Date.now()
                             };
-                            console.log(`✓ Cached ${recs.length} recommendations for ${artist.name} (Canonical)`);
+                            console.log(`✓ Cached ${recs.length} recommendations for ${artist.name}`);
                         } else {
-                            // Fallback to Spotify REMOVED
-                            console.warn(`⚠ No canonical albums found for ${artist.name}`);
+                            // Backend found nothing even after all fallbacks (Discogs + Spotify)
+                            console.warn(`⚠ No albums found for ${artist.name} after all fallbacks`);
                             this.recommendationsCache[artist.name] = {
                                 status: 'error',
-                                error: 'No vinyl albums found',
+                                error: 'No se encontraron álbumes',
                                 timestamp: Date.now()
                             };
                         }
                     } else {
-                        console.warn(`⚠ Canonical search failed for ${artist.name}`);
+                        console.warn(`⚠ Pre-fetch failed for ${artist.name} (${response.status})`);
                         this.recommendationsCache[artist.name] = {
                             status: 'error',
-                            error: 'Search failed',
+                            error: `Error ${response.status}`,
                             timestamp: Date.now()
                         };
                     }
                 } catch (error) {
-                    console.error(`✗ Error fetching canonical recommendations for ${artist.name}:`, error);
+                    console.error(`✗ Pre-fetch network error for ${artist.name}:`, error);
                     this.recommendationsCache[artist.name] = {
                         status: 'error',
                         error: error.message,
@@ -747,7 +747,7 @@ class ArtistSearch {
                     <span class="pill-name">${artist.name}</span>
                     ${isLoading ? '<span class="pill-spinner">⏳</span>' : ''}
                     ${!isLoading && hasSuccess ? '<span class="pill-check">✓</span>' : ''}
-                    ${!isLoading && hasError ? '<span class="pill-error" title="' + (cached.error || 'Error') + '">⚠</span>' : ''}
+                    ${!isLoading && hasError ? '<span class="pill-error" title="${cached.error || 'No se encontraron álbumes'}">⚠</span>' : ''}
                     <button class="pill-remove-btn" data-artist-name="${artist.name}">✕</button>
                 </div>
             `;
