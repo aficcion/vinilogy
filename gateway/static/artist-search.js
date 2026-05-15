@@ -605,7 +605,8 @@ class ArtistSearch {
                         body: JSON.stringify({
                             artist_name: artist.name,
                             top_albums: 3,
-                            user_id: userId ? parseInt(userId) : null
+                            user_id: userId ? parseInt(userId) : null,
+                            preview: true,
                         })
                     });
 

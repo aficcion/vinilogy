@@ -74,7 +74,8 @@ class SingleArtistRequest(BaseModel):
     top_albums: int = 3
     csv_mode: bool = False
     cache_only: bool = False
-    user_id: int | None = None # Added for user context
+    user_id: int | None = None
+    preview: bool = False  # True = wizard pre-fetch: cache → Spotify (skip heavy Discogs call)
 
 
 
@@ -801,7 +802,43 @@ async def artist_single_recommendation(request: SingleArtistRequest):
     if not discogs_key or not discogs_secret:
         raise HTTPException(status_code=500, detail="Discogs credentials not configured")
 
-    log_event("recommender-service", "INFO", f"Generating recommendations for artist: {request.artist_name} (User: {request.user_id})")
+    log_event("recommender-service", "INFO", f"Generating recommendations for artist: {request.artist_name} (User: {request.user_id}, preview={request.preview})")
+
+    # --- PREVIEW MODE: wizard pre-fetch — cache first, then Spotify (saves Discogs quota) ---
+    if request.preview:
+        # 1. Check local cache first (free)
+        cached_albums = await asyncio.to_thread(
+            functools.partial(
+                get_artist_studio_albums,
+                request.artist_name, discogs_key, discogs_secret,
+                top_n=request.top_albums, cache_only=True,
+            )
+        )
+        if cached_albums:
+            log_event("recommender-service", "INFO", f"✓ Preview cache HIT for {request.artist_name}")
+            return {
+                "recommendations": [
+                    {
+                        "album_name": a.title,
+                        "artist_name": a.artist_name,
+                        "year": a.year,
+                        "image_url": a.cover_image,
+                        "discogs_master_id": a.discogs_master_id or a.discogs_release_id,
+                        "source": "artist_based",
+                    }
+                    for a in cached_albums
+                ],
+                "total": len(cached_albums),
+                "artist_name": request.artist_name,
+            }
+
+        # 2. Spotify (high quota, single call)
+        log_event("recommender-service", "INFO", f"Preview cache MISS for {request.artist_name}, trying Spotify")
+        try:
+            return await _generate_spotify_recommendations(request.artist_name, request.top_albums, request.user_id)
+        except Exception as e:
+            log_event("recommender-service", "WARN", f"Spotify preview failed for {request.artist_name}: {e}")
+            return {"recommendations": [], "total": 0, "artist_name": request.artist_name}
 
     # --- MODE A: Full User Context (Upgrade + Complete) ---
     if request.user_id:

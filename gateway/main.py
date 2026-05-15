@@ -1978,12 +1978,13 @@ async def get_single_artist_recommendations(request: Request, body: dict):
     top_albums = body.get("top_albums", 3)
     csv_mode = body.get("csv_mode", False)
     user_id = body.get("user_id")
+    preview = body.get("preview", False)
 
     if not artist_name:
         raise HTTPException(status_code=400, detail="artist_name is required")
 
     start_time = time.time()
-    mode_label = " (CSV mode)" if csv_mode else ""
+    mode_label = " (CSV mode)" if csv_mode else " (preview)" if preview else ""
     log_event("gateway", "INFO", f"Getting recommendations for artist: {artist_name}{mode_label}")
 
     try:
@@ -1993,7 +1994,8 @@ async def get_single_artist_recommendations(request: Request, body: dict):
                 "artist_name": artist_name,
                 "top_albums": top_albums,
                 "csv_mode": csv_mode,
-                "user_id": user_id
+                "user_id": user_id,
+                "preview": preview,
             }
         )
         resp.raise_for_status()
