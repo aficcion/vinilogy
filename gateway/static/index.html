@@ -1190,8 +1190,28 @@
         }
 
         @media (max-width: 768px) {
+            /* Sidebar becomes a horizontal add-artists strip */
             .sidebar {
+                position: static;
+                max-height: none;
+                display: flex;
+                flex-direction: row;
+                align-items: center;
+                justify-content: space-between;
+                padding: 0.75rem 1rem;
+                gap: 1rem;
+                order: -1;
+            }
+            .sidebar-section {
                 display: none;
+            }
+            .sidebar .add-artist-btn {
+                width: auto;
+                white-space: nowrap;
+                flex-shrink: 0;
+            }
+            #sidebar-placeholder {
+                display: flex !important;
             }
         }
 
@@ -1536,6 +1556,130 @@
         .auth-link-secondary:hover {
             color: white;
             background: rgba(255, 255, 255, 0.1);
+        }
+
+        /* ─── Responsive: 480px ─────────────────────────── */
+        @media (max-width: 480px) {
+            /* Header: logo + compact icon buttons */
+            .header {
+                padding: 0.75rem 1rem;
+                flex-wrap: wrap;
+                gap: 0.5rem;
+            }
+            /* Shorten labeled buttons to icon-only on very small screens */
+            #collection-btn span,
+            #profile-btn span {
+                display: none;
+            }
+            .theme-toggle {
+                padding: 0.5rem 0.65rem;
+                font-size: 1rem;
+            }
+
+            /* Filter bar: scroll horizontally, don't wrap */
+            .filter-bar {
+                width: 100%;
+                overflow-x: auto;
+                flex-wrap: nowrap;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-width: none;
+                padding-bottom: 2px;
+            }
+            .filter-bar::-webkit-scrollbar { display: none; }
+            .filter-btn {
+                padding: 0.5rem 0.85rem;
+                font-size: 0.8rem;
+                white-space: nowrap;
+                flex-shrink: 0;
+            }
+
+            /* Album grid: single column */
+            .albums-grid {
+                grid-template-columns: 1fr;
+                gap: 1rem;
+            }
+
+            /* Bigger touch targets for action buttons */
+            .album-actions button,
+            .action-btn {
+                min-height: 44px;
+                min-width: 44px;
+            }
+
+            /* Detail view */
+            .detail-container {
+                padding: 1rem;
+            }
+            .back-button {
+                padding: 0.6rem 1rem;
+                font-size: 0.85rem;
+            }
+
+            /* Modal full screen */
+            .modal-content {
+                width: 100%;
+                max-width: 100%;
+                height: 100%;
+                max-height: 100%;
+                border-radius: 0;
+            }
+
+            /* Profile view */
+            .stats-grid {
+                grid-template-columns: 1fr 1fr;
+                gap: 0.75rem;
+            }
+            .stat-number {
+                font-size: 1.8rem;
+            }
+        }
+
+        /* ─── Skeleton loaders ──────────────────────────── */
+        @keyframes shimmer {
+            0%   { background-position: -400px 0; }
+            100% { background-position: 400px 0; }
+        }
+
+        .skeleton {
+            background: linear-gradient(
+                90deg,
+                var(--bg-secondary) 25%,
+                var(--border-color) 50%,
+                var(--bg-secondary) 75%
+            );
+            background-size: 800px 100%;
+            animation: shimmer 1.4s infinite linear;
+            border-radius: 6px;
+        }
+
+        .skeleton-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .skeleton-card .skeleton-cover {
+            width: 100%;
+            aspect-ratio: 1;
+        }
+        .skeleton-card .skeleton-line {
+            margin: 0.75rem;
+            height: 14px;
+        }
+        .skeleton-card .skeleton-line.short {
+            width: 60%;
+            height: 12px;
+            margin-top: 0.4rem;
+        }
+        .skeleton-card .skeleton-actions {
+            display: flex;
+            gap: 0.5rem;
+            margin: 0.75rem;
+        }
+        .skeleton-card .skeleton-action {
+            flex: 1;
+            height: 32px;
+            border-radius: 6px;
         }
     </style>
 </head>

@@ -198,6 +198,7 @@ async function fetchUserRecommendations(userId) {
     const dashboard = document.getElementById('recommendations-view');
     if (dashboard) dashboard.style.display = 'block';
 
+    showSkeletonCards(8);
     showLoading(true);
 
     console.log(`Fetching recommendations for user: ${userId} at /api/users/${userId}/recommendations`);
@@ -658,6 +659,25 @@ function showLoading(show, message = 'Cargando tus recomendaciones...') {
     if (show) {
         loadingEl.querySelector('p').textContent = message;
     }
+}
+
+function showSkeletonCards(count = 8) {
+    const container = document.getElementById('albums-container');
+    if (!container) return;
+    const skeletonHTML = `
+        <div class="skeleton-card album-card">
+            <div class="skeleton skeleton-cover"></div>
+            <div class="skeleton skeleton-line"></div>
+            <div class="skeleton skeleton-line short"></div>
+            <div class="skeleton-actions">
+                <div class="skeleton skeleton-action"></div>
+                <div class="skeleton skeleton-action"></div>
+                <div class="skeleton skeleton-action"></div>
+            </div>
+        </div>`;
+    container.innerHTML = skeletonHTML.repeat(count);
+    document.getElementById('recommendations-view').classList.add('active');
+    document.getElementById('landing-view').style.display = 'none';
 }
 
 // Progress banner control

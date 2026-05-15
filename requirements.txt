@@ -21,7 +21,7 @@ google-api-python-client==2.151.0
 requests==2.32.3
 
 # External APIs
-discogs-client==2.7
+discogs-client==2.3.0
 pylast==5.3.0
 
 # Rate limiting
