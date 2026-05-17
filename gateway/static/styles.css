@@ -260,6 +260,10 @@ input { font: inherit; color: inherit; }
 }
 
 /* ── MOSAIC (landing background) ─────────────────────────── */
+#landing-view {
+  height: 100vh;
+  overflow: hidden;
+}
 .mosaic-container {
   position: relative;
   height: calc(100vh - 64px);
@@ -302,7 +306,7 @@ input { font: inherit; color: inherit; }
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 80px 32px 80px;
+  padding: clamp(16px, 5vh, 80px) 32px;
 }
 .mosaic-content {
   position: relative;
@@ -313,12 +317,12 @@ input { font: inherit; color: inherit; }
   flex-direction: column;
   align-items: center;
   text-align: center;
-  gap: 20px;
+  gap: clamp(8px, 2vh, 20px);
 }
 .mosaic-content h1 {
   font-family: var(--display-font);
-  font-size: clamp(44px, min(6vw, 9vh), 90px);
-  line-height: 1.05;
+  font-size: clamp(28px, min(5.5vw, 8.5vh), 90px);
+  line-height: 1.0;
   letter-spacing: -0.03em;
   font-weight: 400;
   color: var(--ink);
@@ -332,12 +336,12 @@ input { font: inherit; color: inherit; }
 .mosaic-content h1 .hero-em {
   color: var(--accent);
   font-style: italic;
-  line-height: 1.05;
+  line-height: 1.0;
 }
 .mosaic-content p {
-  font-size: 20px;
+  font-size: clamp(13px, 2vh, 20px);
   max-width: 580px;
-  line-height: 1.45;
+  line-height: 1.4;
   color: var(--ink-70);
 }
 .mosaic-content p em { color: var(--ink); font-style: italic; font-family: var(--display-font); }
@@ -358,8 +362,8 @@ input { font: inherit; color: inherit; }
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
-  gap: 16px;
-  padding: 14px 14px 14px 28px;
+  gap: 12px;
+  padding: clamp(8px, 1.5vh, 14px) clamp(8px, 1.5vh, 14px) clamp(8px, 1.5vh, 14px) clamp(16px, 2.5vh, 28px);
   background: var(--bg-elev);
   border: 0.5px solid var(--line);
   border-radius: 999px;
@@ -384,7 +388,7 @@ input { font: inherit; color: inherit; }
 .hero-search-input {
   flex: 1;
   font-family: var(--display-font);
-  font-size: 24px;
+  font-size: clamp(16px, 2.5vh, 24px);
   color: var(--ink-50);
   letter-spacing: -0.01em;
   background: transparent;
@@ -400,7 +404,7 @@ input { font: inherit; color: inherit; }
 .hero-search-btn {
   background: var(--accent);
   color: #0A0A0C;
-  padding: 14px 22px;
+  padding: clamp(8px, 1.5vh, 14px) clamp(14px, 2vh, 22px);
   border-radius: 999px;
   font-size: 14px;
   font-weight: 500;
@@ -421,8 +425,8 @@ input { font: inherit; color: inherit; }
 .auth-link-secondary {
   display: inline-flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 18px 12px 14px;
+  gap: 10px;
+  padding: clamp(8px, 1.4vh, 12px) clamp(12px, 2vh, 18px) clamp(8px, 1.4vh, 12px) clamp(10px, 1.6vh, 14px);
   background: var(--bg-elev);
   border: 0.5px solid var(--line);
   border-radius: 12px;
@@ -435,12 +439,12 @@ input { font: inherit; color: inherit; }
 }
 .auth-link-secondary:hover { border-color: var(--ink-50); background: var(--bg-2); }
 .auth-link-secondary .conn-mark {
-  width: 36px;
-  height: 36px;
+  width: clamp(28px, 4vh, 36px);
+  height: clamp(28px, 4vh, 36px);
   border-radius: 8px;
   display: grid;
   place-items: center;
-  font-size: 18px;
+  font-size: clamp(14px, 2vh, 18px);
   flex-shrink: 0;
 }
 .auth-link-secondary.lastfm-conn .conn-mark { background: #D51007; color: #fff; }
@@ -1828,4 +1832,13 @@ input:checked + .slider:before { transform: translateX(22px); background-color: 
   .action-btn { min-height: 44px; min-width: 44px; }
   .detail-container { padding: 1rem; }
   .modal-content { width: 100%; max-width: 100%; height: 100%; max-height: 100%; border-radius: 0; }
+}
+
+/* ── Viewport-height adaptations (no scroll on hero) ──────── */
+@media (max-height: 600px) {
+  .kicker { display: none; }
+  .mosaic-content p { display: none; }
+}
+@media (max-height: 480px) {
+  .auth-links { display: none; }
 }
