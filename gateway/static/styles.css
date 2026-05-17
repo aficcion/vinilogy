@@ -297,11 +297,11 @@ input { font: inherit; color: inherit; }
   inset: 0;
   background: linear-gradient(
     to bottom,
-    rgba(10,10,12,0.85) 0%,
-    rgba(10,10,12,0.3) 18%,
-    rgba(10,10,12,0.25) 50%,
-    rgba(10,10,12,0.65) 75%,
-    rgba(10,10,12,1) 100%
+    rgba(10,10,12,0.7) 0%,
+    rgba(10,10,12,0.1) 15%,
+    rgba(10,10,12,0.05) 50%,
+    rgba(10,10,12,0.4) 75%,
+    rgba(10,10,12,0.95) 100%
   );
   display: flex;
   align-items: center;
@@ -311,13 +311,19 @@ input { font: inherit; color: inherit; }
 .mosaic-content {
   position: relative;
   z-index: 2;
-  max-width: 800px;
+  max-width: 760px;
   width: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
   text-align: center;
   gap: clamp(8px, 2vh, 20px);
+  background: rgba(10, 10, 12, 0.55);
+  backdrop-filter: blur(32px);
+  -webkit-backdrop-filter: blur(32px);
+  border: 0.5px solid rgba(255,255,255,0.07);
+  border-radius: clamp(16px, 3vh, 28px);
+  padding: clamp(24px, 4vh, 48px) clamp(24px, 5vw, 56px);
 }
 .mosaic-content h1 {
   font-family: var(--display-font);
@@ -339,10 +345,10 @@ input { font: inherit; color: inherit; }
   line-height: 1.0;
 }
 .mosaic-content p {
-  font-size: clamp(13px, 2vh, 20px);
-  max-width: 580px;
-  line-height: 1.4;
-  color: var(--ink-70);
+  font-size: clamp(13px, 1.9vh, 18px);
+  max-width: 520px;
+  line-height: 1.45;
+  color: var(--ink-60);
 }
 .mosaic-content p em { color: var(--ink); font-style: italic; font-family: var(--display-font); }
 
