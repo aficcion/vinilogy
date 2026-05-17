@@ -504,6 +504,7 @@ function showProfile() {
     document.getElementById('recommendations-view').style.display = 'none';
     document.getElementById('album-detail-view').style.display = 'none';
     document.getElementById('profile-view').style.display = 'block';
+    document.body.classList.remove('landing-active');
 
     // Update header buttons
     const profileBtn = document.getElementById('profile-btn');
@@ -528,6 +529,7 @@ function showRecommendations() {
     document.getElementById('profile-view').style.display = 'none';
     document.getElementById('landing-view').style.display = 'none';
     document.getElementById('recommendations-view').style.display = 'block';
+    document.body.classList.remove('landing-active');
 
     const profileBtn = document.getElementById('profile-btn');
     if (profileBtn) profileBtn.style.display = 'block';
@@ -656,6 +658,9 @@ async function loadConnections() {
 // Init profile button visibility
 document.addEventListener('DOMContentLoaded', () => {
     const uid = getUserId();
+    if (!uid) {
+        document.body.classList.add('landing-active');
+    }
     console.log('Checking user ID for profile button:', uid);
     if (uid) {
         const profileBtn = document.getElementById('profile-btn');
