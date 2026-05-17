@@ -303,10 +303,10 @@ input { font: inherit; color: inherit; }
   inset: 0;
   background: linear-gradient(
     to bottom,
-    color-mix(in srgb, var(--bg) 70%, transparent) 0%,
-    color-mix(in srgb, var(--bg) 10%, transparent) 15%,
-    color-mix(in srgb, var(--bg) 5%,  transparent) 50%,
-    color-mix(in srgb, var(--bg) 40%, transparent) 75%,
+    color-mix(in srgb, var(--bg) 60%, transparent) 0%,
+    color-mix(in srgb, var(--bg) 5%, transparent) 15%,
+    transparent 40%,
+    color-mix(in srgb, var(--bg) 30%, transparent) 75%,
     var(--bg) 100%
   );
   display: flex;
@@ -324,9 +324,9 @@ input { font: inherit; color: inherit; }
   align-items: center;
   text-align: center;
   gap: clamp(8px, 2vh, 20px);
-  background: color-mix(in srgb, var(--bg) 35%, transparent);
-  backdrop-filter: blur(32px);
-  -webkit-backdrop-filter: blur(32px);
+  background: color-mix(in srgb, var(--bg) 18%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   border: 0.5px solid var(--ink-08);
   border-radius: clamp(16px, 3vh, 28px);
   padding: clamp(24px, 4vh, 48px) clamp(24px, 5vw, 56px);
