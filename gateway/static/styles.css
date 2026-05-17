@@ -279,7 +279,7 @@ input { font: inherit; color: inherit; }
   opacity: 0.55;
   pointer-events: none;
 }
-[data-theme="light"] .mosaic-grid { opacity: 0.25; }
+[data-theme="light"] .mosaic-grid { opacity: 0.5; }
 .mosaic-item {
   overflow: hidden;
   background: var(--bg-2);
@@ -297,11 +297,11 @@ input { font: inherit; color: inherit; }
   inset: 0;
   background: linear-gradient(
     to bottom,
-    rgba(10,10,12,0.7) 0%,
-    rgba(10,10,12,0.1) 15%,
-    rgba(10,10,12,0.05) 50%,
-    rgba(10,10,12,0.4) 75%,
-    rgba(10,10,12,0.95) 100%
+    color-mix(in srgb, var(--bg) 70%, transparent) 0%,
+    color-mix(in srgb, var(--bg) 10%, transparent) 15%,
+    color-mix(in srgb, var(--bg) 5%,  transparent) 50%,
+    color-mix(in srgb, var(--bg) 40%, transparent) 75%,
+    var(--bg) 100%
   );
   display: flex;
   align-items: center;
@@ -318,10 +318,10 @@ input { font: inherit; color: inherit; }
   align-items: center;
   text-align: center;
   gap: clamp(8px, 2vh, 20px);
-  background: rgba(10, 10, 12, 0.55);
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
   backdrop-filter: blur(32px);
   -webkit-backdrop-filter: blur(32px);
-  border: 0.5px solid rgba(255,255,255,0.07);
+  border: 0.5px solid var(--ink-08);
   border-radius: clamp(16px, 3vh, 28px);
   padding: clamp(24px, 4vh, 48px) clamp(24px, 5vw, 56px);
 }
