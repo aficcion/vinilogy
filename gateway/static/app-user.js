@@ -90,6 +90,7 @@ function checkLastfmAuthReturn() {
         // FORCE UI UPDATE immediately to avoid Guest+Spinner glitch
         const landing = document.getElementById('landing-view');
         if (landing) landing.style.display = 'none';
+        document.body.classList.remove('landing-active');
         const dashboard = document.getElementById('recommendations-view');
         if (dashboard) dashboard.style.display = 'block';
 
@@ -195,6 +196,7 @@ async function fetchUserRecommendations(userId) {
     // ENFORCE DASHBOARD VIEW
     const landing = document.getElementById('landing-view');
     if (landing) landing.style.display = 'none';
+    document.body.classList.remove('landing-active');
     const dashboard = document.getElementById('recommendations-view');
     if (dashboard) dashboard.style.display = 'block';
 
@@ -678,6 +680,7 @@ function showSkeletonCards(count = 8) {
     container.innerHTML = skeletonHTML.repeat(count);
     document.getElementById('recommendations-view').classList.add('active');
     document.getElementById('landing-view').style.display = 'none';
+    document.body.classList.remove('landing-active');
 }
 
 // Progress banner control
@@ -984,6 +987,7 @@ function renderRecommendations(recommendations) {
 
     document.getElementById('landing-view').style.display = 'none';
     document.getElementById('album-detail-view').style.display = 'none';
+    document.body.classList.remove('landing-active');
     document.getElementById('recommendations-view').classList.add('active');
 
     const hasArtistBased = recommendations.some(rec => rec.source === 'artist_based' || rec.source === 'manual');
