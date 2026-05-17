@@ -748,7 +748,7 @@ class ArtistSearch {
                     <span class="pill-name">${artist.name}</span>
                     ${isLoading ? '<span class="pill-spinner">⏳</span>' : ''}
                     ${!isLoading && hasSuccess ? '<span class="pill-check">✓</span>' : ''}
-                    ${!isLoading && hasError ? '<span class="pill-error" title="${cached.error || 'No se encontraron álbumes'}">⚠</span>' : ''}
+                    ${!isLoading && hasError ? '<span class="pill-error" title="' + (cached.error || 'No se encontraron álbumes') + '">⚠</span>' : ''}
                     <button class="pill-remove-btn" data-artist-name="${artist.name}">✕</button>
                 </div>
             `;
