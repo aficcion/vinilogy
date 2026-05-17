@@ -1389,6 +1389,16 @@ async def get_album_pricing(artist: str = Query(..., description="Artist name"),
         else:
             log_event("gateway", "INFO", f"No Discogs master or release found for {artist} - {album}")
 
+        # Step 5b: Fallback — get tracklist from Spotify if Discogs returned nothing
+        if not tracklist_data.get("tracklist") and spotify_id:
+            try:
+                spotify_tracks_resp = await http_client.get(f"{SPOTIFY_SERVICE_URL}/album/{spotify_id}/tracks")
+                if spotify_tracks_resp.status_code == 200:
+                    tracklist_data = spotify_tracks_resp.json()
+                    log_event("gateway", "INFO", f"Tracklist from Spotify: {len(tracklist_data.get('tracklist', []))} tracks")
+            except Exception as e:
+                log_event("gateway", "WARNING", f"Spotify tracklist fallback failed: {str(e)}")
+
         elapsed = time.time() - start_time
         log_event("gateway", "INFO", f"Album info fetched for {artist} - {album} in {elapsed:.2f}s (type: {discogs_type or 'none'}, id: {discogs_id or 'none'})")
 
@@ -2240,7 +2250,7 @@ async def import_artists_csv(file: UploadFile = File(...)):
                     start_time = time.time()
 
                     response = await http_client.post(
-                        f"{RECOMMENDER_SERVICE_URL}/artist-recommendations",
+                        f"{RECOMMENDER_SERVICE_URL}/artist-single-recommendation",
                         json={"artist_name": artist_name, "top_albums": 10, "csv_mode": True},
                         timeout=180.0
                     )
