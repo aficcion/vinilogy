@@ -318,7 +318,7 @@ input { font: inherit; color: inherit; }
   align-items: center;
   text-align: center;
   gap: clamp(8px, 2vh, 20px);
-  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  background: color-mix(in srgb, var(--bg) 35%, transparent);
   backdrop-filter: blur(32px);
   -webkit-backdrop-filter: blur(32px);
   border: 0.5px solid var(--ink-08);
