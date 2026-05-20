@@ -797,6 +797,7 @@ def search_albums(query: str, limit: int = 20) -> list[dict[str, Any]]:
         cur.execute(
             """
             SELECT a.id, a.title, a.cover_url, a.artist_id, a.is_partial,
+                   a.year, a.discogs_master_id,
                    ar.name as artist_name, ar.image_url as artist_image_url
             FROM albums a
             LEFT JOIN artists ar ON a.artist_id = ar.id

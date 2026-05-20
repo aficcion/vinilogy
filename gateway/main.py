@@ -1774,31 +1774,50 @@ async def unified_search(request: Request, q: str, limit: int = 20):
                 "title": title,
                 "artist_name": artist_name,
                 "cover_url": album.get("cover_url"),
+                "year": album.get("year") or None,
+                "master_id": album.get("discogs_master_id") or None,
                 "source": "database",
                 "is_partial": album.get("is_partial", 0)
             }
 
-        # Add Discogs albums (if not already in DB)
+        # Add Discogs albums — merge into existing DB entries if they're missing data
         for album in discogs_albums:
             title = album.get("title", "")
             # Extract artist from title (Discogs format: "Artist - Album")
             if " - " in title:
                 artist_name, album_title = title.split(" - ", 1)
-                # Normalize artist name (remove numbers in parentheses)
                 artist_name = normalize_artist_name(artist_name)
             else:
                 artist_name = ""
                 album_title = title
 
+            disc_year = str(album.get("year", "")) or None
+            disc_cover = album.get("cover_image") or album.get("thumb")
+            disc_master = album.get("master_id")
+            disc_id = album.get("id")
+
             key = create_album_key(artist_name, album_title)
-            if key not in albums_map:
+            if key in albums_map:
+                # Enrich existing DB entry with Discogs data it's missing
+                existing = albums_map[key]
+                if not existing.get("year") and disc_year:
+                    existing["year"] = disc_year
+                if not existing.get("master_id") and disc_master:
+                    existing["master_id"] = disc_master
+                if not existing.get("cover_url") and disc_cover:
+                    existing["cover_url"] = disc_cover
+                if not existing.get("discogs_id") and disc_id:
+                    existing["discogs_id"] = disc_id
+            else:
                 albums_map[key] = {
                     "title": album_title,
                     "artist_name": artist_name,
-                    "cover_url": album.get("cover_image") or album.get("thumb"),
+                    "cover_url": disc_cover,
+                    "year": disc_year,
+                    "master_id": disc_master,
                     "source": "discogs",
-                    "discogs_id": album.get("id"),
-                    "is_partial": 1  # Discogs results are partial until added
+                    "discogs_id": disc_id,
+                    "is_partial": 1
                 }
 
         # Format artists from Spotify with custom ordering:
@@ -1815,13 +1834,27 @@ async def unified_search(request: Request, q: str, limit: int = 20):
         else:
             ordered_spotify_artists = []
 
+        # Compute relevance for each artist
+        query_words = set(q.lower().split())
+
+        def compute_artist_relevance(artist) -> str:
+            artist_name = (artist.get("name") or "").lower()
+            artist_words = set(w for w in artist_name.split() if len(w) > 2)
+            meaningful_query_words = set(w for w in query_words if len(w) > 2)
+            # High only if artist name shares meaningful words with query
+            # Popularity alone is NOT enough — a popular but unrelated artist is still low relevance
+            if meaningful_query_words & artist_words:
+                return "high"
+            return "low"
+
         artists = [
             {
                 "name": artist.get("name"),
                 "image_url": artist.get("image_url"),
                 "genres": artist.get("genres", []),
                 "popularity": artist.get("popularity", 0),
-                "source": "spotify"
+                "source": "spotify",
+                "relevance": compute_artist_relevance(artist)
             }
             for artist in ordered_spotify_artists
         ]

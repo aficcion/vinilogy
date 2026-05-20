@@ -279,24 +279,36 @@ class ArtistSearch {
         const showAlbums = this.currentSearchFilter === 'all' || this.currentSearchFilter === 'albums';
         const isMobile = window.innerWidth <= 768;
 
-        // Render Artists Section
-        if (showArtists && this.searchResults.length > 0) {
+        // Detect album-type query: no artist name overlaps with the query words
+        // Popularity alone does NOT count — a popular but unrelated artist should not block album-first layout
+        const hasGoodArtist = this.searchResults.some(a => a.relevance === 'high');
+        const showAlbumsFirst = this.currentSearchFilter === 'all' && this.albumResults && this.albumResults.length > 0 && !hasGoodArtist;
+
+        // Update filter tab active state to reflect albums-first layout
+        if (filterTabs && showAlbumsFirst) {
+            filterTabs.querySelectorAll('.search-tab').forEach(tab => {
+                tab.classList.toggle('active', tab.dataset.filter === 'all');
+            });
+        }
+
+        const renderArtistsSection = () => {
+            if (!showArtists || this.searchResults.length === 0) return '';
+            let s = '';
             if (this.currentSearchFilter === 'all') {
-                html += '<div class="search-section-header">Artistas</div>';
+                s += '<div class="search-section-header">Artistas</div>';
             }
 
-            // Determine how many artists to show
             const artistsToShow = (isMobile && !this.showAllArtists)
                 ? this.searchResults.slice(0, 2)
                 : this.searchResults;
 
-            html += '<div class="artist-grid">';
-            html += artistsToShow.map(artist => {
+            s += '<div class="artist-grid">';
+            s += artistsToShow.map(artist => {
                 const isSelected = this.selectedArtists.some(a => a.name === artist.name);
                 const isDisabled = !isSelected && this.selectedArtists.length >= this.options.maxArtists;
 
                 return `
-                    <div class="artist-card ${isSelected ? 'selected' : ''} ${isDisabled ? 'disabled' : ''}" 
+                    <div class="artist-card ${isSelected ? 'selected' : ''} ${isDisabled ? 'disabled' : ''}"
                          data-artist-name="${artist.name}">
                         <div class="artist-card-content">
                             <div class="artist-image-wrapper">
@@ -313,7 +325,7 @@ class ArtistSearch {
                     }
                             </div>
                         </div>
-                        <button class="add-artist-btn ${isSelected ? 'added' : ''}" 
+                        <button class="add-artist-btn ${isSelected ? 'added' : ''}"
                                 ${isDisabled ? 'disabled' : ''}
                                 data-artist='${JSON.stringify(artist)}'>
                             ${isSelected ? '✓' : '+'}
@@ -321,32 +333,31 @@ class ArtistSearch {
                     </div>
                 `;
             }).join('');
-            html += '</div>'; // Close artist-grid
+            s += '</div>'; // Close artist-grid
 
-            // Add "Show More" button for mobile if there are more than 2 artists
             if (isMobile && this.searchResults.length > 2) {
-                html += `
+                s += `
                     <button class="show-more-btn" id="show-more-artists">
                         ${this.showAllArtists ? 'Ver menos' : `Ver más (${this.searchResults.length - 2} más)`}
                     </button>
                 `;
             }
-        }
+            return s;
+        };
 
-        // Render Albums Section
-        if (showAlbums && this.albumResults && this.albumResults.length > 0) {
+        const renderAlbumsSection = () => {
+            if (!showAlbums || !this.albumResults || this.albumResults.length === 0) return '';
+            let s = '';
             if (this.currentSearchFilter === 'all') {
-                html += '<div class="search-section-header">Álbumes</div>';
+                s += '<div class="search-section-header">Álbumes</div>';
             }
 
-            // Determine how many albums to show
             const albumsToShow = (isMobile && !this.showAllAlbums)
                 ? this.albumResults.slice(0, 2)
                 : this.albumResults;
 
-            html += '<div class="album-grid">';
-            html += albumsToShow.map(album => {
-                // HTML-escape the JSON to prevent attribute breaking
+            s += '<div class="album-grid">';
+            s += albumsToShow.map(album => {
                 const albumDataEscaped = JSON.stringify(album)
                     .replace(/&/g, '&amp;')
                     .replace(/'/g, '&apos;')
@@ -366,6 +377,7 @@ class ArtistSearch {
                             <div class="album-info">
                                 <div class="album-title-full">${album.title}</div>
                                 <div class="album-artist-full">${album.artist_name || 'Unknown Artist'}</div>
+                                ${album.year ? `<span class="album-year-badge">${album.year}</span>` : ''}
                             </div>
                         </div>
                         <button class="add-album-btn" data-album="${albumDataEscaped}">
@@ -374,16 +386,24 @@ class ArtistSearch {
                     </div>
                 `;
             }).join('');
-            html += '</div>'; // Close album-grid
+            s += '</div>'; // Close album-grid
 
-            // Add "Show More" button for mobile if there are more than 2 albums
             if (isMobile && this.albumResults.length > 2) {
-                html += `
+                s += `
                     <button class="show-more-btn" id="show-more-albums">
                         ${this.showAllAlbums ? 'Ver menos' : `Ver más (${this.albumResults.length - 2} más)`}
                     </button>
                 `;
             }
+            return s;
+        };
+
+        if (showAlbumsFirst) {
+            html += renderAlbumsSection();
+            html += renderArtistsSection();
+        } else {
+            html += renderArtistsSection();
+            html += renderAlbumsSection();
         }
 
         resultsGrid.innerHTML = html;

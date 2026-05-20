@@ -1621,7 +1621,7 @@ function checkCachedRecommendations() {
 // Artist Search Modal
 let artistSearchComponent = null;
 
-async function openArtistSearch() {
+async function openArtistSearch(initialQuery) {
     const modal = document.getElementById('artist-search-modal');
     modal.classList.add('active');
     document.body.style.overflow = 'hidden';
@@ -1660,6 +1660,21 @@ async function openArtistSearch() {
                 }
             } catch (e) {
                 console.error('Error loading selected artists from localStorage:', e);
+            }
+        }
+    }
+
+    // Pre-fill the modal search input and trigger a search if initialQuery provided
+    if (initialQuery && initialQuery.trim().length > 0) {
+        const searchInput = document.getElementById('artist-search-input');
+        if (searchInput && searchInput.value !== initialQuery) {
+            searchInput.value = initialQuery;
+            // Show the clear button
+            const clearBtn = document.getElementById('clear-search-btn');
+            if (clearBtn) clearBtn.style.display = 'block';
+            // Trigger search immediately
+            if (initialQuery.trim().length >= 2) {
+                artistSearchComponent.performSearch(initialQuery.trim());
             }
         }
     }
