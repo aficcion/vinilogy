@@ -1081,18 +1081,48 @@ async def _generate_spotify_recommendations(artist_name: str, top_albums: int, u
         spotify_artist_id = artist["id"]
         artist_name = artist["name"]  # Use canonical name
 
-        # 2. Get top albums
+        # 2. Get top albums — fetch extra para poder filtrar
         albums_resp = await client.get(
             f"{SPOTIFY_SERVICE_URL}/artist/{spotify_artist_id}/albums",
-            params={"limit": top_albums + 5}  # Fetch a few more to filter
+            params={"limit": min(top_albums * 4, 50)}
         )
         albums_data = albums_resp.json()
-        spotify_albums = albums_data.get("albums", [])
+        raw_albums = albums_data.get("albums", [])
+
+        # Filtrar ediciones especiales, live, compilaciones
+        EXCLUDE_KEYWORDS = [
+            "live", "compilation", "anthology", "best of", "greatest hits",
+            "deluxe", "promo", "single", "ep", "directo", "remaster", "remastered",
+            "reissue", "anniversary", "edition", "collector", "box set", "oknotok",
+            "mnesia", "recordings", "sessions", "demos", "acoustic", "unplugged",
+            "radio", "broadcast", "concert", "tour",
+        ]
+
+        spotify_albums = []
+        seen_norm = set()
+        for alb in raw_albums:
+            name = alb.get("name", "")
+            name_lower = name.lower()
+            # Excluir por keyword
+            if any(kw in name_lower for kw in EXCLUDE_KEYWORDS):
+                continue
+            # Solo album_type == "album" (no singles, no compilaciones)
+            if alb.get("album_type") not in ("album", None):
+                continue
+            # Deduplicar por título normalizado
+            import re as _re
+            norm = _re.sub(r'[^a-z0-9]', '', name_lower)
+            if norm in seen_norm:
+                continue
+            seen_norm.add(norm)
+            spotify_albums.append(alb)
+            if len(spotify_albums) >= top_albums:
+                break
 
         recommendations = []
 
         # 3. Process albums (check cache or create partial)
-        for album in spotify_albums[:top_albums]:
+        for album in spotify_albums:
             # Check cache
             cached = db_utils.get_cached_album(
                 artist_name,
@@ -1115,7 +1145,28 @@ async def _generate_spotify_recommendations(artist_name: str, top_albums: int, u
                     "source": "spotify"
                 }
             else:
-                # Create partial entry
+                # Enriquecer con Discogs en background (no bloquea la respuesta)
+                discogs_key = os.getenv("DISCOGS_KEY", "")
+                discogs_secret = os.getenv("DISCOGS_SECRET", "")
+                discogs_data = None
+                if discogs_key:
+                    try:
+                        from .artist_recommendations import get_top_albums_from_discogs_search
+                        d_results = await asyncio.to_thread(
+                            get_top_albums_from_discogs_search,
+                            artist_name, discogs_key, discogs_secret, 10
+                        )
+                        import re as _re2
+                        alb_norm = _re2.sub(r'[^a-z0-9]', '', album["name"].lower())
+                        for dr in d_results:
+                            dr_norm = _re2.sub(r'[^a-z0-9]', '', dr.get("title","").lower())
+                            if dr_norm == alb_norm or alb_norm in dr_norm or dr_norm in alb_norm:
+                                discogs_data = dr
+                                break
+                    except Exception as e:
+                        log_event("recommender-service", "WARNING", f"Discogs enrich failed: {e}")
+
+                # Guardar en caché (parcial o completo)
                 db_utils.create_basic_album_entry(
                     artist_name,
                     album["name"],
@@ -1127,12 +1178,14 @@ async def _generate_spotify_recommendations(artist_name: str, top_albums: int, u
                 rec = {
                     "album_name": album["name"],
                     "artist_name": artist_name,
-                    "year": album.get("release_date")[:4] if album.get("release_date") else None,
-                    "rating": None,
-                    "votes": None,
+                    "year": (discogs_data.get("year") if discogs_data else None)
+                            or (album.get("release_date")[:4] if album.get("release_date") else None),
+                    "rating": discogs_data.get("community", {}).get("rating", {}).get("average") if discogs_data else None,
+                    "votes": discogs_data.get("community", {}).get("rating", {}).get("count") if discogs_data else None,
+                    "discogs_master_id": discogs_data.get("discogs_master_id") if discogs_data else None,
                     "image_url": album["image_url"],
                     "spotify_id": album["id"],
-                    "is_partial": 1,
+                    "is_partial": 0 if discogs_data else 1,
                     "source": "spotify"
                 }
 

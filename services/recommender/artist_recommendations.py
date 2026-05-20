@@ -169,9 +169,24 @@ def _get_cached_artist_albums(artist_name: str, ignore_expiry: bool = False) -> 
         
         if not albums:
             return None
-        
-        print(f"[DB] ✓ Found {len(albums)} cached albums for '{artist_name}' (age: {cache_age.days}d, never expires)")
-        return [dict(album) for album in albums]
+
+        # Filtrar ediciones especiales también al leer de caché
+        EXCLUDE_KEYWORDS = [
+            "live", "compilation", "anthology", "best of", "greatest hits",
+            "deluxe", "promo", "single", "ep", "directo", "remaster", "remastered",
+            "reissue", "anniversary", "edition", "collector", "box set", "oknotok",
+            "mnesia", "recordings", "sessions", "demos", "acoustic", "unplugged",
+            "radio", "broadcast", "concert", "tour",
+        ]
+        filtered = [
+            dict(a) for a in albums
+            if not any(kw in (a["title"] or "").lower() for kw in EXCLUDE_KEYWORDS)
+        ]
+        # Si el filtro elimina todo, devolver sin filtrar (mejor algo que nada)
+        result = filtered if filtered else [dict(a) for a in albums]
+
+        print(f"[DB] ✓ Found {len(result)}/{len(albums)} cached albums for '{artist_name}' (age: {cache_age.days}d, filtered specials)")
+        return result
     
     except Exception as e:
         print(f"[DB] Error reading cache for '{artist_name}': {e}")
