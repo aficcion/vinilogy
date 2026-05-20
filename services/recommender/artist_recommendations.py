@@ -301,21 +301,27 @@ def enrich_ratings_for_artist(artist_name: str, discogs_key: str, discogs_secret
 
             try:
                 if master_id:
-                    rating, votes, cover = _discogs_master_data(master_id, discogs_key, discogs_secret)
+                    rating, votes, cover, year = _discogs_master_data(master_id, discogs_key, discogs_secret)
                 elif release_id:
-                    rating, votes, cover = _discogs_release_data(release_id, discogs_key, discogs_secret)
+                    rating, votes, cover, year = _discogs_release_data(release_id, discogs_key, discogs_secret)
+                else:
+                    rating, votes, cover, year = None, None, None, None
             except Exception as e:
                 print(f"[ENRICH] Error fetching rating for '{album['title']}': {e}")
                 continue
 
-            if rating is not None:
+            if rating is not None or year is not None:
                 cursor.execute(
-                    """UPDATE albums SET rating=?, votes=?, cover_url=COALESCE(NULLIF(cover_url,''), ?)
+                    """UPDATE albums
+                       SET rating=COALESCE(?, rating),
+                           votes=COALESCE(?, votes),
+                           cover_url=COALESCE(NULLIF(cover_url,''), ?),
+                           year=COALESCE(NULLIF(year,''), ?)
                        WHERE id=?""",
-                    (rating, votes, cover, album["id"])
+                    (rating, votes, cover, year, album["id"])
                 )
                 enriched += 1
-                print(f"[ENRICH] ✓ {artist_name} — {album['title']}: {rating:.2f} ({votes} votes)")
+                print(f"[ENRICH] ✓ {artist_name} — {album['title']}: rating={rating}, year={year}")
 
         conn.commit()
         print(f"[ENRICH] Done: {enriched}/{len(albums_to_enrich)} albums enriched for '{artist_name}'")
@@ -559,79 +565,86 @@ def _search_discogs_release(artist_name: str, album_title: str, key: str, secret
         return None
 
 
-def _discogs_release_data(release_id: str, key: str, secret: str, csv_mode: bool = False) -> Tuple[Optional[float], Optional[int], Optional[str]]:
-    """Get rating and cover from a Discogs release (not master)"""
+def _discogs_release_data(release_id: str, key: str, secret: str, csv_mode: bool = False) -> Tuple[Optional[float], Optional[int], Optional[str], Optional[str]]:
+    """Get rating, cover and year from a Discogs release (not master)"""
     if not release_id:
-        return None, None, None
-    
+        return None, None, None, None
+
     try:
         sleep_time = 1.0 if csv_mode else 0.25
         rel = _discogs_get(f"/releases/{release_id}", {}, key, secret, sleep_after_ok=sleep_time)
         rr = (rel.get("community") or {}).get("rating") or {}
-        
+
         cover_image = None
         rel_images = rel.get("images", [])
         if rel_images and len(rel_images) > 0:
             cover_image = rel_images[0].get("uri")
-        
+
+        year = str(rel.get("year", "") or "").strip() or None
+
         if rr.get("average") is None:
             print(f"[RATING] Release {release_id}: NO RATING")
-            return None, None, cover_image
-        
+            return None, None, cover_image, year
+
         rating = float(rr["average"])
         votes = int(rr.get("count", 0))
-        print(f"[RATING] Release {release_id}: rating={rating}, votes={votes}")
-        return rating, votes, cover_image
+        print(f"[RATING] Release {release_id}: rating={rating}, votes={votes}, year={year}")
+        return rating, votes, cover_image, year
     except Exception as e:
         print(f"[RATING] Release {release_id}: ERROR - {str(e)}")
-        return None, None, None
+        return None, None, None, None
 
 
-def _discogs_master_data(master_id: str, key: str, secret: str, csv_mode: bool = False) -> Tuple[Optional[float], Optional[int], Optional[str]]:
+def _discogs_master_data(master_id: str, key: str, secret: str, csv_mode: bool = False) -> Tuple[Optional[float], Optional[int], Optional[str], Optional[str]]:
     if not master_id:
-        return None, None, None
+        return None, None, None, None
 
     try:
         sleep_time = 1.0 if csv_mode else 0.25
         data = _discogs_get(f"/masters/{master_id}", {}, key, secret, sleep_after_ok=sleep_time)
         r = (data.get("community") or {}).get("rating") or {}
-        
+
         cover_image = None
         images = data.get("images", [])
         if images and len(images) > 0:
             cover_image = images[0].get("uri")
-        
+
+        year = str(data.get("year", "") or "").strip() or None
+
         if r.get("average") is not None:
             rating = float(r["average"])
             votes = int(r.get("count", 0))
-            print(f"[RATING] Master {master_id}: rating={rating}, votes={votes} (from master)")
-            return rating, votes, cover_image
+            print(f"[RATING] Master {master_id}: rating={rating}, votes={votes}, year={year} (from master)")
+            return rating, votes, cover_image, year
 
         main_rel = data.get("main_release")
         if not main_rel:
             print(f"[RATING] Master {master_id}: NO RATING (no master rating, no main_release)")
-            return None, None, cover_image
+            return None, None, cover_image, year
 
         print(f"[RATING] Master {master_id}: No master rating, checking main_release {main_rel}")
         rel = _discogs_get(f"/releases/{main_rel}", {}, key, secret, sleep_after_ok=sleep_time)
         rr = (rel.get("community") or {}).get("rating") or {}
-        
+
         if not cover_image:
             rel_images = rel.get("images", [])
             if rel_images and len(rel_images) > 0:
                 cover_image = rel_images[0].get("uri")
-        
+
+        if not year:
+            year = str(rel.get("year", "") or "").strip() or None
+
         if rr.get("average") is None:
             print(f"[RATING] Master {master_id}: NO RATING (main_release {main_rel} has no rating)")
-            return None, None, cover_image
-        
+            return None, None, cover_image, year
+
         rating = float(rr["average"])
         votes = int(rr.get("count", 0))
-        print(f"[RATING] Master {master_id}: rating={rating}, votes={votes} (from main_release {main_rel})")
-        return rating, votes, cover_image
+        print(f"[RATING] Master {master_id}: rating={rating}, votes={votes}, year={year} (from main_release {main_rel})")
+        return rating, votes, cover_image, year
     except Exception as e:
         print(f"[RATING] Master {master_id}: ERROR - {str(e)}")
-        return None, None, None
+        return None, None, None, None
 
 
 def get_artist_studio_albums(artist_name: str, discogs_key: str, discogs_secret: str,
@@ -754,16 +767,18 @@ def get_artist_studio_albums(artist_name: str, discogs_key: str, discogs_secret:
         print(f"[ALBUM] Fetching rating for '{album.title}' ({album.year}) by {album.artist_name}")
         
         if album.discogs_type == "master" and album.discogs_master_id:
-            rating, votes, cover_image = _discogs_master_data(album.discogs_master_id, discogs_key, discogs_secret, csv_mode)
+            rating, votes, cover_image, year = _discogs_master_data(album.discogs_master_id, discogs_key, discogs_secret, csv_mode)
         elif album.discogs_type == "release" and album.discogs_release_id:
-            rating, votes, cover_image = _discogs_release_data(album.discogs_release_id, discogs_key, discogs_secret, csv_mode)
+            rating, votes, cover_image, year = _discogs_release_data(album.discogs_release_id, discogs_key, discogs_secret, csv_mode)
         else:
             print(f"[ALBUM] '{album.title}': No Discogs ID available")
-            rating, votes, cover_image = None, None, None
-        
+            rating, votes, cover_image, year = None, None, None, None
+
         album.rating = rating
         album.votes = votes
         album.cover_image = cover_image
+        if year and not album.year:
+            album.year = year
         
         if rating is not None:
             print(f"[ALBUM] ✓ '{album.title}': FINAL rating={rating}, votes={votes}")
