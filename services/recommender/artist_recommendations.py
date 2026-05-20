@@ -175,7 +175,7 @@ def _get_cached_artist_albums(artist_name: str, ignore_expiry: bool = False) -> 
             "live", "compilation", "anthology", "best of", "greatest hits",
             "deluxe", "promo", "single", "ep", "directo", "remaster", "remastered",
             "reissue", "anniversary", "edition", "collector", "box set", "oknotok",
-            "mnesia", "recordings", "sessions", "demos", "acoustic", "unplugged",
+            "kid a mnesia", "recordings", "sessions", "demos", "acoustic", "unplugged",
             "radio", "broadcast", "concert", "tour", "pompeii", "mix", "redux",
             "revisited", "revisit", "restored", "re-recorded", "rerecorded",
             "super deluxe", "immersion", "experience", "infinite",
@@ -270,6 +270,20 @@ def _save_artist_albums(artist_name: str, mbid: str, albums: List['StudioAlbum']
         conn.close()
 
 
+def _is_placeholder_image(url: str) -> bool:
+    """Returns True if the URL is a Discogs placeholder/spacer image, not a real cover."""
+    if not url:
+        return True
+    u = url.lower()
+    return (
+        "spacer" in u
+        or u.startswith("https://st.discogs.com")
+        or u.startswith("http://st.discogs.com")
+        or "images/spacer" in u
+        or u.endswith(".gif")
+    )
+
+
 def enrich_ratings_for_artist(artist_name: str, discogs_key: str, discogs_secret: str) -> int:
     """
     Busca ratings en Discogs para los álbumes cacheados de un artista que tienen rating=NULL.
@@ -297,28 +311,58 @@ def enrich_ratings_for_artist(artist_name: str, discogs_key: str, discogs_secret
         for album in albums_to_enrich:
             master_id = album["discogs_master_id"]
             release_id = album["discogs_release_id"]
-            rating, votes, cover = None, None, None
+            rating, votes, cover, year = None, None, None, None
 
             try:
                 if master_id:
                     rating, votes, cover, year = _discogs_master_data(master_id, discogs_key, discogs_secret)
                 elif release_id:
+                    # Fetch release — also try to promote to master
                     rating, votes, cover, year = _discogs_release_data(release_id, discogs_key, discogs_secret)
+                    # Try to get master_id from the release to improve data quality
+                    try:
+                        rel_data = _discogs_get(f"/releases/{release_id}", {}, discogs_key, discogs_secret, sleep_after_ok=0.25)
+                        promo_master = rel_data.get("master_id")
+                        if promo_master:
+                            m_rating, m_votes, m_cover, m_year = _discogs_master_data(str(promo_master), discogs_key, discogs_secret)
+                            # Use master data if better
+                            if m_rating is not None:
+                                rating, votes = m_rating, m_votes
+                            if m_cover and not _is_placeholder_image(m_cover):
+                                cover = m_cover
+                            if m_year:
+                                year = m_year
+                            # Promote release to master in DB
+                            cursor.execute(
+                                "UPDATE albums SET discogs_master_id=?, discogs_type='master' WHERE id=?",
+                                (str(promo_master), album["id"])
+                            )
+                            print(f"[ENRICH] ↑ Promoted release {release_id} → master {promo_master} for '{album['title']}'")
+                    except Exception:
+                        pass
                 else:
                     rating, votes, cover, year = None, None, None, None
             except Exception as e:
                 print(f"[ENRICH] Error fetching rating for '{album['title']}': {e}")
                 continue
 
-            if rating is not None or year is not None:
+            # Limpiar imágenes placeholder de Discogs (spacer.gif, st.discogs.com)
+            if cover and _is_placeholder_image(cover):
+                cover = None
+
+            if rating is not None or year is not None or cover is not None:
                 cursor.execute(
                     """UPDATE albums
                        SET rating=COALESCE(?, rating),
                            votes=COALESCE(?, votes),
-                           cover_url=COALESCE(NULLIF(cover_url,''), ?),
+                           cover_url=CASE
+                               WHEN ? IS NOT NULL THEN ?
+                               WHEN cover_url IS NULL OR cover_url='' OR cover_url LIKE '%spacer%' OR cover_url LIKE 'https://st.discogs.com%' THEN NULL
+                               ELSE cover_url
+                           END,
                            year=COALESCE(NULLIF(year,''), ?)
                        WHERE id=?""",
-                    (rating, votes, cover, year, album["id"])
+                    (rating, votes, cover, cover, year, album["id"])
                 )
                 enriched += 1
                 print(f"[ENRICH] ✓ {artist_name} — {album['title']}: rating={rating}, year={year}")

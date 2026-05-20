@@ -1056,7 +1056,6 @@ async def artist_single_recommendation(request: SingleArtistRequest):
         )
 
         if discogs_albums:
-            recommendations = []
             for album in discogs_albums:
                 db_utils.create_basic_album_entry(
                     artist_name=album["artist_name"],
@@ -1065,10 +1064,50 @@ async def artist_single_recommendation(request: SingleArtistRequest):
                     discogs_master_id=album["discogs_master_id"],
                     discogs_release_id=album["discogs_release_id"]
                 )
-                rec = {
+
+            # Enriquecer ratings inline (blocking) para tener datos en 1ª request
+            # enrich_ratings_for_artist ya es seguro para to_thread
+            await asyncio.to_thread(
+                enrich_ratings_for_artist, request.artist_name, discogs_key, discogs_secret
+            )
+
+            # Leer caché enriquecida
+            enriched_albums = await asyncio.to_thread(
+                functools.partial(
+                    get_artist_studio_albums,
+                    request.artist_name, discogs_key, discogs_secret,
+                    top_n=request.top_albums, csv_mode=request.csv_mode,
+                    cache_only=True,
+                )
+            )
+
+            if enriched_albums:
+                recommendations = [
+                    {
+                        "album_name": a.title,
+                        "artist_name": a.artist_name,
+                        "year": a.year,
+                        "rating": a.rating,
+                        "votes": a.votes,
+                        "discogs_master_id": a.discogs_master_id or a.discogs_release_id,
+                        "discogs_type": a.discogs_type,
+                        "image_url": a.cover_image or "https://via.placeholder.com/300x300?text=No+Cover",
+                        "source": "artist_based",
+                    }
+                    for a in enriched_albums
+                ]
+                elapsed = time.time() - start_time
+                log_event("recommender-service", "INFO",
+                          f"✓ Discogs search + inline enrich for {request.artist_name} in {elapsed:.2f}s")
+                return {"recommendations": recommendations, "total": len(recommendations), "artist_name": request.artist_name}
+
+            # Fallback: enrich falló, devolver sin ratings
+            recommendations = []
+            for album in discogs_albums:
+                recommendations.append({
                     "album_name": album["title"],
                     "artist_name": album["artist_name"],
-                    "year": album["year"],
+                    "year": album.get("year"),
                     "rating": None,
                     "votes": None,
                     "discogs_master_id": album["discogs_master_id"] or album["discogs_release_id"],
@@ -1076,15 +1115,7 @@ async def artist_single_recommendation(request: SingleArtistRequest):
                     "image_url": album["cover_image"] or "https://via.placeholder.com/300x300?text=No+Cover",
                     "source": "artist_based_partial",
                     "is_partial": 1
-                }
-                recommendations.append(rec)
-
-            # Enriquecer ratings en background para siguiente request
-            if any(r["discogs_master_id"] for r in recommendations):
-                asyncio.create_task(
-                    asyncio.to_thread(enrich_ratings_for_artist, request.artist_name, discogs_key, discogs_secret)
-                )
-
+                })
             elapsed = time.time() - start_time
             return {"recommendations": recommendations, "total": len(recommendations), "artist_name": request.artist_name}
 
@@ -1145,7 +1176,7 @@ async def _generate_spotify_recommendations(artist_name: str, top_albums: int, u
             "live", "compilation", "anthology", "best of", "greatest hits",
             "deluxe", "promo", "single", "ep", "directo", "remaster", "remastered",
             "reissue", "anniversary", "edition", "collector", "box set", "oknotok",
-            "mnesia", "recordings", "sessions", "demos", "acoustic", "unplugged",
+            "kid a mnesia", "recordings", "sessions", "demos", "acoustic", "unplugged",
             "radio", "broadcast", "concert", "tour",
         ]
 
