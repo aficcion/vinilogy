@@ -1078,6 +1078,13 @@ async def artist_single_recommendation(request: SingleArtistRequest):
                     "is_partial": 1
                 }
                 recommendations.append(rec)
+
+            # Enriquecer ratings en background para siguiente request
+            if any(r["discogs_master_id"] for r in recommendations):
+                asyncio.create_task(
+                    asyncio.to_thread(enrich_ratings_for_artist, request.artist_name, discogs_key, discogs_secret)
+                )
+
             elapsed = time.time() - start_time
             return {"recommendations": recommendations, "total": len(recommendations), "artist_name": request.artist_name}
 
