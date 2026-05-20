@@ -57,12 +57,7 @@ async function loginLastfm() {
         const data = await response.json();
 
         if (data.auth_url) {
-            // Set auth pending flag
-            localStorage.setItem('vinilogy_lastfm_auth_pending', 'true');
-            // Remove any old token
-            localStorage.removeItem('vinilogy_lastfm_token');
-
-            // Redirect to Last.fm in the same window
+            // Redirect to Last.fm
             window.location.href = data.auth_url;
         }
     } catch (error) {
@@ -71,39 +66,22 @@ async function loginLastfm() {
     }
 }
 
-// Check if we just returned from Last.fm authentication
+async function refreshLastfmRecommendations() {
+    const userId = localStorage.getItem('userId');
+    const lastfmUser = localStorage.getItem('lastfm_username');
+    if (!userId || !lastfmUser) return;
+
+    localStorage.removeItem('lastfm_synced_at');
+    showLastfmSyncBanner('Actualizando recomendaciones de Last.fm...');
+    await generateAndSaveRecommendations(userId, lastfmUser);
+}
+
+// checkLastfmAuthReturn — no longer needed: callback.html handles the redirect
+// and DOMContentLoaded picks up userId + lastfm_username automatically.
 function checkLastfmAuthReturn() {
-    const authCompleted = localStorage.getItem('vinilogy_lastfm_auth_completed');
-    const lastfmUsername = localStorage.getItem('lastfm_username');
-
-    if (authCompleted === 'true' && lastfmUsername) {
-        // Clear the flag
-        localStorage.removeItem('vinilogy_lastfm_auth_completed');
-
-        console.log('✓ Returned from Last.fm authentication:', lastfmUsername);
-
-        // Show success message
-        if (typeof showToast === 'function') {
-            showToast(`¡Conectado con Last.fm como ${lastfmUsername}!`, 'success');
-        }
-
-        // FORCE UI UPDATE immediately to avoid Guest+Spinner glitch
-        const landing = document.getElementById('landing-view');
-        if (landing) landing.style.display = 'none';
-        document.body.classList.remove('landing-active');
-        const dashboard = document.getElementById('recommendations-view');
-        if (dashboard) dashboard.style.display = 'block';
-
-        // Hide auth buttons in header
-        document.querySelectorAll('.auth-btn').forEach(b => b.style.display = 'none');
-        document.getElementById('user-menu')?.classList.remove('hidden');
-
-        // Load recommendations for the user
-        const userId = localStorage.getItem('userId');
-        if (userId) {
-            fetchUserRecommendations(userId);
-        }
-    }
+    // Cleanup any stale auth flags left from previous sessions
+    localStorage.removeItem('vinilogy_lastfm_auth_pending');
+    localStorage.removeItem('vinilogy_lastfm_auth_completed');
 }
 
 // Check if we just returned from Discogs authentication
@@ -201,7 +179,6 @@ async function fetchUserRecommendations(userId) {
     if (dashboard) dashboard.style.display = 'block';
 
     showSkeletonCards(8);
-    showLoading(true);
 
     console.log(`Fetching recommendations for user: ${userId} at /api/users/${userId}/recommendations`);
     try {
@@ -215,32 +192,31 @@ async function fetchUserRecommendations(userId) {
         const data = await resp.json();
         console.log('Recommendations loaded:', data.length, 'items');
 
-        // If no recommendations found and we have a Last.fm user, trigger generation
-        // Check if we need to trigger initial Last.fm generation
-        // We do this if:
-        // 1. We have a Last.fm user connected
-        // 2. We haven't synced with Last.fm yet (checked via a flag)
         const lastfmUser = localStorage.getItem('lastfm_username');
-        const hasSyncedLastfm = localStorage.getItem('lastfm_synced_v2');
+        const lastSyncedAt = localStorage.getItem('lastfm_synced_at');
+        const SYNC_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+        const syncExpired = !lastSyncedAt || (Date.now() - parseInt(lastSyncedAt)) > SYNC_TTL_MS;
+        const needsLastfmSync = lastfmUser && (syncExpired || data.length === 0);
 
-        // Trigger generation if:
-        // 1. We have a Last.fm user
-        // 2. AND (We haven't synced yet OR we synced but got 0 results)
-        if (lastfmUser && (!hasSyncedLastfm || data.length === 0)) {
-            console.log('Last.fm connected but no recs/not synced. Triggering generation/merge for:', lastfmUser);
-            // Mark as synced BEFORE calling to prevent loops if it fails or returns 0
-            localStorage.setItem('lastfm_synced_v2', 'true');
-            await generateAndSaveRecommendations(userId, lastfmUser);
-            return; // Exit, the generation function will call fetch again
+        // Always render whatever we have immediately — don't block on Last.fm
+        if (data.length > 0) {
+            syncAlbumStatusesFromRecs(data);
+            renderRecommendations(data);
         }
 
-        // localStorage caching removed to prevent stale data issues
-        // localStorage.setItem('last_recommendations', JSON.stringify(data));
-        // localStorage.setItem('last_updated', new Date().toISOString());
+        // If Last.fm sync is needed, generate in the background without hiding existing recs
+        if (needsLastfmSync) {
+            console.log('Last.fm sync needed. Generating in background for:', lastfmUser);
+            localStorage.setItem('lastfm_synced_at', Date.now().toString());
+            showLastfmSyncBanner('Cargando recomendaciones de Last.fm...');
+            await generateAndSaveRecommendations(userId, lastfmUser);
+            return;
+        }
 
-        // Sync album status map from the received recommendations
-        syncAlbumStatusesFromRecs(data);
-        renderRecommendations(data);
+        // If no recs and no Last.fm, just render (empty state)
+        if (data.length === 0) {
+            renderRecommendations(data);
+        }
     } catch (e) {
         console.error('Error fetching user recommendations:', e);
         // Fallback removed
@@ -251,23 +227,40 @@ async function fetchUserRecommendations(userId) {
 
 // New helper to generate and save recommendations
 async function generateAndSaveRecommendations(userId, lastfmUsername) {
-    showLoading(true, 'Generando recomendaciones personalizadas...');
     try {
-        // 1. Get recommendations from Last.fm
-        console.log('Step 1: Fetching Last.fm recommendations...');
-        const genResp = await fetch('/api/lastfm/recommendations', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                username: lastfmUsername,
-                time_range: 'medium_term'
+        // Steps 1 + 5 en paralelo: recomendaciones y top-artists a la vez
+        console.log('Step 1+5: Fetching Last.fm recommendations & top-artists in parallel...');
+        const [genResp, topArtistsResp] = await Promise.all([
+            fetch('/api/lastfm/recommendations', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: lastfmUsername, time_range: 'medium_term' })
+            }),
+            fetch('/api/lastfm/top-artists', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: lastfmUsername, time_range: 'medium_term' })
             })
-        });
+        ]);
 
         if (!genResp.ok) throw new Error('Failed to generate recommendations');
         const genData = await genResp.json();
         const newLastfmRecs = genData.albums || [];
         console.log(`✓ Generated ${newLastfmRecs.length} recommendations from Last.fm`);
+
+        // Guardar top-artists en background (no bloquea el flujo)
+        if (topArtistsResp.ok) {
+            topArtistsResp.json().then(profileData => {
+                const topArtists = profileData.artists || [];
+                if (topArtists.length > 0) {
+                    fetch(`/api/users/${userId}/profile/lastfm`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ lastfm_username: lastfmUsername, top_artists: topArtists.slice(0, 50) })
+                    }).then(() => console.log('✓ Last.fm profile saved (parallel)')).catch(e => console.warn('Profile save failed:', e));
+                }
+            }).catch(e => console.warn('Top artists parse failed:', e));
+        }
 
         // 2. Get recommendations for Selected Artists (Manual)
         console.log('Step 2: Fetching Manual Artist recommendations...');
@@ -508,47 +501,27 @@ async function generateAndSaveRecommendations(userId, lastfmUsername) {
 
         console.log('✓ Recommendations saved successfully');
 
-        // 5. Save Last.fm profile (top artists)
+        // Fetch fresh recs and update the view directly — no skeleton, no full reload
         try {
-            const profileResp = await fetch(`/api/lastfm/top-artists`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    username: lastfmUsername,
-                    time_range: 'medium_term'
-                })
-            });
-
-            if (profileResp.ok) {
-                const profileData = await profileResp.json();
-                const topArtists = profileData.artists || [];
-
-                if (topArtists.length > 0) {
-                    await fetch(`/api/users/${userId}/profile/lastfm`, {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            lastfm_username: lastfmUsername,
-                            top_artists: topArtists.slice(0, 50)
-                        })
-                    });
-                    console.log('✓ Last.fm profile saved');
-                }
+            const freshResp = await fetch(`/api/users/${userId}/recommendations`);
+            if (freshResp.ok) {
+                const freshData = await freshResp.json();
+                syncAlbumStatusesFromRecs(freshData);
+                renderRecommendations(freshData);
             }
         } catch (e) {
-            console.warn('Could not save Last.fm profile:', e);
+            console.warn('Could not refresh recommendations after generation:', e);
         }
 
-        // 6. Fetch again to display
-        showLoading(false);
-        await fetchUserRecommendations(userId);
+        hideLastfmSyncBanner();
 
         if (typeof showToast === 'function') {
-            showToast('Recomendaciones actualizadas correctamente', 'success');
+            showToast('Recomendaciones de Last.fm añadidas', 'success');
         }
 
     } catch (e) {
         console.error('Error generating recommendations:', e);
+        hideLastfmSyncBanner();
         showLoading(false);
         alert('Hubo un error generando tus recomendaciones. Por favor intenta más tarde.');
     }
@@ -655,11 +628,27 @@ function escapeHtml(text) {
 }
 
 // Show/hide loading state (legacy, keep for simple loads)
+function showLastfmSyncBanner(message = 'Cargando recomendaciones de Last.fm...') {
+    const banner = document.getElementById('lastfm-sync-banner');
+    const text = document.getElementById('lastfm-sync-banner-text');
+    if (!banner) return;
+    if (text) text.textContent = message;
+    banner.style.display = 'flex';
+}
+
+function hideLastfmSyncBanner() {
+    const banner = document.getElementById('lastfm-sync-banner');
+    if (banner) banner.style.display = 'none';
+}
+
 function showLoading(show, message = 'Cargando tus recomendaciones...') {
     const loadingEl = document.getElementById('loading');
+    const recsView = document.getElementById('recommendations-view');
     loadingEl.classList.toggle('active', show);
     if (show) {
         loadingEl.querySelector('p').textContent = message;
+        // Hide recommendations view while full loading state is active
+        if (recsView) recsView.classList.remove('active');
     }
 }
 
@@ -806,7 +795,7 @@ function stopProgressMonitoring() {
 
 // Load all recommendations from Last.fm
 async function loadAllRecommendations() {
-    showLoading(true, 'Cargando recomendaciones desde todas las fuentes...');
+    showSkeletonCards(8);
 
     try {
         const promises = [];
@@ -1010,12 +999,15 @@ function renderRecommendations(recommendations) {
     // Show artist search button always
     artistSearchBtn.style.display = 'inline-flex';
 
-    // Show Last.fm button only if not connected
+    // Show Last.fm button only if not connected; show refresh if connected
     const lastfmUsername = localStorage.getItem('lastfm_username');
+    const isLastfmConnected = !!(lastfmUsername || window.lastfmConnected);
     if (lastfmHeaderBtn) {
-        const shouldHide = !!(lastfmUsername || window.lastfmConnected);
-        console.log(`Render: Last.fm button visibility check. Username: ${lastfmUsername}, Connected: ${window.lastfmConnected} -> Hide: ${shouldHide}`);
-        lastfmHeaderBtn.style.display = shouldHide ? 'none' : 'inline-flex';
+        lastfmHeaderBtn.style.display = isLastfmConnected ? 'none' : 'inline-flex';
+    }
+    const lastfmRefreshBtn = document.getElementById('lastfm-refresh-btn');
+    if (lastfmRefreshBtn) {
+        lastfmRefreshBtn.style.display = isLastfmConnected ? 'inline-flex' : 'none';
     }
 
     const filterButtons = document.querySelectorAll('.filter-btn');
@@ -1104,8 +1096,12 @@ function displayFilteredRecommendations(recommendations) {
     const container = document.getElementById('albums-container');
     container.innerHTML = '';
 
-    recommendations.forEach(rec => {
+    recommendations.forEach((rec, index) => {
         const card = createAlbumCard(rec);
+        // Stagger fade-in: first 12 cards animate in sequence, rest appear immediately
+        if (index < 12) {
+            card.style.animationDelay = `${index * 35}ms`;
+        }
         container.appendChild(card);
     });
 }
@@ -1205,17 +1201,13 @@ function createAlbumCard(rec) {
     card.innerHTML = `
         <div class="album-cover">
             <img src="${cover}" alt="${album}" loading="lazy">
-            ${rec.is_partial ? '<div class="partial-badge" title="Información pendiente de enriquecer">⏳</div>' : ''}
             ${rec.source === 'collection_upgrade' ? '<div class="upgrade-badge" title="Upgrade recomendado">UPGRADE ⬆</div>' : ''}
-            ${rec.source === 'discography_completion' ? '<div class="completion-badge" title="Completar discografía">COMPLETAR</div>' : ''}
         </div>
         <div class="album-info">
             <h3>${album}</h3>
             <p>${artist}</p>
             ${rec.source === 'collection_upgrade' && rec.current_formats ?
             `<p class="upgrade-info">Tienes: <span class="format-tag">${rec.current_formats.join(', ')}</span></p>` : ''}
-            ${rec.source === 'discography_completion' ?
-            `<p class="completion-info">Falta en tu colección</p>` : ''}
             <div class="album-actions">
                 <button class="action-btn favorite ${currentStatus === 'favorite' ? 'active' : ''}" title="Guardar en favoritos" data-action="favorite">★</button>
                 <button class="action-btn owned ${currentStatus === 'owned' ? 'active' : ''}" title="Ya lo tengo" data-action="owned">✓</button>

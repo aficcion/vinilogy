@@ -162,7 +162,7 @@ const DiscogsWizard = {
         const body = document.getElementById('wizard-body');
         body.innerHTML = `
             <div class="wizard-step centered">
-                <div class="vinyl-spinner"></div>
+                <div class="spinner"></div>
                 <h2>${msg}</h2>
             </div>
         `;
@@ -172,7 +172,7 @@ const DiscogsWizard = {
         const body = document.getElementById('wizard-body');
         body.innerHTML = `
             <div class="wizard-step centered">
-                <div class="vinyl-spinner"></div>
+                <div class="spinner"></div>
                 <h2>Sincronizando Colección</h2>
                 <p>Estamos importando tus datos de Discogs.</p>
                 <p id="wizard-sync-count"><strong>${processed || 0} ítems procesados...</strong></p>

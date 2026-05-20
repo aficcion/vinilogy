@@ -8,8 +8,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/styles.css?v=20">
-    <link rel="stylesheet" href="/static/artist-search.css?v=9">
+    <link rel="stylesheet" href="/static/styles.css?v=22">
+    <link rel="stylesheet" href="/static/artist-search.css?v=13">
     <style>
     </style>
 </head>
@@ -40,14 +40,12 @@
                     <p>Recomendaciones de vinilo personalizadas basadas en lo que <em>de verdad</em> escuchas.</p>
 
                     <div class="hero-actions">
-                        <div class="hero-search-container">
+                        <div class="hero-search-container" onclick="openArtistSearch()">
                             <span class="search-icon-hero">🔍</span>
-                            <input type="text" id="hero-search-input" class="hero-search-input"
+                            <input type="text" class="hero-search-input"
                                    placeholder="Busca artista o álbum..."
-                                   autocomplete="off"
-                                   onfocus="openArtistSearch(this.value)"
-                                   oninput="openArtistSearch(this.value)">
-                            <button class="hero-search-btn" onclick="openArtistSearch(document.getElementById('hero-search-input').value)">Buscar →</button>
+                                   readonly>
+                            <button class="hero-search-btn" tabindex="-1">Buscar →</button>
                         </div>
 
                         <div class="auth-links">
@@ -106,8 +104,8 @@
     </div>
 
     <div class="loading-state" id="loading">
-        <div class="vinyl-spinner"></div>
-        <p>Girando tus recomendaciones...</p>
+        <div class="spinner"></div>
+        <p>Cargando recomendaciones...</p>
     </div>
 
     <div id="recommendations-view" class="container">
@@ -121,6 +119,9 @@
                     <button id="lastfm-header-btn" class="spotify-btn-small" onclick="loginLastfm()" style="display: none;">
                         <span class="spotify-icon">🎵</span> Conectar Last.fm
                     </button>
+                    <button id="lastfm-refresh-btn" class="spotify-btn-small" onclick="refreshLastfmRecommendations()" style="display: none;" title="Actualizar recomendaciones desde Last.fm">
+                        <span class="spotify-icon">🔄</span> Actualizar Last.fm
+                    </button>
                     <button id="discogs-header-btn" class="spotify-btn-small" onclick="linkDiscogs()" style="display: none;">
                         <span class="spotify-icon">💿</span> Conectar Discogs
                     </button>
@@ -129,6 +130,12 @@
                     </button>
                 </div>
             </div>
+        </div>
+
+        <!-- Non-blocking banner shown while Last.fm generates in background -->
+        <div id="lastfm-sync-banner" style="display:none;">
+            <div class="spinner-small-inline"></div>
+            <span id="lastfm-sync-banner-text">Cargando recomendaciones de Last.fm...</span>
         </div>
 
         <div class="filter-bar">
@@ -297,10 +304,7 @@
     </div>
 
     <div class="modal-overlay" id="artist-search-modal">
-        <div class="modal-content">
-            <button class="modal-close" onclick="closeArtistSearch()" aria-label="Cerrar búsqueda de artistas">✕</button>
-            <div id="artist-search-container"></div>
-        </div>
+        <div id="artist-search-container"></div>
     </div>
 
     <div class="progress-banner" id="progress-banner" role="status" aria-live="polite">
@@ -326,11 +330,11 @@
         </div>
     </div>
 
-    <script src="/static/artist-search.js?v=1764005003"></script>
-    <script src="/static/discogs-wizard.js?v=6"></script>
+    <script src="/static/artist-search.js?v=1764005009"></script>
+    <script src="/static/discogs-wizard.js?v=7"></script>
     <script src="/static/app.js?v=8" defer></script>
     <script src="/static/app-user-ext.js?v=3" defer></script>
-    <script src="/static/app-user.js?v=12" defer></script>
+    <script src="/static/app-user.js?v=14" defer></script>
 </body>
 
 </html>

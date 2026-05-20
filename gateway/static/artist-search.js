@@ -17,118 +17,66 @@ class ArtistSearch {
         this.recommendationsCache = {};
         this.loadingArtists = new Set();
         this.pendingPromises = new Map();
-        this.currentSearchFilter = 'all'; // 'all', 'artists', 'albums'
-        this.showAllArtists = false; // Mobile: show all artists or just 2
-        this.showAllAlbums = false; // Mobile: show all albums or just 2
 
         this.render();
         this.attachEventListeners();
     }
 
-    renderSelectedAlbums() {
-        const pillsContainer = document.getElementById('selected-albums-pills');
-        const counter = document.getElementById('album-counter');
-
-        if (!pillsContainer || !counter) return;
-
-        counter.textContent = `${this.selectedAlbums.length} añadidos`;
-
-        if (this.selectedAlbums.length === 0) {
-            pillsContainer.innerHTML = '<div class="no-selection">Aún no has añadido álbumes</div>';
-            return;
-        }
-
-        pillsContainer.innerHTML = this.selectedAlbums.map((album, index) => {
-            return `
-                <div class="album-pill">
-                    ${album.cover_url
-                    ? `<img src="${album.cover_url}" alt="${album.title}" class="pill-image" />`
-                    : '<div class="pill-placeholder">💿</div>'
-                }
-                    <div class="pill-album-info">
-                        <span class="pill-album-title">${album.title}</span>
-                        <span class="pill-album-artist">${album.artist_name}</span>
-                    </div>
-                    <button class="pill-remove-btn" data-album-index="${index}">✕</button>
-                </div>
-            `;
-        }).join('');
-
-        this.attachAlbumPillRemoveListeners();
-    }
-
-    attachAlbumPillRemoveListeners() {
-        const removeButtons = document.querySelectorAll('.album-pill .pill-remove-btn');
-        removeButtons.forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const index = parseInt(btn.dataset.albumIndex);
-                this.removeAlbum(index);
-            });
-        });
-    }
-
-    removeAlbum(index) {
-        this.selectedAlbums.splice(index, 1);
-        this.renderSelectedAlbums();
-        this.updateContinueButton();
-        // Re-render search results to update button states
-        this.renderSearchResults();
-    }
-
     render() {
         this.container.innerHTML = `
-            <div class="artist-search-modal">
-                <div class="artist-search-header">
-                    <h2>Selecciona hasta ${this.options.maxArtists} artistas o añade álbumes directamente.</h2>
-                </div>
-                
-                <div class="artist-search-input-wrapper">
-                    <input 
-                        type="text" 
-                        id="artist-search-input" 
-                        placeholder="Busca música o busca vinilos..." 
-                        class="artist-search-input"
+            <div class="search-modal">
+                <header class="search-modal__head">
+                    <div class="search-modal__head-l">
+                        <span class="search-modal__kicker">Búsqueda · resultados mezclados</span>
+                        <h2 class="search-modal__title">Encuentra <em>tu pila</em>.</h2>
+                    </div>
+                    <button class="search-modal__x" id="search-modal-close-btn" aria-label="Cerrar">✕</button>
+                </header>
+
+                <div class="search-bar">
+                    <span class="search-bar__icon" aria-hidden="true">⌕</span>
+                    <input
+                        type="text"
+                        id="artist-search-input"
+                        class="search-bar__input"
+                        placeholder="Radiohead, post-punk, Kind of Blue…"
+                        aria-label="Buscar artistas o álbumes"
                         autocomplete="off"
                     />
-                    <button id="clear-search-btn" class="clear-search-btn" style="display: none;">✕</button>
-                </div>
-                
-                <div id="search-results-container" class="search-results-container">
-                    <div class="search-filter-tabs" id="search-filter-tabs" style="display: none;">
-                        <button class="search-tab active" data-filter="all">Todos</button>
-                        <button class="search-tab" data-filter="artists">Artistas</button>
-                        <button class="search-tab" data-filter="albums">Álbumes</button>
-                    </div>
-                    <div id="search-results-grid" class="artist-grid"></div>
-                </div>
-                
-                <div class="selected-artists-section">
-                    <div class="selected-artists-header collapsible-header" id="artists-header">
-                        <div class="header-content">
-                            <span>Artistas seleccionados (opcional, máx. ${this.options.maxArtists})</span>
-                            <span id="artist-counter" class="artist-counter">0/${this.options.maxArtists} seleccionados</span>
-                        </div>
-                        <span class="collapse-icon">▼</span>
-                    </div>
-                    <div id="selected-artists-pills" class="selected-artists-pills collapsible-content"></div>
+                    <span id="search-bar-count" class="search-bar__count"></span>
+                    <button class="search-bar__clear" id="clear-search-btn" aria-label="Limpiar búsqueda">✕</button>
                 </div>
 
-                <div class="selected-albums-section">
-                    <div class="selected-albums-header collapsible-header" id="albums-header">
-                        <div class="header-content">
-                            <span>Álbumes añadidos</span>
-                            <span id="album-counter" class="album-counter">0 añadidos</span>
-                        </div>
-                        <span class="collapse-icon">▼</span>
-                    </div>
-                    <div id="selected-albums-pills" class="selected-albums-pills collapsible-content"></div>
+                <div class="search-legend" aria-hidden="true">
+                    <span class="search-legend__item">
+                        <span class="search-legend__swatch search-legend__swatch--circle"></span>
+                        <span><b>Artista</b> · recomendaremos sus vinilos</span>
+                    </span>
+                    <span class="search-legend__sep">/</span>
+                    <span class="search-legend__item">
+                        <span class="search-legend__swatch search-legend__swatch--square"></span>
+                        <span><b>Álbum</b> · entra directo a tu lista</span>
+                    </span>
+                    <span class="search-legend__hint">redondo o cuadrado.</span>
                 </div>
-                
-                ${this.options.onContinue ? `
-                    <button id="continue-btn" class="continue-btn" disabled>
-                        Continuar
-                    </button>
-                ` : ''}
+
+                <div class="search-body">
+                    <div class="search-grid" id="search-results-grid"></div>
+                </div>
+
+                <div class="search-dock" id="search-dock" style="display:none"></div>
+
+                <footer class="search-foot">
+                    <div class="search-foot__info">
+                        <span><b class="accent" id="count-directos">0</b>&nbsp;álbumes directos</span>
+                        <span><b class="accent" id="count-algoritmo">0</b>&nbsp;artistas → algoritmo</span>
+                    </div>
+                    ${this.options.onContinue ? `
+                        <button class="search-cta" id="search-cta-btn" disabled>
+                            Ver recomendaciones →
+                        </button>
+                    ` : ''}
+                </footer>
             </div>
         `;
     }
@@ -136,25 +84,15 @@ class ArtistSearch {
     attachEventListeners() {
         const searchInput = document.getElementById('artist-search-input');
         const clearBtn = document.getElementById('clear-search-btn');
-        const continueBtn = document.getElementById('continue-btn');
+        const ctaBtn = document.getElementById('search-cta-btn');
+        const closeBtn = document.getElementById('search-modal-close-btn');
 
         searchInput.addEventListener('input', (e) => {
             const query = e.target.value.trim();
-
-            if (query.length > 0) {
-                clearBtn.style.display = 'block';
-            } else {
-                clearBtn.style.display = 'none';
-            }
-
-            if (this.searchTimeout) {
-                clearTimeout(this.searchTimeout);
-            }
-
+            clearBtn.style.display = query.length > 0 ? 'block' : 'none';
+            if (this.searchTimeout) clearTimeout(this.searchTimeout);
             if (query.length >= 2) {
-                this.searchTimeout = setTimeout(() => {
-                    this.performSearch(query);
-                }, 300);
+                this.searchTimeout = setTimeout(() => this.performSearch(query), 300);
             } else {
                 this.clearSearchResults();
             }
@@ -165,90 +103,31 @@ class ArtistSearch {
                 searchInput.value = '';
                 clearBtn.style.display = 'none';
                 this.clearSearchResults();
+                searchInput.focus();
             });
         }
 
-        if (continueBtn) {
-            continueBtn.addEventListener('click', async () => {
+        if (ctaBtn) {
+            ctaBtn.addEventListener('click', async () => {
                 if (this.options.onContinue && this.isValidSelection()) {
                     await this.options.onContinue(this.selectedArtists, this);
                 }
             });
         }
 
-        // Attach filter tab listeners
-        this.attachFilterTabListeners();
-
-        // Attach collapsible listeners
-        this.attachCollapsibleListeners();
-    }
-
-    attachCollapsibleListeners() {
-        const artistsHeader = document.getElementById('artists-header');
-        const albumsHeader = document.getElementById('albums-header');
-
-        // Initialize as collapsed on mobile
-        if (window.innerWidth <= 768) {
-            const artistsContent = document.getElementById('selected-artists-pills');
-            const albumsContent = document.getElementById('selected-albums-pills');
-
-            if (artistsContent) artistsContent.classList.add('collapsed');
-            if (albumsContent) albumsContent.classList.add('collapsed');
-
-            const artistIcon = artistsHeader?.querySelector('.collapse-icon');
-            const albumIcon = albumsHeader?.querySelector('.collapse-icon');
-
-            if (artistIcon) artistIcon.classList.add('collapsed');
-            if (albumIcon) albumIcon.classList.add('collapsed');
-        }
-
-        if (artistsHeader) {
-            artistsHeader.addEventListener('click', () => {
-                const content = document.getElementById('selected-artists-pills');
-                const icon = artistsHeader.querySelector('.collapse-icon');
-
-                content.classList.toggle('collapsed');
-                icon.classList.toggle('collapsed');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', () => {
+                if (typeof closeArtistSearch === 'function') closeArtistSearch();
             });
         }
-
-        if (albumsHeader) {
-            albumsHeader.addEventListener('click', () => {
-                const content = document.getElementById('selected-albums-pills');
-                const icon = albumsHeader.querySelector('.collapse-icon');
-
-                content.classList.toggle('collapsed');
-                icon.classList.toggle('collapsed');
-            });
-        }
-    }
-
-    attachFilterTabListeners() {
-        const tabs = document.querySelectorAll('.search-tab');
-        tabs.forEach(tab => {
-            tab.addEventListener('click', () => {
-                // Update active state
-                tabs.forEach(t => t.classList.remove('active'));
-                tab.classList.add('active');
-
-                // Update filter and re-render
-                this.currentSearchFilter = tab.dataset.filter;
-                this.renderSearchResults();
-            });
-        });
     }
 
     async performSearch(query) {
-        const resultsGrid = document.getElementById('search-results-grid');
-        // Skeleton rows while waiting
-        resultsGrid.innerHTML = Array(4).fill(`
-            <div style="display:flex;align-items:center;gap:0.75rem;padding:0.5rem 0;border-bottom:1px solid var(--border-color,#eee)">
-                <div class="skeleton" style="width:48px;height:48px;border-radius:50%;flex-shrink:0"></div>
-                <div style="flex:1">
-                    <div class="skeleton" style="height:14px;width:60%;margin-bottom:6px;border-radius:4px"></div>
-                    <div class="skeleton" style="height:12px;width:40%;border-radius:4px"></div>
-                </div>
-            </div>`).join('');
+        const grid = document.getElementById('search-results-grid');
+        // Skeleton tiles
+        grid.innerHTML = Array(12).fill(`<div class="search-skel"></div>`).join('');
+        const countEl = document.getElementById('search-bar-count');
+        if (countEl) countEl.textContent = '';
 
         try {
             const data = await apiCall(`/api/search?q=${encodeURIComponent(query)}`);
@@ -257,261 +136,243 @@ class ArtistSearch {
             this.renderSearchResults();
         } catch (error) {
             console.error('Search failed:', error);
-            resultsGrid.innerHTML = '<div class="error" style="padding:1rem;color:var(--error,#dc3545)">Error al buscar. Inténtalo de nuevo.</div>';
+            grid.innerHTML = '<div class="search-empty"><p>Error al buscar. Inténtalo de nuevo.</p></div>';
         }
     }
 
     renderSearchResults() {
-        const resultsGrid = document.getElementById('search-results-grid');
-        const filterTabs = document.getElementById('search-filter-tabs');
+        const grid = document.getElementById('search-results-grid');
+        const countEl = document.getElementById('search-bar-count');
 
-        if (this.searchResults.length === 0 && (!this.albumResults || this.albumResults.length === 0)) {
-            resultsGrid.innerHTML = '<div class="no-results">No se encontraron resultados</div>';
-            if (filterTabs) filterTabs.style.display = 'none';
+        if (!grid) return;
+
+        const hasArtists = this.searchResults.length > 0;
+        const hasAlbums = this.albumResults && this.albumResults.length > 0;
+
+        if (!hasArtists && !hasAlbums) {
+            const q = document.getElementById('artist-search-input')?.value || '';
+            grid.innerHTML = `<div class="search-empty"><span class="search-modal__kicker">Sin coincidencias</span><p>No encontramos <em>"${q}"</em>.</p></div>`;
+            if (countEl) countEl.textContent = '';
             return;
         }
 
-        // Show filter tabs when there are results
-        if (filterTabs) filterTabs.style.display = 'flex';
+        const hasGoodArtist = this.searchResults.some(a => a.relevance === 'high' || a.relevance === 'exact');
+        const highArtists = this.searchResults.filter(a => a.relevance === 'high' || a.relevance === 'exact');
+        const lowArtists  = this.searchResults.filter(a => a.relevance === 'low');
+        const hasExact = this.searchResults.some(a => a.relevance === 'exact');
 
-        let html = '';
-        const showArtists = this.currentSearchFilter === 'all' || this.currentSearchFilter === 'artists';
-        const showAlbums = this.currentSearchFilter === 'all' || this.currentSearchFilter === 'albums';
-        const isMobile = window.innerWidth <= 768;
-
-        // Detect album-type query: no artist name overlaps with the query words
-        // Popularity alone does NOT count — a popular but unrelated artist should not block album-first layout
-        const hasGoodArtist = this.searchResults.some(a => a.relevance === 'high');
-        const showAlbumsFirst = this.currentSearchFilter === 'all' && this.albumResults && this.albumResults.length > 0 && !hasGoodArtist;
-
-        // Update filter tab active state to reflect albums-first layout
-        if (filterTabs && showAlbumsFirst) {
-            filterTabs.querySelectorAll('.search-tab').forEach(tab => {
-                tab.classList.toggle('active', tab.dataset.filter === 'all');
-            });
-        }
-
-        const renderArtistsSection = () => {
-            if (!showArtists || this.searchResults.length === 0) return '';
-            let s = '';
-            if (this.currentSearchFilter === 'all') {
-                s += '<div class="search-section-header">Artistas</div>';
-            }
-
-            const artistsToShow = (isMobile && !this.showAllArtists)
-                ? this.searchResults.slice(0, 2)
-                : this.searchResults;
-
-            s += '<div class="artist-grid">';
-            s += artistsToShow.map(artist => {
-                const isSelected = this.selectedArtists.some(a => a.name === artist.name);
-                const isDisabled = !isSelected && this.selectedArtists.length >= this.options.maxArtists;
-
-                return `
-                    <div class="artist-card ${isSelected ? 'selected' : ''} ${isDisabled ? 'disabled' : ''}"
-                         data-artist-name="${artist.name}">
-                        <div class="artist-card-content">
-                            <div class="artist-image-wrapper">
-                                ${artist.image_url
-                        ? `<img src="${artist.image_url}" alt="${artist.name}" class="artist-image" />`
-                        : `<div class="artist-image-placeholder">🎵</div>`
-                    }
-                            </div>
-                            <div class="artist-info">
-                                <div class="artist-name">${artist.name}</div>
-                                ${artist.genres && artist.genres.length > 0
-                        ? `<div class="artist-genres">${artist.genres.join(', ')}</div>`
-                        : ''
-                    }
-                            </div>
-                        </div>
-                        <button class="add-artist-btn ${isSelected ? 'added' : ''}"
-                                ${isDisabled ? 'disabled' : ''}
-                                data-artist='${JSON.stringify(artist)}'>
-                            ${isSelected ? '✓' : '+'}
-                        </button>
-                    </div>
-                `;
-            }).join('');
-            s += '</div>'; // Close artist-grid
-
-            if (isMobile && this.searchResults.length > 2) {
-                s += `
-                    <button class="show-more-btn" id="show-more-artists">
-                        ${this.showAllArtists ? 'Ver menos' : `Ver más (${this.searchResults.length - 2} más)`}
-                    </button>
-                `;
-            }
-            return s;
-        };
-
-        const renderAlbumsSection = () => {
-            if (!showAlbums || !this.albumResults || this.albumResults.length === 0) return '';
-            let s = '';
-            if (this.currentSearchFilter === 'all') {
-                s += '<div class="search-section-header">Álbumes</div>';
-            }
-
-            const albumsToShow = (isMobile && !this.showAllAlbums)
-                ? this.albumResults.slice(0, 2)
-                : this.albumResults;
-
-            s += '<div class="album-grid">';
-            s += albumsToShow.map(album => {
-                const albumDataEscaped = JSON.stringify(album)
-                    .replace(/&/g, '&amp;')
-                    .replace(/'/g, '&apos;')
-                    .replace(/"/g, '&quot;')
-                    .replace(/</g, '&lt;')
-                    .replace(/>/g, '&gt;');
-
-                return `
-                    <div class="album-card" data-album-title="${album.title}">
-                        <div class="album-card-content">
-                            <div class="album-image-wrapper">
-                                ${album.cover_url
-                        ? `<img src="${album.cover_url}" alt="${album.title}" class="album-image" />`
-                        : `<div class="album-image-placeholder">💿</div>`
-                    }
-                            </div>
-                            <div class="album-info">
-                                <div class="album-title-full">${album.title}</div>
-                                <div class="album-artist-full">${album.artist_name || 'Unknown Artist'}</div>
-                                ${album.year ? `<span class="album-year-badge">${album.year}</span>` : ''}
-                            </div>
-                        </div>
-                        <button class="add-album-btn" data-album="${albumDataEscaped}">
-                            +
-                        </button>
-                    </div>
-                `;
-            }).join('');
-            s += '</div>'; // Close album-grid
-
-            if (isMobile && this.albumResults.length > 2) {
-                s += `
-                    <button class="show-more-btn" id="show-more-albums">
-                        ${this.showAllAlbums ? 'Ver menos' : `Ver más (${this.albumResults.length - 2} más)`}
-                    </button>
-                `;
-            }
-            return s;
-        };
-
-        if (showAlbumsFirst) {
-            html += renderAlbumsSection();
-            html += renderArtistsSection();
+        // Build unified ordered list: [{kind:'artist'|'album', data}]
+        let items = [];
+        if (hasGoodArtist) {
+            items = [
+                ...highArtists.map(a => ({ kind: 'artist', data: a })),
+                ...(hasAlbums ? this.albumResults.map(a => ({ kind: 'album', data: a })) : []),
+                ...(!hasExact ? lowArtists.map(a => ({ kind: 'artist', data: a })) : []),
+            ];
         } else {
-            html += renderArtistsSection();
-            html += renderAlbumsSection();
+            items = [
+                ...(hasAlbums ? this.albumResults.map(a => ({ kind: 'album', data: a })) : []),
+                ...this.searchResults.map(a => ({ kind: 'artist', data: a })),
+            ];
         }
 
-        resultsGrid.innerHTML = html;
-        this.attachArtistCardListeners();
-        this.attachAlbumCardListeners();
-        this.attachShowMoreListeners();
+        // Strip items without a real photo (safety net — backend also filters)
+        items = items.filter(item =>
+            item.kind === 'artist' ? !!item.data.image_url : !!item.data.cover_url
+        );
+
+        // Max 24 items
+        items = items.slice(0, 24);
+
+        if (countEl) countEl.textContent = `${items.length} de ${this.searchResults.length + (this.albumResults?.length || 0)}`;
+
+        grid.innerHTML = items.map(item => this._renderTile(item)).join('');
+        this.attachTileListeners();
     }
 
-    attachShowMoreListeners() {
-        const showMoreArtistsBtn = document.getElementById('show-more-artists');
-        const showMoreAlbumsBtn = document.getElementById('show-more-albums');
-
-        if (showMoreArtistsBtn) {
-            showMoreArtistsBtn.addEventListener('click', () => {
-                this.showAllArtists = !this.showAllArtists;
-                this.renderSearchResults();
-            });
-        }
-
-        if (showMoreAlbumsBtn) {
-            showMoreAlbumsBtn.addEventListener('click', () => {
-                this.showAllAlbums = !this.showAllAlbums;
-                this.renderSearchResults();
-            });
+    _renderTile(item) {
+        if (item.kind === 'artist') {
+            const a = item.data;
+            const isSelected = this.selectedArtists.some(s => s.name === a.name);
+            const isDisabled = !isSelected && this.selectedArtists.length >= this.options.maxArtists;
+            const artistJson = JSON.stringify(a).replace(/'/g, '&apos;').replace(/"/g, '&quot;');
+            const imgHtml = a.image_url
+                ? `<img src="${a.image_url}" alt="${a.name}" loading="lazy">`
+                : `<div class="search-tile__art-placeholder">🎵</div>`;
+            const genre = a.genres && a.genres.length > 0 ? a.genres.slice(0, 2).join(', ') : 'Artista';
+            return `
+                <button type="button"
+                    class="search-tile search-tile--artist ${isSelected ? 'search-tile--on' : ''} ${isDisabled ? 'search-tile--disabled' : ''}"
+                    data-kind="artist"
+                    data-artist="${artistJson}"
+                    aria-pressed="${isSelected}"
+                    aria-label="Artista ${a.name}"
+                    ${isDisabled ? 'disabled' : ''}>
+                    <div class="search-tile__band search-tile__band--art">
+                        <span>Artista</span>
+                        <span class="search-tile__band-action">recomendación</span>
+                    </div>
+                    <div class="search-tile__body">
+                        <div class="search-tile__art search-tile__art--circle">${imgHtml}</div>
+                        <span class="search-tile__name">${a.name}</span>
+                        <span class="search-tile__sub">${genre}</span>
+                    </div>
+                    <span class="search-tile__add" aria-hidden="true">${isSelected ? '✓' : '+'}</span>
+                </button>
+            `;
+        } else {
+            // album
+            const al = item.data;
+            const isSelected = this.selectedAlbums.some(s => s.title === al.title && s.artist_name === al.artist_name);
+            const albumJson = JSON.stringify(al).replace(/'/g, '&apos;').replace(/"/g, '&quot;');
+            const imgHtml = al.cover_url
+                ? `<img src="${al.cover_url}" alt="${al.title}" loading="lazy">`
+                : `<div class="search-tile__art-placeholder">💿</div>`;
+            const sub = [al.artist_name, al.year].filter(Boolean).join(' · ');
+            return `
+                <button type="button"
+                    class="search-tile search-tile--album ${isSelected ? 'search-tile--on' : ''}"
+                    data-kind="album"
+                    data-album="${albumJson}"
+                    aria-pressed="${isSelected}"
+                    aria-label="Álbum ${al.title} de ${al.artist_name}">
+                    <div class="search-tile__band search-tile__band--lp">
+                        <span>Álbum</span>
+                        <span class="search-tile__band-action">directo</span>
+                    </div>
+                    <div class="search-tile__body">
+                        <div class="search-tile__art">${imgHtml}</div>
+                        <span class="search-tile__name"><em>${al.title}</em></span>
+                        <span class="search-tile__sub">${sub}</span>
+                    </div>
+                    <span class="search-tile__add" aria-hidden="true">${isSelected ? '✓' : '+'}</span>
+                </button>
+            `;
         }
     }
 
-    attachArtistCardListeners() {
-        const artistCards = document.querySelectorAll('.artist-card');
-
-        artistCards.forEach(card => {
-            card.addEventListener('click', (e) => {
-                // Prevent double triggering if clicking the button directly
-                if (e.target.closest('.add-artist-btn')) return;
-
-                const artistName = card.dataset.artistName;
-                const btn = card.querySelector('.add-artist-btn');
-                if (!btn) return;
-
-                const artist = JSON.parse(btn.dataset.artist);
+    attachTileListeners() {
+        document.querySelectorAll('.search-tile--artist').forEach(tile => {
+            tile.addEventListener('click', () => {
+                if (tile.disabled) return;
+                const artist = JSON.parse(tile.dataset.artist.replace(/&quot;/g, '"').replace(/&apos;/g, "'"));
                 const isSelected = this.selectedArtists.some(a => a.name === artist.name);
+                if (isSelected) this.removeArtist(artist.name);
+                else if (this.selectedArtists.length < this.options.maxArtists) this.addArtist(artist);
+            });
+        });
 
+        document.querySelectorAll('.search-tile--album').forEach(tile => {
+            tile.addEventListener('click', async () => {
+                const al = JSON.parse(tile.dataset.album.replace(/&quot;/g, '"').replace(/&apos;/g, "'"));
+                const isSelected = this.selectedAlbums.some(s => s.title === al.title && s.artist_name === al.artist_name);
                 if (isSelected) {
-                    this.removeArtist(artist.name);
-                } else if (this.selectedArtists.length < this.options.maxArtists) {
-                    this.addArtist(artist);
+                    // deselect: find index and remove
+                    const idx = this.selectedAlbums.findIndex(s => s.title === al.title && s.artist_name === al.artist_name);
+                    if (idx >= 0) this.removeAlbum(idx);
+                } else {
+                    // optimistic select
+                    tile.classList.add('search-tile--on');
+                    const addBtn = tile.querySelector('.search-tile__add');
+                    if (addBtn) addBtn.textContent = '✓';
+                    await this.addAlbum(al, tile);
                 }
             });
         });
+    }
 
-        const addButtons = document.querySelectorAll('.add-artist-btn');
+    renderDock() {
+        const dock = document.getElementById('search-dock');
+        if (!dock) return;
 
-        addButtons.forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const artist = JSON.parse(btn.dataset.artist);
-                const isSelected = this.selectedArtists.some(a => a.name === artist.name);
+        const total = this.selectedArtists.length + this.selectedAlbums.length;
+        if (total === 0) { dock.style.display = 'none'; return; }
+        dock.style.display = 'flex';
 
-                if (isSelected) {
-                    this.removeArtist(artist.name);
-                } else if (this.selectedArtists.length < this.options.maxArtists) {
-                    this.addArtist(artist);
-                }
+        const pillsHtml = [
+            ...this.selectedArtists.map((a, i) => {
+                const thumb = a.image_url
+                    ? `<img src="${a.image_url}" alt="${a.name}">`
+                    : `<span style="font-size:11px">🎵</span>`;
+                const isLoading = this.loadingArtists.has(a.name);
+                return `
+                    <span class="search-pill">
+                        <span class="search-pill__thumb">${thumb}</span>
+                        <span class="search-pill__type">ART</span>
+                        <span class="search-pill__name">${a.name}${isLoading ? ' ⏳' : ''}</span>
+                        <button class="search-pill__rm" data-kind="artist" data-name="${a.name}" aria-label="Quitar ${a.name}">×</button>
+                    </span>
+                `;
+            }),
+            ...this.selectedAlbums.map((al, i) => {
+                const thumb = al.cover_url
+                    ? `<img src="${al.cover_url}" alt="${al.title}">`
+                    : `<span style="font-size:11px">💿</span>`;
+                return `
+                    <span class="search-pill">
+                        <span class="search-pill__thumb search-pill__thumb--sq">${thumb}</span>
+                        <span class="search-pill__type">LP</span>
+                        <span class="search-pill__name">${al.title}</span>
+                        <button class="search-pill__rm" data-kind="album" data-index="${i}" aria-label="Quitar ${al.title}">×</button>
+                    </span>
+                `;
+            })
+        ].join('');
+
+        dock.innerHTML = `
+            <span class="search-dock__label">Tu lista · ${total}</span>
+            <div class="search-dock__list">${pillsHtml}</div>
+        `;
+
+        dock.querySelectorAll('.search-pill__rm').forEach(btn => {
+            btn.addEventListener('click', () => {
+                if (btn.dataset.kind === 'artist') this.removeArtist(btn.dataset.name);
+                else this.removeAlbum(parseInt(btn.dataset.index));
             });
         });
     }
 
-    attachAlbumCardListeners() {
-        const albumCards = document.querySelectorAll('.album-card');
+    updateUI() {
+        this.renderSearchResults();
+        this.renderDock();
+        this.updateCTA();
+        this.options.onSelectionChange(this.selectedArtists);
+    }
 
-        albumCards.forEach(card => {
-            card.addEventListener('click', async (e) => {
-                // Prevent double triggering if clicking the button directly
-                if (e.target.closest('.add-album-btn')) return;
+    updateCTA() {
+        const ctaBtn = document.getElementById('search-cta-btn');
+        const countDirectos = document.getElementById('count-directos');
+        const countAlgoritmo = document.getElementById('count-algoritmo');
 
-                const btn = card.querySelector('.add-album-btn');
-                if (!btn || btn.disabled) return;
+        if (countDirectos) countDirectos.textContent = this.selectedAlbums.length;
+        if (countAlgoritmo) countAlgoritmo.textContent = this.selectedArtists.length;
 
-                // Decode HTML entities before parsing JSON
-                const albumDataEscaped = btn.dataset.album;
-                const albumDataJson = albumDataEscaped
-                    .replace(/&quot;/g, '"')
-                    .replace(/&apos;/g, "'")
-                    .replace(/&lt;/g, '<')
-                    .replace(/&gt;/g, '>')
-                    .replace(/&amp;/g, '&');
-                const album = JSON.parse(albumDataJson);
-                await this.addAlbum(album, btn);
-            });
-        });
+        if (ctaBtn) {
+            const isValid = this.isValidSelection();
+            const isLoading = this.loadingArtists.size > 0;
+            ctaBtn.disabled = !isValid || isLoading;
+            ctaBtn.textContent = isLoading
+                ? `Cargando ${this.loadingArtists.size}…`
+                : 'Ver recomendaciones →';
+        }
+    }
 
-        const addButtons = document.querySelectorAll('.add-album-btn');
+    // Keep alias for any external callers
+    updateContinueButton() {
+        this.updateCTA();
+    }
 
-        addButtons.forEach(btn => {
-            btn.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                // Decode HTML entities before parsing JSON
-                const albumDataEscaped = btn.dataset.album;
-                const albumDataJson = albumDataEscaped
-                    .replace(/&quot;/g, '"')
-                    .replace(/&apos;/g, "'")
-                    .replace(/&lt;/g, '<')
-                    .replace(/&gt;/g, '>')
-                    .replace(/&amp;/g, '&');
-                const album = JSON.parse(albumDataJson);
-                await this.addAlbum(album, btn);
-            });
-        });
+    clearSearchResults() {
+        const grid = document.getElementById('search-results-grid');
+        if (grid) grid.innerHTML = '';
+        this.searchResults = [];
+        this.albumResults = [];
+        const countEl = document.getElementById('search-bar-count');
+        if (countEl) countEl.textContent = '';
+    }
+
+    isValidSelection() {
+        return this.selectedArtists.length >= this.options.minArtists || this.selectedAlbums.length > 0;
     }
 
     async addAlbum(album, button) {
@@ -534,18 +395,29 @@ class ArtistSearch {
                     console.log('Created guest user:', userId);
                 } else {
                     alert('Error al crear usuario. Por favor, recarga la página.');
+                    // Revert optimistic UI
+                    if (button) {
+                        button.classList.remove('search-tile--on');
+                        const addBtn = button.querySelector('.search-tile__add');
+                        if (addBtn) addBtn.textContent = '+';
+                    }
                     return;
                 }
             } catch (error) {
                 console.error('Error creating guest user:', error);
-                alert('Error al crear usuario. Por favor, recarga la página.');
+                alert('Error al crear usuario. Por favor, intenta de nuevo.');
+                // Revert optimistic UI
+                if (button) {
+                    button.classList.remove('search-tile--on');
+                    const addBtn = button.querySelector('.search-tile__add');
+                    if (addBtn) addBtn.textContent = '+';
+                }
                 return;
             }
         }
 
-        // Disable button and show loading state
-        button.disabled = true;
-        button.textContent = '⏳';
+        // Disable button during request
+        if (button) button.disabled = true;
 
         try {
             const response = await fetch(`/api/users/${userId}/albums`, {
@@ -572,35 +444,30 @@ class ArtistSearch {
                     cover_url: album.cover_url
                 });
 
-                // Update button to show success permanently
-                button.textContent = '✓';
-                button.classList.add('album-added');
-                button.disabled = true;
-                button.style.background = 'var(--primary)';
-                button.style.color = 'white';
-                button.style.cursor = 'not-allowed';
-
-                // Also mark the card as added
-                const albumCard = button.closest('.album-card');
-                if (albumCard) {
-                    albumCard.classList.add('album-added');
-                }
-
-                // Render the selected albums pills
-                this.renderSelectedAlbums();
-                this.updateContinueButton();
+                this.renderDock();
+                this.updateCTA();
             } else {
                 const error = await response.json();
                 console.error('Failed to add album:', error);
                 alert(`Error al añadir álbum: ${error.detail || 'Error desconocido'}`);
-                button.disabled = false;
-                button.textContent = '+';
+                // Revert optimistic UI
+                if (button) {
+                    button.classList.remove('search-tile--on');
+                    button.disabled = false;
+                    const addBtn = button.querySelector('.search-tile__add');
+                    if (addBtn) addBtn.textContent = '+';
+                }
             }
         } catch (error) {
             console.error('Error adding album:', error);
             alert('Error al añadir álbum. Por favor, intenta de nuevo.');
-            button.disabled = false;
-            button.textContent = '+';
+            // Revert optimistic UI
+            if (button) {
+                button.classList.remove('search-tile--on');
+                button.disabled = false;
+                const addBtn = button.querySelector('.search-tile__add');
+                if (addBtn) addBtn.textContent = '+';
+            }
         }
     }
 
@@ -726,6 +593,13 @@ class ArtistSearch {
         this.updateUI();
     }
 
+    removeAlbum(index) {
+        this.selectedAlbums.splice(index, 1);
+        this.renderDock();
+        this.updateCTA();
+        this.renderSearchResults(); // re-render to deselect tile
+    }
+
     async waitForAllPendingRecommendations() {
         if (this.pendingPromises.size === 0) {
             return;
@@ -735,144 +609,6 @@ class ArtistSearch {
         const allPromises = Array.from(this.pendingPromises.values());
         await Promise.allSettled(allPromises);
         console.log('✓ All pending recommendations completed');
-    }
-
-    updateUI() {
-        this.renderSelectedArtists();
-        this.renderSearchResults();
-        this.updateCounter();
-        this.updateContinueButton();
-        this.options.onSelectionChange(this.selectedArtists);
-    }
-
-    renderSelectedArtists() {
-        const pillsContainer = document.getElementById('selected-artists-pills');
-
-        if (this.selectedArtists.length === 0) {
-            pillsContainer.innerHTML = '<div class="no-selection">Aún no has seleccionado artistas</div>';
-            return;
-        }
-
-        pillsContainer.innerHTML = this.selectedArtists.map(artist => {
-            const isLoading = this.loadingArtists.has(artist.name);
-            const cached = this.recommendationsCache[artist.name];
-            const hasSuccess = cached && cached.status === 'success';
-            const hasError = cached && cached.status === 'error';
-
-            return `
-                <div class="artist-pill ${isLoading ? 'loading' : ''} ${hasSuccess ? 'cached' : ''} ${hasError ? 'error' : ''}">
-                    ${artist.image_url
-                    ? `<img src="${artist.image_url}" alt="${artist.name}" class="pill-image" />`
-                    : ''
-                }
-                    <span class="pill-name">${artist.name}</span>
-                    ${isLoading ? '<span class="pill-spinner">⏳</span>' : ''}
-                    ${!isLoading && hasSuccess ? '<span class="pill-check">✓</span>' : ''}
-                    ${!isLoading && hasError ? '<span class="pill-error" title="' + (cached.error || 'No se encontraron álbumes') + '">⚠</span>' : ''}
-                    <button class="pill-remove-btn" data-artist-name="${artist.name}">✕</button>
-                </div>
-            `;
-        }).join('');
-
-        const removeButtons = pillsContainer.querySelectorAll('.pill-remove-btn');
-        removeButtons.forEach(btn => {
-            btn.addEventListener('click', () => {
-                this.removeArtist(btn.dataset.artistName);
-            });
-        });
-    }
-
-    updateCounter() {
-        const counter = document.getElementById('artist-counter');
-        if (counter) {
-            counter.textContent = `${this.selectedArtists.length}/${this.options.maxArtists} seleccionados`;
-        }
-    }
-
-    updateContinueButton() {
-        const continueBtn = document.getElementById('continue-btn');
-        if (continueBtn) {
-            const isValid = this.isValidSelection();
-            const isLoading = this.loadingArtists.size > 0;
-            continueBtn.disabled = !isValid || isLoading;
-
-            if (isLoading && isValid) {
-                continueBtn.textContent = `Cargando ${this.loadingArtists.size}...`;
-            } else {
-                continueBtn.textContent = 'Continuar';
-            }
-        }
-    }
-
-    isValidSelection() {
-        const totalCount = this.selectedArtists.length + this.selectedAlbums.length;
-        return totalCount >= this.options.minArtists &&
-            this.selectedArtists.length <= this.options.maxArtists;
-    }
-
-    clearSearchResults() {
-        const resultsGrid = document.getElementById('search-results-grid');
-        const filterTabs = document.getElementById('search-filter-tabs');
-        resultsGrid.innerHTML = '';
-        this.searchResults = [];
-        this.albumResults = [];
-        this.currentSearchFilter = 'all';
-        this.showAllArtists = false;
-        this.showAllAlbums = false;
-        if (filterTabs) {
-            filterTabs.style.display = 'none';
-            // Reset tabs to 'all'
-            const tabs = filterTabs.querySelectorAll('.search-tab');
-            tabs.forEach(tab => {
-                tab.classList.toggle('active', tab.dataset.filter === 'all');
-            });
-        }
-    }
-
-    getSelectedArtists() {
-        return this.selectedArtists;
-    }
-
-    setSelectedArtists(artists) {
-        this.selectedArtists = artists;
-        this.updateUI();
-    }
-
-    async restoreArtists(artistNames) {
-        console.log(`🔄 Restoring ${artistNames.length} artists:`, artistNames);
-
-        const fetchAndAddArtist = async (name) => {
-            try {
-                const response = await fetch(`/api/spotify/search/artists?q=${encodeURIComponent(name)}`);
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data.artists && data.artists.length > 0) {
-                        const artist = data.artists[0];
-                        console.log(`✓ Restored artist: ${artist.name}`);
-                        await this.addArtist(artist);
-                        return { success: true, name };
-                    } else {
-                        console.warn(`⚠ Could not find artist ${name} in Spotify`);
-                        return { success: false, name, reason: 'Not found' };
-                    }
-                } else {
-                    console.error(`✗ Failed to search for ${name} (HTTP ${response.status})`);
-                    return { success: false, name, reason: `HTTP ${response.status}` };
-                }
-            } catch (error) {
-                console.error(`✗ Error restoring artist ${name}:`, error);
-                return { success: false, name, reason: error.message };
-            }
-        };
-
-        const results = await Promise.all(artistNames.map(fetchAndAddArtist));
-        const successful = results.filter(r => r.success).length;
-        const failed = results.filter(r => !r.success);
-
-        console.log(`✓ Restored ${successful}/${artistNames.length} artists successfully`);
-        if (failed.length > 0) {
-            console.warn(`⚠ Failed to restore ${failed.length} artists:`, failed);
-        }
     }
 
     getCachedRecommendations() {
@@ -925,5 +661,51 @@ class ArtistSearch {
             isComplete: this.isLoadingComplete(),
             hasAllSuccessful: this.hasAllSuccessful()
         };
+    }
+
+    getSelectedArtists() {
+        return this.selectedArtists;
+    }
+
+    setSelectedArtists(artists) {
+        this.selectedArtists = artists;
+        this.updateUI();
+    }
+
+    async restoreArtists(artistNames) {
+        console.log(`🔄 Restoring ${artistNames.length} artists:`, artistNames);
+
+        const fetchAndAddArtist = async (name) => {
+            try {
+                const response = await fetch(`/api/spotify/search/artists?q=${encodeURIComponent(name)}`);
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.artists && data.artists.length > 0) {
+                        const artist = data.artists[0];
+                        console.log(`✓ Restored artist: ${artist.name}`);
+                        await this.addArtist(artist);
+                        return { success: true, name };
+                    } else {
+                        console.warn(`⚠ Could not find artist ${name} in Spotify`);
+                        return { success: false, name, reason: 'Not found' };
+                    }
+                } else {
+                    console.error(`✗ Failed to search for ${name} (HTTP ${response.status})`);
+                    return { success: false, name, reason: `HTTP ${response.status}` };
+                }
+            } catch (error) {
+                console.error(`✗ Error restoring artist ${name}:`, error);
+                return { success: false, name, reason: error.message };
+            }
+        };
+
+        const results = await Promise.all(artistNames.map(fetchAndAddArtist));
+        const successful = results.filter(r => r.success).length;
+        const failed = results.filter(r => !r.success);
+
+        console.log(`✓ Restored ${successful}/${artistNames.length} artists successfully`);
+        if (failed.length > 0) {
+            console.warn(`⚠ Failed to restore ${failed.length} artists:`, failed);
+        }
     }
 }
