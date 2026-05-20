@@ -176,14 +176,37 @@ def _get_cached_artist_albums(artist_name: str, ignore_expiry: bool = False) -> 
             "deluxe", "promo", "single", "ep", "directo", "remaster", "remastered",
             "reissue", "anniversary", "edition", "collector", "box set", "oknotok",
             "mnesia", "recordings", "sessions", "demos", "acoustic", "unplugged",
-            "radio", "broadcast", "concert", "tour",
+            "radio", "broadcast", "concert", "tour", "pompeii", "mix", "redux",
+            "revisited", "revisit", "restored", "re-recorded", "rerecorded",
+            "super deluxe", "immersion", "experience", "infinite",
         ]
-        filtered = [
-            dict(a) for a in albums
-            if not any(kw in (a["title"] or "").lower() for kw in EXCLUDE_KEYWORDS)
-        ]
+        import re as _re
+        def _is_special(title: str) -> bool:
+            t = (title or "").lower()
+            if any(kw in t for kw in EXCLUDE_KEYWORDS):
+                return True
+            # Título que termina en número suelto ≥ 20 → edición aniversario (ej. "50", "40")
+            if _re.search(r'\s\d{2,}$', t):
+                return True
+            return False
+
+        filtered = [dict(a) for a in albums if not _is_special(a["title"])]
         # Si el filtro elimina todo, devolver sin filtrar (mejor algo que nada)
         result = filtered if filtered else [dict(a) for a in albums]
+
+        # Deduplicar por discogs_master_id (mantener el de mayor rating/votes)
+        seen_master = {}
+        deduped = []
+        for a in result:
+            mid = a.get("discogs_master_id")
+            if mid:
+                if mid not in seen_master:
+                    seen_master[mid] = a
+                    deduped.append(a)
+                # else: skip duplicate master
+            else:
+                deduped.append(a)
+        result = deduped
 
         print(f"[DB] ✓ Found {len(result)}/{len(albums)} cached albums for '{artist_name}' (age: {cache_age.days}d, filtered specials)")
         return result
@@ -239,10 +262,105 @@ def _save_artist_albums(artist_name: str, mbid: str, albums: List['StudioAlbum']
         
         conn.commit()
         print(f"[DB] ✓ Saved {len(albums)} albums for '{artist_name}' to cache")
-    
+
     except Exception as e:
         conn.rollback()
         print(f"[DB] Error saving '{artist_name}': {e}")
+    finally:
+        conn.close()
+
+
+def enrich_ratings_for_artist(artist_name: str, discogs_key: str, discogs_secret: str) -> int:
+    """
+    Busca ratings en Discogs para los álbumes cacheados de un artista que tienen rating=NULL.
+    Devuelve el número de álbumes enriquecidos.
+    Diseñado para ejecutarse en background (asyncio.to_thread).
+    """
+    conn = _get_db_connection()
+    if not conn:
+        return 0
+
+    enriched = 0
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT al.id, al.discogs_master_id, al.discogs_release_id, al.title
+               FROM albums al
+               JOIN artists ar ON ar.id = al.artist_id
+               WHERE LOWER(ar.name) = LOWER(?)
+                 AND al.rating IS NULL
+                 AND (al.discogs_master_id IS NOT NULL OR al.discogs_release_id IS NOT NULL)""",
+            (artist_name,)
+        )
+        albums_to_enrich = cursor.fetchall()
+
+        for album in albums_to_enrich:
+            master_id = album["discogs_master_id"]
+            release_id = album["discogs_release_id"]
+            rating, votes, cover = None, None, None
+
+            try:
+                if master_id:
+                    rating, votes, cover = _discogs_master_data(master_id, discogs_key, discogs_secret)
+                elif release_id:
+                    rating, votes, cover = _discogs_release_data(release_id, discogs_key, discogs_secret)
+            except Exception as e:
+                print(f"[ENRICH] Error fetching rating for '{album['title']}': {e}")
+                continue
+
+            if rating is not None:
+                cursor.execute(
+                    """UPDATE albums SET rating=?, votes=?, cover_url=COALESCE(NULLIF(cover_url,''), ?)
+                       WHERE id=?""",
+                    (rating, votes, cover, album["id"])
+                )
+                enriched += 1
+                print(f"[ENRICH] ✓ {artist_name} — {album['title']}: {rating:.2f} ({votes} votes)")
+
+        conn.commit()
+        print(f"[ENRICH] Done: {enriched}/{len(albums_to_enrich)} albums enriched for '{artist_name}'")
+        return enriched
+
+    except Exception as e:
+        conn.rollback()
+        print(f"[ENRICH] Error: {e}")
+        return 0
+    finally:
+        conn.close()
+
+
+def purge_special_editions_from_cache() -> int:
+    """
+    Elimina de la caché SQLite todos los álbumes que son ediciones especiales/live/compilaciones.
+    Llamar una vez para limpiar datos sucios acumulados.
+    """
+    EXCLUDE_KEYWORDS = [
+        "live", "compilation", "anthology", "best of", "greatest hits",
+        "deluxe", "promo", "single", "ep", "directo", "remaster", "remastered",
+        "reissue", "anniversary", "edition", "collector", "box set", "oknotok",
+        "mnesia", "recordings", "sessions", "demos", "acoustic", "unplugged",
+        "radio", "broadcast", "concert", "tour",
+    ]
+    conn = _get_db_connection()
+    if not conn:
+        return 0
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, title FROM albums")
+        all_albums = cursor.fetchall()
+        to_delete = [
+            a["id"] for a in all_albums
+            if any(kw in (a["title"] or "").lower() for kw in EXCLUDE_KEYWORDS)
+        ]
+        if to_delete:
+            cursor.executemany("DELETE FROM albums WHERE id=?", [(i,) for i in to_delete])
+            conn.commit()
+        print(f"[PURGE] Eliminated {len(to_delete)}/{len(all_albums)} special edition albums from cache")
+        return len(to_delete)
+    except Exception as e:
+        conn.rollback()
+        print(f"[PURGE] Error: {e}")
+        return 0
     finally:
         conn.close()
 

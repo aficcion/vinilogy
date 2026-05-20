@@ -21,6 +21,8 @@ from .artist_recommendations import (
     get_artist_studio_albums,
     get_top_albums_from_discogs_search,
     validate_album_with_discogs,
+    enrich_ratings_for_artist,
+    purge_special_editions_from_cache,
 )
 from .scoring_engine import ScoringEngine
 
@@ -84,6 +86,12 @@ async def lifespan(app: FastAPI):
     global scoring_engine, album_aggregator
     scoring_engine = ScoringEngine()
     album_aggregator = AlbumAggregator()
+    # Limpiar ediciones especiales de la caché acumuladas antes del fix
+    try:
+        purged = await asyncio.to_thread(purge_special_editions_from_cache)
+        log_event("recommender-service", "INFO", f"Startup cache purge: {purged} special editions removed")
+    except Exception as e:
+        log_event("recommender-service", "WARNING", f"Startup cache purge failed: {e}")
     log_event("recommender-service", "INFO", "Recommendation Service started")
     yield
     log_event("recommender-service", "INFO", "Recommendation Service stopped")
@@ -978,7 +986,37 @@ async def artist_single_recommendation(request: SingleArtistRequest):
         )
 
         if albums:
-            # CACHE HIT
+            # CACHE HIT — si todos los álbumes tienen master_id null, la caché está incompleta
+            has_discogs_data = any(a.discogs_master_id or a.discogs_release_id for a in albums)
+            if not has_discogs_data:
+                log_event("recommender-service", "INFO",
+                          f"Cache HIT for {request.artist_name} but missing Discogs data — clearing and re-fetching")
+                # Borrar caché incompleta para forzar fetch fresco de Discogs
+                from . import db_utils as _du
+                _du_conn = _du.get_db_connection()
+                try:
+                    cur = _du_conn.cursor()
+                    cur.execute("SELECT id FROM artists WHERE LOWER(name)=LOWER(?)", (request.artist_name,))
+                    row = cur.fetchone()
+                    if row:
+                        cur.execute("DELETE FROM albums WHERE artist_id=?", (row["id"],))
+                        _du_conn.commit()
+                finally:
+                    _du_conn.close()
+                # Re-fetch desde Discogs
+                albums = await asyncio.to_thread(
+                    functools.partial(
+                        get_artist_studio_albums,
+                        request.artist_name,
+                        discogs_key,
+                        discogs_secret,
+                        top_n=request.top_albums,
+                        csv_mode=request.csv_mode,
+                        cache_only=False,
+                        use_mb=False,
+                    )
+                )
+
             recommendations = []
             for album in albums:
                 rec = {
@@ -993,6 +1031,12 @@ async def artist_single_recommendation(request: SingleArtistRequest):
                     "source": "artist_based"
                 }
                 recommendations.append(rec)
+
+            # Enriquecer ratings en background si faltan
+            if any(r["rating"] is None and r["discogs_master_id"] for r in recommendations):
+                asyncio.create_task(
+                    asyncio.to_thread(enrich_ratings_for_artist, request.artist_name, discogs_key, discogs_secret)
+                )
 
             elapsed = time.time() - start_time
             log_event("recommender-service", "INFO", f"✓ Cache HIT for {request.artist_name}")
@@ -1195,11 +1239,40 @@ async def _generate_spotify_recommendations(artist_name: str, top_albums: int, u
         log_event("recommender-service", "INFO",
                  f"Generated {len(recommendations)} Spotify recommendations for {artist_name} in {elapsed:.2f}s")
 
+        # Enriquecer ratings en background — no bloquea la respuesta
+        discogs_key = os.getenv("DISCOGS_KEY", "")
+        discogs_secret = os.getenv("DISCOGS_SECRET", "")
+        if discogs_key:
+            asyncio.create_task(
+                asyncio.to_thread(enrich_ratings_for_artist, artist_name, discogs_key, discogs_secret)
+            )
+
         return {
             "recommendations": recommendations,
             "total": len(recommendations),
             "artist_name": artist_name
         }
+
+
+@app.post("/admin/purge-cache")
+async def admin_purge_cache():
+    """Elimina ediciones especiales/live de la caché y devuelve estadísticas."""
+    purged = await asyncio.to_thread(purge_special_editions_from_cache)
+    return {"purged": purged, "status": "ok"}
+
+
+@app.post("/admin/enrich-ratings")
+async def admin_enrich_ratings(body: dict):
+    """Enriquece ratings de un artista concreto desde Discogs. Body: {artist_name: str}"""
+    artist_name = body.get("artist_name", "")
+    if not artist_name:
+        raise HTTPException(status_code=400, detail="artist_name required")
+    discogs_key = os.getenv("DISCOGS_KEY", "")
+    discogs_secret = os.getenv("DISCOGS_SECRET", "")
+    if not discogs_key:
+        raise HTTPException(status_code=500, detail="DISCOGS_KEY not configured")
+    enriched = await asyncio.to_thread(enrich_ratings_for_artist, artist_name, discogs_key, discogs_secret)
+    return {"artist": artist_name, "enriched": enriched, "status": "ok"}
 
 
 @app.post("/collection/stats")
