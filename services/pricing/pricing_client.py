@@ -44,8 +44,6 @@ class PricingClient:
 
     async def start(self):
         """Inicializa el cliente HTTP asíncrono con headers de navegador."""
-        # Headers por defecto para evitar detección de bots
-        # IMPORTANTE: No incluir Accept-Encoding, httpx lo maneja automáticamente
         default_headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -55,7 +53,11 @@ class PricingClient:
             'Upgrade-Insecure-Requests': '1'
         }
         self.http_client = httpx.AsyncClient(timeout=20.0, headers=default_headers, follow_redirects=True)
-        await self._get_access_token()
+        # Token se obtiene lazy en la primera petición real para no bloquear el startup
+        try:
+            await self._get_access_token()
+        except Exception as e:
+            log_event("pricing-service", "WARNING", f"eBay token no disponible en startup (se reintentará): {e}")
 
     async def stop(self):
         """Cierra el cliente HTTP."""
@@ -63,8 +65,8 @@ class PricingClient:
             await self.http_client.aclose()
 
     def is_ready(self) -> bool:
-        """Verifica si el cliente está listo."""
-        return self.http_client is not None and self.access_token is not None
+        """Verifica si el cliente HTTP está inicializado (eBay token es opcional)."""
+        return self.http_client is not None
 
     async def _get_access_token(self) -> str:
         """Obtiene un application access token de eBay usando client credentials."""
@@ -184,8 +186,13 @@ class PricingClient:
         Busca en eBay el vinilo de artist + album y devuelve la mejor oferta
         (precio más barato en EUR ubicado en la Unión Europea).
         """
+        # Lazy token: obtener si no está disponible, con un retry
         if not self.access_token:
-            await self._get_access_token()
+            try:
+                await self._get_access_token()
+            except Exception as e:
+                log_event("pricing-service", "WARNING", f"eBay token fetch failed: {e}")
+                return None
 
         query = f"{artist} {album}"
         params = {
