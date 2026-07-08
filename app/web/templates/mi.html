@@ -43,6 +43,34 @@
     {% endif %}
   </header>
 
+  {# ---- Para ti (centroide de gusto de la COLECCIÓN) ---- #}
+  <section class="block reco-block">
+    <h2>Para ti</h2>
+    {% if for_you %}
+      <p class="hint">En la onda de lo que ya tienes, con vinilo. Nada que ya
+         poseas.</p>
+      <div class="grid">
+        {% for w in for_you %}{% include "_reco_card.html" %}{% endfor %}
+      </div>
+    {% else %}
+      <p class="empty">Necesitamos algo de tu colección (o escucha) para
+         recomendarte a medida. Conecta Discogs/Last.fm en la próxima entrega.</p>
+    {% endif %}
+  </section>
+
+  {# ---- Basado en lo que escuchas (centroide de ESCUCHA, Last.fm) ---- #}
+  {# Solo aparece si hay señal de escucha resuelta con embedding. #}
+  {% if listening %}
+  <section class="block reco-block">
+    <h2>Basado en lo que escuchas</h2>
+    <p class="hint">Según tus artistas más escuchados en Last.fm, en vinilo.
+       Nada que ya tengas.</p>
+    <div class="grid">
+      {% for w in listening %}{% include "_reco_card.html" %}{% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
   {# ---- Sube a vinilo (gap de vinilo, LA feature) ---- #}
   <section class="block reco-block">
     <h2>Sube a vinilo</h2>
@@ -55,21 +83,6 @@
     {% else %}
       <p class="empty">No hemos localizado gap de vinilo en tu colección
          (o aún no está importada).</p>
-    {% endif %}
-  </section>
-
-  {# ---- Para ti (centroide de gusto) ---- #}
-  <section class="block reco-block">
-    <h2>Para ti</h2>
-    {% if for_you %}
-      <p class="hint">En la onda de lo que ya tienes, con vinilo. Nada que ya
-         poseas.</p>
-      <div class="grid">
-        {% for w in for_you %}{% include "_reco_card.html" %}{% endfor %}
-      </div>
-    {% else %}
-      <p class="empty">Necesitamos algo de tu colección (o escucha) para
-         recomendarte a medida. Conecta Discogs/Last.fm en la próxima entrega.</p>
     {% endif %}
   </section>
 

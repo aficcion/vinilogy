@@ -15,6 +15,7 @@ Arranque:
         uvicorn app.main:app --port 7788 --reload
 """
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -198,15 +199,28 @@ def mi(request: Request):
         # Anónimo: NO 500 — invita a entrar/crear invitado.
         return _render(request, "mi.html", user=None, anon=True)
     summary = users.collection_summary(user)
-    for_you = users.recommend_for_user(user["id"], limit=12)
-    gap = users.vinyl_gap(user["id"], limit=24)
-    gap_total = users.vinyl_gap_count(user["id"])
+    uid = user["id"]
+    # Las tres recomendaciones de /mi son independientes y cada una ronda ~1s
+    # (KNN de dos fases + join de precios en el gap). En serie sumaban ~2,6s, muy
+    # cerca del presupuesto de 3s; se lanzan en PARALELO (el pool es
+    # ThreadedConnectionPool, cada hilo saca su conexión) — mismo patrón que
+    # catalog.search. gap_total es una query trivial, va con ellas.
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        f_for_you = ex.submit(users.recommend_for_user, uid, 12)
+        f_listening = ex.submit(users.recommend_from_listening, uid, 12)
+        f_gap = ex.submit(users.vinyl_gap, uid, 24)
+        f_gap_total = ex.submit(users.vinyl_gap_count, uid)
+        for_you = f_for_you.result()
+        listening = f_listening.result()
+        gap = f_gap.result()
+        gap_total = f_gap_total.result()
     return _render(
         request, "mi.html",
         user=user,
         anon=False,
         summary=summary,
         for_you=for_you,
+        listening=listening,
         gap=gap,
         gap_total=gap_total,
     )

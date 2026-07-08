@@ -841,6 +841,44 @@ def run_m3a_checks(fx):
           all((r.get("porque") or "").strip() for r in recs),
           "alguna reco sin porque")
 
+    # 22-bis. recommend_from_listening(1) (M3b): >=N vinilos por ESCUCHA Last.fm,
+    #     NINGUNO en la colección, cap 1/artista, todos vinilo+obra, `porque` que
+    #     menciona la escucha. + degradación honesta con un user SIN datos lastfm.
+    lrecs = db.recommend_from_listening(U, limit=12)
+    check("recommend_from_listening(1) devuelve >=6 resultados",
+          len(lrecs) >= 6, "solo {} recos".format(len(lrecs)))
+    check("recommend_from_listening(1): NINGUNA reco está en la colección del user",
+          all(r["id"] not in owned for r in lrecs),
+          "coló un disco de la colección")
+    laids = [r["artist_id"] for r in lrecs]
+    check("recommend_from_listening(1): cap 1/artista (sin artistas repetidos)",
+          len(set(laids)) == len(laids), "artistas repetidos")
+    lall_ok = all(
+        (lambda w: w and w["has_vinyl"] is True
+                   and w["work_type"] in ("studio_album", "ep"))(db.get_work(r["id"]))
+        for r in lrecs)
+    check("recommend_from_listening(1): todos vinilo + studio_album/ep", lall_ok,
+          "alguna reco sin vinilo o con morralla")
+    check("recommend_from_listening(1): `porque` no vacío que menciona la escucha",
+          all((r.get("porque") or "").strip() for r in lrecs)
+          and all("escuchas" in (r.get("porque") or "") for r in lrecs),
+          "porque vacío o sin atribución a la escucha")
+    # Degradación: user de test SIN filas user_lastfm_* → [] (con LIMPIEZA).
+    #     NUNCA se toca al user 1: se crea un invitado efímero sin datos lastfm.
+    ltmp = None
+    try:
+        ltmp = db.create_guest_user()
+        check("recommend_from_listening(user sin lastfm) → [] (degradación honesta)",
+              db.recommend_from_listening(ltmp) == [],
+              "no degradó a [] sin datos de escucha")
+        check("recommend_from_listening(0 / anónimo) → []",
+              db.recommend_from_listening(0) == [], "anónimo no dio []")
+    finally:
+        if ltmp is not None:
+            db.delete_user_and_sessions(ltmp)
+            check("limpieza: user de test sin lastfm borrado",
+                  db.get_app_user(ltmp) is None, "no se borró el user de test")
+
     # 23. vinyl_gap(1): >0 (idealmente ~287), cada obra existe en vinilo, el user la
     #     tiene en formato≠vinyl y NO posee ya un prensado de vinilo; trae ediciones.
     gap_total = db.vinyl_gap_count(U)
@@ -1179,6 +1217,13 @@ def run_http_smoke(fx):
               "status {} / falta gap".format(r.status_code))
         check("GET /mi con sesión dev → contiene 'Para ti'",
               "Para ti" in r.text, "falta 'Para ti'")
+        # M3b: sección de escucha Last.fm visible con >=1 card + porque de escucha.
+        check("GET /mi con sesión dev → contiene 'Basado en lo que escuchas'",
+              "Basado en lo que escuchas" in r.text,
+              "falta la sección de escucha Last.fm")
+        check("GET /mi con sesión dev → la sección de escucha trae cards con porque",
+              "card-porque" in r.text and "en la onda de lo que escuchas" in r.text,
+              "la sección de escucha no muestra cards con porque de escucha")
         # logout limpia la sesión.
         client.post("/auth/logout")
         r = client.get("/mi")
