@@ -27,8 +27,70 @@
         {% for s in work.styles %}<span class="tag style">{{ s }}</span>{% endfor %}
       </p>
       {% endif %}
+      {% if artist_bio %}
+      <p class="artist-bio">{{ artist_bio }}
+        <a class="bio-more" href="/artista/{{ work.artist_id }}">más sobre {{ work.artist_name }} →</a>
+      </p>
+      {% endif %}
     </div>
   </div>
+
+  {% if press.has_signals %}
+  <section class="block press-block">
+    <h2>La crítica dice</h2>
+    {% for f in press.frases %}
+    <blockquote class="press-quote">
+      <p>«{{ f.frase }}»</p>
+      <cite>
+        {% if f.review_url %}
+          <a href="{{ f.review_url }}" target="_blank" rel="noopener">{{ f.source_label }}</a>
+        {% else %}{{ f.source_label }}{% endif %}
+        {% if f.published_at %}<span class="press-date">· {{ f.published_at.year }}</span>{% endif %}
+      </cite>
+    </blockquote>
+    {% endfor %}
+
+    {% if press.vibra %}
+    <div class="press-vibra">
+      {% for v in press.vibra %}<span class="tag vibra">{{ v }}</span>{% endfor %}
+    </div>
+    {% endif %}
+
+    {% if press.suena_a_links %}
+    <p class="press-suena">Según la crítica suena a:
+      {% for s in press.suena_a_links %}{%- if s.artist_id -%}<a href="/artista/{{ s.artist_id }}">{{ s.name }}</a>{%- else -%}<span>{{ s.name }}</span>{%- endif -%}{% if not loop.last %}, {% endif %}{% endfor %}.
+    </p>
+    {% endif %}
+
+    {% if press.temas_destacados %}
+    <p class="press-temas"><strong>Temas destacados:</strong>
+      {{ press.temas_destacados|join(', ') }}.
+    </p>
+    {% endif %}
+
+    {% if press.sources %}
+    <p class="press-sources hint">Reseñas en:
+      {% for s in press.sources %}{%- if s.review_url -%}<a href="{{ s.review_url }}" target="_blank" rel="noopener">{{ s.source_label }}</a>{%- else -%}{{ s.source_label }}{%- endif -%}{% if not loop.last %}, {% endif %}{% endfor %}.
+    </p>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if tracklist %}
+  <section class="block">
+    <h2>Canciones</h2>
+    <ol class="tracklist">
+      {% for t in tracklist %}
+      <li>
+        {% if t.position %}<span class="track-pos">{{ t.position }}</span>{% endif %}
+        <span class="track-title">{{ t.title }}</span>
+        {% if t.duration %}<span class="track-dur">{{ t.duration }}</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+    <p class="hint">Tracklist de una edición representativa en vinilo.</p>
+  </section>
+  {% endif %}
 
   <section class="block">
     <h2>Ediciones en vinilo</h2>
@@ -44,7 +106,9 @@
             <td>{{ e.country or '—' }}</td>
             <td>{{ e.label_name or '—' }}</td>
             <td>{{ e.catno or '—' }}</td>
-            <td>{% if e.is_reissue %}<span class="pill">reedición</span>{% endif %}</td>
+            <td>
+              {% if e.is_reissue %}<span class="pill">reedición{% if e.original_year %} de {{ e.original_year }}{% endif %}</span>{% endif %}
+            </td>
           </tr>
           {% endfor %}
         </tbody>
@@ -77,10 +141,22 @@
           {% endfor %}
         </tbody>
       </table>
+      <p class="hint price-level-note">Precios de tiendas ES para esta obra (aún no
+         atribuidos a la edición/prensado exacto).</p>
     {% else %}
       <p class="empty">Sin precio localizado en tiendas ES para esta obra.</p>
     {% endif %}
   </section>
+
+  {% if similar_press %}
+  <section class="block reco-block reco-press">
+    <h2>Afines por lo que dice la crítica</h2>
+    <p class="hint">Otros vinilos con una vibra editorial cercana, según la prensa española.</p>
+    <div class="grid">
+      {% for w in similar_press %}{% include "_reco_card.html" %}{% endfor %}
+    </div>
+  </section>
+  {% endif %}
 
   <section class="block reco-block">
     <h2>Vinilos afines</h2>
@@ -96,3 +172,11 @@
 </article>
 
 {% endblock %}
+{#
+TODO(core): reco/precio a nivel de EDICIÓN precisa está BLOQUEADO —
+`marketplace_listings.release_id` es 100% NULL en core (0/25.582, verificado
+8-jul-2026) y los listings no traen catno/año. El precio se casa a la OBRA por
+artist_id + trigram de título (techo honesto). Se desbloqueará cuando el pipeline
+de vinology-core pueble `marketplace_listings.release_id` (o un matcher
+listing→release, en core, NO en la app v2). Ver §12 del DESIGN.
+#}

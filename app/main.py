@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.domains import catalog, pricing, reco, editorial
+from app.domains import catalog, pricing, reco, editorial, press
 
 _HERE = os.path.dirname(__file__)
 _TEMPLATES_DIR = os.path.join(_HERE, "web", "templates")
@@ -58,14 +58,23 @@ def obra(request: Request, work_id: int):
     if not work:
         return _render(request, "404.html", what="obra", ident=work_id, status_code=404)
     editions = catalog.get_work_vinyl_editions(work_id)
+    tracklist = catalog.get_work_tracklist(work_id)
     prices = pricing.get_prices_for_work(work_id)
+    press_signals = press.get_signals(work_id)
     similar = reco.similar_to_work(work_id)
+    similar_press = reco.similar_by_press_to_work(work_id)
+    artist = catalog.get_artist(work["artist_id"])
+    artist_bio = catalog.artist_bio_excerpt(artist)
     return _render(
         request, "work.html",
         work=work,
         editions=editions,
+        tracklist=tracklist,
         prices=prices,
+        press=press_signals,
         similar=similar,
+        similar_press=similar_press,
+        artist_bio=artist_bio,
     )
 
 
