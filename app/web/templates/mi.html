@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Mi Vinylbe{% endblock %}
+{% block content %}
+
+{% if anon %}
+  <section class="hero mi-anon">
+    <h1>Tu Vinylbe personal</h1>
+    <p class="lead">Aquí verás recomendaciones a tu medida y tu gap de vinilo.
+       Entra sin cuentas para empezar.</p>
+    <form class="inline-form" action="/auth/guest" method="post">
+      <button class="btn-primary" type="submit">Entrar como invitado</button>
+    </form>
+    <p class="hint">La conexión con Discogs y Last.fm llega en la próxima entrega.</p>
+  </section>
+{% else %}
+
+  <header class="mi-head">
+    <h1>Hola, {{ display_label }}</h1>
+    {% if summary %}
+    <p class="mi-summary">
+      {% if summary.counts.total %}
+        <strong>{{ summary.counts.total }}</strong> ítems en tu colección
+        {% if summary.counts.vinyl %}· {{ summary.counts.vinyl }} en vinilo{% endif %}
+        {% if summary.counts.cd %}· {{ summary.counts.cd }} en CD{% endif %}
+      {% else %}
+        Aún no hemos importado tu colección.
+      {% endif %}
+      {% if summary.value and summary.value.display %}
+        · valor aprox. <strong>{{ summary.value.display }}</strong>
+      {% endif %}
+    </p>
+    {% endif %}
+    {% if user and (user.providers|length == 0) %}
+    <p class="hint mi-connect-note">Eres invitado. Conecta Discogs para importar
+       tu colección real y afinar todo esto (próximamente, M3b).</p>
+    {% endif %}
+  </header>
+
+  {# ---- Sube a vinilo (gap de vinilo, LA feature) ---- #}
+  <section class="block reco-block">
+    <h2>Sube a vinilo</h2>
+    {% if gap %}
+      <p class="hint">Discos que tienes en otro formato y existen en vinilo
+         ({{ gap_total }} en total). Con sus ediciones y precio en tiendas ES.</p>
+      <div class="grid gap-grid">
+        {% for g in gap %}{% include "_gap_card.html" %}{% endfor %}
+      </div>
+    {% else %}
+      <p class="empty">No hemos localizado gap de vinilo en tu colección
+         (o aún no está importada).</p>
+    {% endif %}
+  </section>
+
+  {# ---- Para ti (centroide de gusto) ---- #}
+  <section class="block reco-block">
+    <h2>Para ti</h2>
+    {% if for_you %}
+      <p class="hint">En la onda de lo que ya tienes, con vinilo. Nada que ya
+         poseas.</p>
+      <div class="grid">
+        {% for w in for_you %}{% include "_reco_card.html" %}{% endfor %}
+      </div>
+    {% else %}
+      <p class="empty">Necesitamos algo de tu colección (o escucha) para
+         recomendarte a medida. Conecta Discogs/Last.fm en la próxima entrega.</p>
+    {% endif %}
+  </section>
+
+{% endif %}
+
+{% endblock %}

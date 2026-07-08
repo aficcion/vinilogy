@@ -189,3 +189,49 @@ th { color: var(--ink-3); font-weight: 600; font-size: 12px; text-transform: upp
 .price-level-note { font-style: italic; }
 .card-porque { color: var(--ink-2); }
 .reco-press h2 { color: var(--accent-2); }
+
+/* --- M3a: capa personal (cabecera de usuario, onboarding, /mi, gap) --- */
+.topbar-user { display: flex; align-items: center; gap: 12px; white-space: nowrap; }
+.inline-form { display: inline; margin: 0; }
+.nav-mi { color: var(--ink); font-weight: 600; }
+.nav-mi:hover { color: var(--accent); }
+.linkish {
+  background: none; border: none; color: var(--ink-3); cursor: pointer;
+  font: inherit; padding: 0;
+}
+.linkish:hover { color: var(--ink); }
+.btn-ghost {
+  background: transparent; border: 1px solid var(--line); color: var(--ink-2);
+  border-radius: var(--radius); padding: 7px 14px; cursor: pointer; font: inherit;
+}
+.btn-ghost:hover:not([disabled]) { border-color: var(--accent); color: var(--ink); }
+.btn-ghost[disabled] { opacity: .5; cursor: not-allowed; }
+.btn-primary {
+  background: var(--accent); border: none; color: #17130c; font-weight: 600;
+  border-radius: var(--radius); padding: 10px 20px; cursor: pointer; font: inherit;
+}
+.btn-primary:hover { filter: brightness(1.08); }
+
+/* Onboarding en home */
+.onboarding { margin: 10px auto 40px; max-width: 620px; }
+.onboard-card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 26px; text-align: center;
+}
+.onboard-card h2 { border: none; font-size: 20px; margin: 0 0 10px; }
+.onboard-card p { color: var(--ink-2); max-width: 52ch; margin: 0 auto 18px; }
+.onboard-connect { display: flex; gap: 10px; justify-content: center; margin-top: 16px; flex-wrap: wrap; }
+
+/* /mi */
+.mi-head { margin-bottom: 8px; }
+.mi-head h1 { margin-bottom: 6px; }
+.mi-summary { color: var(--ink-2); }
+.mi-summary strong { color: var(--ink); }
+.mi-connect-note { margin-top: 6px; }
+.mi-anon { padding: 60px 0; }
+.mi-anon .inline-form { margin: 12px 0; }
+
+/* Gap card: reutiliza .card + extras */
+.gap-meta { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+.gap-price { color: var(--accent); font-weight: 600; }
+.gap-noprice { color: var(--ink-3); font-style: italic; font-size: 12px; }

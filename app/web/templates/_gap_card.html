@@ -1,0 +1,24 @@
+{# Tarjeta de gap de vinilo. Espera `g` (work + owned_format_label + editions +
+   prices dict). Enlaza a la ficha de obra (donde están todas las ediciones). #}
+<a class="card gap-card" href="/obra/{{ g.id }}">
+  <div class="card-cover">
+    {% if g.cover_thumb or g.cover_url %}
+      <img src="{{ g.cover_thumb or g.cover_url }}" alt="" loading="lazy">
+    {% else %}
+      <div class="card-cover-empty">♫</div>
+    {% endif %}
+  </div>
+  <div class="card-body">
+    <div class="card-title">{{ g.title }}</div>
+    {% if g.artist_name %}<div class="card-artist">{{ g.artist_name }}</div>{% endif %}
+    <div class="card-porque">{{ g.porque }}</div>
+    <div class="card-meta gap-meta">
+      {% if g.editions %}<span>{{ g.editions|length }} edición{% if g.editions|length != 1 %}es{% endif %} en vinilo</span>{% endif %}
+      {% if g.prices and g.prices.listings %}
+        <span class="gap-price">desde {{ g.prices.listings[0].price_display }}</span>
+      {% else %}
+        <span class="gap-noprice">sin precio en tiendas ES</span>
+      {% endif %}
+    </div>
+  </div>
+</a>

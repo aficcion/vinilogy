@@ -15,6 +15,18 @@
       <button type="submit">Buscar</button>
     </form>
     <a class="nav-vibra" href="/vibra">Por vibra ✦</a>
+    <nav class="topbar-user">
+      {% if user %}
+        <a class="nav-mi" href="/mi">{{ display_label }}</a>
+        <form class="inline-form" action="/auth/logout" method="post">
+          <button class="linkish" type="submit">Salir</button>
+        </form>
+      {% else %}
+        <form class="inline-form" action="/auth/guest" method="post">
+          <button class="btn-ghost" type="submit">Entrar como invitado</button>
+        </form>
+      {% endif %}
+    </nav>
   </header>
 
   <main class="container">
@@ -22,7 +34,7 @@
   </main>
 
   <footer class="footer">
-    <span>Vinylbe v2 · M2 · datos de <code>vinology_core</code></span>
+    <span>Vinylbe v2 · M3a · datos de <code>vinology_core</code></span>
   </footer>
 </body>
 </html>

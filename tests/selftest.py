@@ -202,6 +202,11 @@ def derive_fixtures():
     """)
     fx["press_seed_candidates"] = [r["id"] for r in rows]
 
+    # -- M3a: usuarios FIXTURE reales (user 1 = Carlos, con colección + gap) --
+    # No los inventamos: si no existen, los checks personales se marcan skip.
+    rows = _q("SELECT id FROM app_users WHERE id = 1")
+    fx["fixture_user"] = rows[0]["id"] if rows else None
+
     return fx
 
 
@@ -755,6 +760,134 @@ def run_checks(fx):
     except Exception as e:  # noqa: BLE001
         check("get_artist(id inexistente) no peta", False, repr(e))
 
+    # -----------------------------------------------------------------------
+    # M3a — sesión + invitado + capa personal (user 1 fixture)
+    # -----------------------------------------------------------------------
+    run_m3a_checks(fx)
+
+
+def run_m3a_checks(fx):
+    from app.domains import users
+
+    # 21. Round-trip invitado: crear + sesión + resolver (con LIMPIEZA garantizada).
+    guest_id = None
+    try:
+        guest_id, token = users.start_guest()
+        check("create_guest_user devuelve un id nuevo",
+              isinstance(guest_id, int) and guest_id > 0,
+              "id inválido: {}".format(guest_id))
+        u = db.get_user_by_session(token)
+        check("get_user_by_session resuelve la sesión recién creada",
+              u is not None and u["id"] == guest_id,
+              "no resolvió la sesión")
+        if u:
+            check("invitado: display_name NULL + sin providers (cuenta ligera)",
+                  u["display_name"] is None and (u["providers"] == []),
+                  "no parece invitado puro: {}".format(u))
+        # token inválido → None
+        check("get_user_by_session(token inválido) → None",
+              db.get_user_by_session("no-existe-este-token-xyz") is None,
+              "token inválido no dio None")
+        # token expirado → None (sesión con TTL negativo)
+        exp_tok = db.create_session(guest_id, ttl_days=-1)
+        check("get_user_by_session(token expirado) → None",
+              db.get_user_by_session(exp_tok) is None,
+              "token expirado no dio None")
+        # logout borra la sesión
+        db.delete_session(token)
+        check("delete_session invalida el token (logout)",
+              db.get_user_by_session(token) is None,
+              "el token seguía vivo tras logout")
+    except Exception as e:  # noqa: BLE001
+        check("round-trip invitado no peta", False, repr(e))
+    finally:
+        # LIMPIEZA: borrar el invitado de test y sus sesiones (CASCADE).
+        if guest_id is not None:
+            db.delete_user_and_sessions(guest_id)
+            check("limpieza: el invitado de test queda BORRADO",
+                  db.get_app_user(guest_id) is None,
+                  "el invitado de test no se borró")
+
+    if not fx.get("fixture_user"):
+        print("SKIP  checks personales (no existe user 1 = Carlos en core)")
+        return
+    U = fx["fixture_user"]
+
+    # 22. recommend_for_user(1): >=N vinilos, NINGUNO en la colección, con porque,
+    #     cap 1/artista.
+    recs = db.recommend_for_user(U, limit=12)
+    check("recommend_for_user(1) devuelve >=6 resultados",
+          len(recs) >= 6, "solo {} recos".format(len(recs)))
+    with db._cursor() as cur:
+        owned = set(db._owned_work_ids(cur, U))
+    check("recommend_for_user(1): NINGUNA reco está en la colección del user",
+          all(r["id"] not in owned for r in recs),
+          "coló un disco de la colección")
+    aids = [r["artist_id"] for r in recs]
+    check("recommend_for_user(1): cap 1/artista (sin artistas repetidos)",
+          len(set(aids)) == len(aids), "artistas repetidos")
+    all_ok = all(
+        (lambda w: w and w["has_vinyl"] is True
+                   and w["work_type"] in ("studio_album", "ep"))(db.get_work(r["id"]))
+        for r in recs)
+    check("recommend_for_user(1): todos vinilo + studio_album/ep", all_ok,
+          "alguna reco sin vinilo o con morralla")
+    check("recommend_for_user(1): todos con `porque` no vacío",
+          all((r.get("porque") or "").strip() for r in recs),
+          "alguna reco sin porque")
+
+    # 23. vinyl_gap(1): >0 (idealmente ~287), cada obra existe en vinilo, el user la
+    #     tiene en formato≠vinyl y NO posee ya un prensado de vinilo; trae ediciones.
+    gap_total = db.vinyl_gap_count(U)
+    check("vinyl_gap_count(1) > 0 (gap real de vinilo)",
+          gap_total > 0, "gap = {}".format(gap_total))
+    check("vinyl_gap_count(1) en rango esperado (>200 para Carlos)",
+          gap_total > 200, "gap = {} (esperado ~287)".format(gap_total))
+    gap = db.vinyl_gap(U, limit=24)
+    check("vinyl_gap(1) devuelve página de resultados",
+          len(gap) > 0, "página vacía")
+    # cada obra del gap tiene has_vinyl y trae >=1 edición de vinilo.
+    gap_ok = all(
+        (lambda w: w and w["has_vinyl"] is True)(db.get_work(g["id"]))
+        and len(g.get("editions") or []) >= 1
+        for g in gap)
+    check("vinyl_gap(1): cada obra tiene has_vinyl y >=1 edición de vinilo",
+          gap_ok, "alguna obra sin vinilo o sin ediciones")
+    # DURO: el user NO posee ya un prensado de vinilo de ninguna obra del gap.
+    gap_ids = [g["id"] for g in gap]
+    if gap_ids:
+        viol = _q("""
+            SELECT DISTINCT r.work_id
+            FROM user_collection uc JOIN releases r ON r.id = uc.release_id
+            WHERE uc.user_id = %(u)s AND r.format = 'vinyl'
+              AND r.work_id = ANY(%(ids)s)
+        """, {"u": U, "ids": gap_ids})
+        check("vinyl_gap(1): el user NO posee ya el vinilo de ninguna obra del gap",
+              len(viol) == 0, "{} obras del gap ya en vinilo".format(len(viol)))
+    # DURO: el user SÍ tiene cada obra del gap en formato ≠ vinilo.
+    if gap_ids:
+        missing_owned = _q("""
+            SELECT g.wid FROM unnest(%(ids)s::bigint[]) g(wid)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM user_collection uc JOIN releases r ON r.id = uc.release_id
+                WHERE uc.user_id = %(u)s AND r.work_id = g.wid AND r.format <> 'vinyl'
+            )
+        """, {"u": U, "ids": gap_ids})
+        check("vinyl_gap(1): el user tiene cada obra del gap en formato ≠ vinilo",
+              len(missing_owned) == 0,
+              "{} obras del gap no las tiene en no-vinilo".format(len(missing_owned)))
+    check("vinyl_gap(1): cada ítem lleva `porque`",
+          all((g.get("porque") or "").strip() for g in gap),
+          "algún ítem del gap sin porque")
+
+    # 24. Exclusión cruzada: afines con exclude_user_id=1 NO incluyen la colección.
+    if fx.get("work_with_embedding"):
+        sims = db.recommend_similar_to_work(
+            fx["work_with_embedding"], limit=12, exclude_user_id=U)
+        check("afines (obra) con exclude_user_id=1 excluyen la colección del user",
+              all(s["id"] not in owned for s in sims),
+              "coló un disco de la colección en afines")
+
 
 def run_http_smoke(fx):
     """Smoke test HTTP opcional con TestClient. No rompe el selftest si falta
@@ -819,6 +952,58 @@ def run_http_smoke(fx):
     r = client.get("/obra/999999999")
     check("GET /obra/{inexistente} → 404", r.status_code == 404,
           "status {}".format(r.status_code))
+
+    # ---- M3a: login-dev + /mi (con y sin sesión) ----
+    from app.domains import users
+    # /mi anónimo → invita a entrar, NO 500.
+    r = client.get("/mi")
+    check("GET /mi sin sesión → 200 e invita a entrar (no 500)",
+          r.status_code == 200 and "invitado" in r.text.lower(),
+          "status {} / no invita".format(r.status_code))
+
+    if not users.DEV_LOGIN_ENABLED:
+        print("SKIP  smoke login-dev (VINYLBE_DEV_LOGIN != 1)")
+    elif fx.get("fixture_user"):
+        # POST /dev/login/1 → set-cookie de sesión.
+        r = client.post("/dev/login/1", follow_redirects=False)
+        cookie = r.headers.get("set-cookie", "")
+        check("POST /dev/login/1 → 303 + set-cookie vb_session",
+              r.status_code in (302, 303) and "vb_session" in cookie,
+              "status {} / cookie {}".format(r.status_code, cookie[:40]))
+        # TestClient guarda la cookie automáticamente → /mi ahora es personal.
+        r = client.get("/mi")
+        check("GET /mi con sesión dev → 200 con 'Sube a vinilo'",
+              r.status_code == 200 and "Sube a vinilo" in r.text,
+              "status {} / falta gap".format(r.status_code))
+        check("GET /mi con sesión dev → contiene 'Para ti'",
+              "Para ti" in r.text, "falta 'Para ti'")
+        # logout limpia la sesión.
+        client.post("/auth/logout")
+        r = client.get("/mi")
+        check("GET /mi tras logout → vuelve a invitar (sesión cerrada)",
+              "invitado" in r.text.lower(),
+              "la sesión no se cerró")
+    else:
+        print("SKIP  smoke login-dev (no existe user 1)")
+
+    # POST /auth/guest crea invitado + cookie; LIMPIEZA del invitado creado.
+    guest_client = TestClient(app)
+    r = guest_client.post("/auth/guest", follow_redirects=False)
+    gcookie = r.headers.get("set-cookie", "")
+    check("POST /auth/guest → 303 + set-cookie vb_session",
+          r.status_code in (302, 303) and "vb_session" in gcookie,
+          "status {} / cookie {}".format(r.status_code, gcookie[:40]))
+    # resolver el user creado para borrarlo (limpieza).
+    tok = None
+    for part in gcookie.split(";"):
+        if part.strip().startswith("vb_session="):
+            tok = part.strip().split("=", 1)[1]
+    if tok:
+        gu = db.get_user_by_session(tok)
+        if gu:
+            db.delete_user_and_sessions(gu["id"])
+            check("limpieza: invitado creado por /auth/guest borrado",
+                  db.get_app_user(gu["id"]) is None, "no se borró")
 
 
 def main():

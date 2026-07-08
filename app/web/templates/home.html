@@ -13,4 +13,26 @@
   <p class="hint">¿No sabes qué buscar? Prueba la
      <a class="nav-vibra" href="/vibra">recomendación por vibra ✦</a></p>
 </section>
+
+{% if not user %}
+<section class="onboarding">
+  <div class="onboard-card">
+    <h2>Recomendación a tu medida</h2>
+    <p>Empieza sin cuentas: guardamos tus recomendaciones y, cuando quieras,
+       conectas Discogs para ver tu <strong>gap de vinilo</strong> (lo que tienes
+       en CD y existe en vinilo).</p>
+    <form class="inline-form" action="/auth/guest" method="post">
+      <button class="btn-primary" type="submit">Empezar sin cuentas</button>
+    </form>
+    <div class="onboard-connect">
+      <button class="btn-ghost" type="button" disabled title="Próximamente (M3b)">
+        Conectar Discogs · próximamente</button>
+      <button class="btn-ghost" type="button" disabled title="Próximamente (M3b)">
+        Conectar Last.fm · próximamente</button>
+    </div>
+    <p class="hint">Las conexiones con Discogs y Last.fm llegan en la próxima
+       entrega.</p>
+  </div>
+</section>
+{% endif %}
 {% endblock %}
