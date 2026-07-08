@@ -15,6 +15,7 @@ Límite one-way: users depende de db/pricing; nada del catálogo depende de user
 """
 from app import db
 from app.domains import pricing
+from app.domains.users import oauth  # noqa: F401 (fachada M3b)
 
 # Nombre de la cookie de sesión (httponly, server-side).
 SESSION_COOKIE = "vb_session"
