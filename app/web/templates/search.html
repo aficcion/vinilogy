@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}{% if q %}“{{ q }}” · {% endif %}Buscar · Vinylbe{% endblock %}
+{% block content %}
+
+{% if not q %}
+  <p class="empty">Escribe algo en el buscador para empezar.</p>
+{% else %}
+  <h1 class="page-title">Resultados para “{{ q }}”</h1>
+
+  {% if artists %}
+  <section class="block">
+    <h2>Artistas</h2>
+    <ul class="artist-list">
+      {% for a in artists %}
+      <li>
+        <a href="/artista/{{ a.id }}">
+          <span class="artist-name">{{ a.name }}</span>
+          {% if a.disambiguation %}<span class="artist-dis">({{ a.disambiguation }})</span>{% endif %}
+          {% if a.country %}<span class="artist-country">{{ a.country }}</span>{% endif %}
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  <section class="block">
+    <h2>Obras con vinilo</h2>
+    {% if works %}
+      <div class="grid">
+        {% for w in works %}{% include "_work_card.html" %}{% endfor %}
+      </div>
+    {% else %}
+      <p class="empty">No hemos encontrado obras con vinilo para “{{ q }}”.</p>
+    {% endif %}
+  </section>
+{% endif %}
+
+{% endblock %}

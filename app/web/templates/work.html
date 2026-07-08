@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}{{ work.title }} — {{ work.artist_name }} · Vinylbe{% endblock %}
+{% block content %}
+
+<article class="work">
+  <div class="work-head">
+    <div class="work-cover">
+      {% if work.cover_url or work.cover_thumb %}
+        <img src="{{ work.cover_url or work.cover_thumb }}" alt="Portada de {{ work.title }}">
+      {% else %}
+        <div class="card-cover-empty big">♫</div>
+      {% endif %}
+    </div>
+    <div class="work-info">
+      <h1>{{ work.title }}</h1>
+      <p class="work-artist">
+        <a href="/artista/{{ work.artist_id }}">{{ work.artist_name }}</a>
+        {% if work.artist_disambiguation %}<span class="artist-dis">({{ work.artist_disambiguation }})</span>{% endif %}
+      </p>
+      <p class="work-meta">
+        {% if work.year %}<span>{{ work.year }}</span>{% endif %}
+        {% if work.work_type %}<span>{{ work.work_type|replace('_', ' ') }}</span>{% endif %}
+      </p>
+      {% if work.genres or work.styles %}
+      <p class="tags">
+        {% for g in work.genres %}<span class="tag genre">{{ g }}</span>{% endfor %}
+        {% for s in work.styles %}<span class="tag style">{{ s }}</span>{% endfor %}
+      </p>
+      {% endif %}
+    </div>
+  </div>
+
+  <section class="block">
+    <h2>Ediciones en vinilo</h2>
+    {% if editions %}
+      <table class="editions">
+        <thead>
+          <tr><th>Año</th><th>País</th><th>Sello</th><th>Cat. nº</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for e in editions %}
+          <tr>
+            <td>{{ e.year or '—' }}</td>
+            <td>{{ e.country or '—' }}</td>
+            <td>{{ e.label_name or '—' }}</td>
+            <td>{{ e.catno or '—' }}</td>
+            <td>{% if e.is_reissue %}<span class="pill">reedición</span>{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty">Sin ediciones en vinilo localizadas para esta obra.</p>
+    {% endif %}
+  </section>
+
+  <section class="block">
+    <h2>Precios en tiendas ES</h2>
+    {% if prices.listings %}
+      {% if prices.any_stale %}
+      <p class="freshness">Algún dato de tienda puede estar desactualizado
+         (más antiguo: {{ prices.data_as_of }}).</p>
+      {% endif %}
+      <table class="prices">
+        <thead>
+          <tr><th>Precio</th><th>Tienda</th><th>Disponibilidad</th><th>Estado</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for p in prices.listings %}
+          <tr>
+            <td class="price">{{ p.price_display }}</td>
+            <td>{{ p.store_label }}</td>
+            <td>{{ p.availability_label }}</td>
+            <td class="cond">{{ p.condition_media or '—' }}{% if p.condition_sleeve %} / {{ p.condition_sleeve }}{% endif %}</td>
+            <td><a class="buy" href="{{ p.url }}" target="_blank" rel="noopener">Ver en tienda ↗</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty">Sin precio localizado en tiendas ES para esta obra.</p>
+    {% endif %}
+  </section>
+</article>
+
+{% endblock %}

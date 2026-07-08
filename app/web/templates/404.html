@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}No encontrado · Vinylbe{% endblock %}
+{% block content %}
+<section class="hero">
+  <h1>No encontrado</h1>
+  <p class="lead">No existe ninguna {{ what }} con el identificador
+     <code>{{ ident }}</code>.</p>
+  <p><a class="buy" href="/">Volver al inicio</a></p>
+</section>
+{% endblock %}

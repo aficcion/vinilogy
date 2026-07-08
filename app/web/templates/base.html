@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Vinylbe{% endblock %}</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">Vinylbe<span class="brand-v2">v2</span></a>
+    <form class="search" action="/buscar" method="get" role="search">
+      <input type="search" name="q" value="{{ q|default('') }}"
+             placeholder="Busca un disco o un artista…" autocomplete="off" autofocus>
+      <button type="submit">Buscar</button>
+    </form>
+  </header>
+
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    <span>Vinylbe v2 · M0 · datos de <code>vinology_core</code></span>
+  </footer>
+</body>
+</html>
