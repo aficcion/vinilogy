@@ -41,6 +41,21 @@ _ANN_CANDIDATE_LIMIT = 400
 # el disco con más ediciones. Ver nota de fórmula en recommend_similar_to_work.
 _RECO_POP_BOOST = 0.02
 
+# Anti-morralla de ARTISTA en recomendación (nit de M1): fuera "Various Artists"
+# (kind='various') y tributos evidentes (nombre con 'tribute'). Se aplica en TODOS
+# los caminos de reco (afines de obra/artista, mood, prensa). Es una condición SQL
+# sobre un alias de `artists` llamado `a`.
+#
+# OJO: core tiene ademas artistas kind='band' literalmente llamados "Various" /
+# "Various Artists" (fugas de compilación mal etiquetadas) → se excluyen por nombre
+# exacto normalizado, no solo por kind.
+_ARTIST_NOT_MORRALLA_SQL = (
+    "a.kind <> 'various' "
+    "AND lower(btrim(a.name)) NOT IN "
+    "('various', 'various artists', 'varios', 'v.a.', 'va') "
+    "AND lower(a.name) NOT LIKE '%%tribute%%'"
+)
+
 _pool = None
 
 
@@ -195,9 +210,16 @@ def get_work(work_id):
 
 
 def get_work_vinyl_editions(work_id):
-    """Releases en vinilo de la work: year, país, sello, catno, is_reissue, cover.
+    """Releases en vinilo de la work, enriquecidas para la ficha.
 
+    Por edición: year, país, sello, catno, cover, y la CADENA DE REEDICIÓN
+    (is_reissue + año de la edición original si `reissue_of_release_id` resuelve).
     Orden por year NULLS LAST, luego país.
+
+    NOTA (verificado core, 8-jul-2026): hoy `is_reissue`/`reissue_of_release_id`
+    están sin poblar en releases de vinilo (0 filas) — la cadena de reedición se
+    materializa aquí por robustez y se activará SOLA cuando el pipeline de core
+    la puebla. Mientras tanto `is_reissue=false` y `original_year=None` en todas.
     """
     sql = """
         SELECT r.id,
@@ -206,10 +228,13 @@ def get_work_vinyl_editions(work_id):
                r.country,
                r.catno,
                r.is_reissue,
+               r.reissue_of_release_id,
+               orig.year AS original_year,
                r.cover_url,
                l.name AS label_name
         FROM releases r
         LEFT JOIN labels l ON l.id = r.label_id
+        LEFT JOIN releases orig ON orig.id = r.reissue_of_release_id
         WHERE r.work_id = %(work_id)s
           AND r.format = 'vinyl'
         ORDER BY r.year ASC NULLS LAST,
@@ -218,6 +243,52 @@ def get_work_vinyl_editions(work_id):
     with _cursor() as cur:
         cur.execute(sql, {"work_id": work_id})
         return cur.fetchall()
+
+
+def get_work_tracklist(work_id):
+    """Tracklist normalizada de una edición de vinilo representativa de la work.
+
+    Estrategia: de las releases de vinilo con `tracklist_cache` (JSONB, 100%
+    cubierto en vinilo en core), toma la MÁS COMPLETA (mayor nº de pistas) — la
+    edición representativa que enseña la obra entera. Sin release de vinilo con
+    tracklist → [].
+
+    Forma real de `tracklist_cache` (verificada core): array de
+    `{title, position, duration, extraartists?}`. Se normaliza a
+    `[{position, title, duration}]` (se descartan extraartists y entradas sin
+    título; posición/duración pueden faltar → None).
+    """
+    sql = """
+        SELECT r.tracklist_cache
+        FROM releases r
+        WHERE r.work_id = %(work_id)s
+          AND r.format = 'vinyl'
+          AND r.tracklist_cache IS NOT NULL
+          AND jsonb_typeof(r.tracklist_cache) = 'array'
+          AND jsonb_array_length(r.tracklist_cache) > 0
+        ORDER BY jsonb_array_length(r.tracklist_cache) DESC
+        LIMIT 1
+    """
+    with _cursor() as cur:
+        cur.execute(sql, {"work_id": work_id})
+        row = cur.fetchone()
+    if not row or not row["tracklist_cache"]:
+        return []
+    out = []
+    for t in row["tracklist_cache"]:
+        if not isinstance(t, dict):
+            continue
+        title = (t.get("title") or "").strip()
+        if not title:
+            continue
+        pos = t.get("position") or None
+        dur = t.get("duration") or None
+        out.append({
+            "position": pos.strip() if isinstance(pos, str) else pos,
+            "title": title,
+            "duration": dur.strip() if isinstance(dur, str) else dur,
+        })
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +441,163 @@ def get_prices_for_work(work_id, max_age_days=None):
 
 
 # ---------------------------------------------------------------------------
+# Capa de PRENSA española (work_press_signals) — EL CORAZÓN de M2
+# ---------------------------------------------------------------------------
+#
+# Cada obra puede tener VARIAS filas (varias cabeceras la reseñaron). Se agregan:
+# frase(s)-vibra con atribución al outlet, unión de vibra/suena_a/temas y las
+# fuentes con su URL para poder enlazar la reseña. Sin señales → estructura vacía
+# (la ficha simplemente no muestra el bloque; nada de inventar).
+
+# Nombres legibles de las cabeceras (por `source` en core).
+PRESS_SOURCE_LABELS = {
+    "mondosonoro": "MondoSonoro",
+    "jenesaispop": "Jenesaispop",
+    "muzikalia": "Muzikalia",
+    "dirtyrock": "Dirty Rock",
+    "mariskalrock": "Mariskal Rock",
+    "crazyminds": "Crazyminds",
+    "binaural": "Binaural",
+    "ruta66": "Ruta 66",
+}
+
+
+def _dedup_preserve(seq):
+    """Dedup case-insensitive preservando orden y la primera grafía vista."""
+    out = []
+    seen = set()
+    for x in seq or []:
+        if not x:
+            continue
+        k = x.strip().lower()
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        out.append(x.strip())
+    return out
+
+
+def _aggregate_press_rows(rows):
+    """Colapsa las filas de work_press_signals de UNA obra en un dict agregado.
+
+    Devuelve:
+      - frases: [{frase, source, source_label, review_url, published_at}] (con
+        frase_vibra no vacía), ordenadas por published_at DESC NULLS LAST.
+      - vibra / suena_a / temas_destacados: unión dedup (case-insensitive).
+      - sources: [{source, source_label, review_url, published_at}] (todas).
+    Sin filas → todo vacío.
+    """
+    frases = []
+    vibra, suena_a, temas = [], [], []
+    sources = []
+    for r in rows:
+        src = r.get("source")
+        label = PRESS_SOURCE_LABELS.get(src, src)
+        sources.append({
+            "source": src,
+            "source_label": label,
+            "review_url": r.get("review_url"),
+            "published_at": r.get("published_at"),
+        })
+        frase = (r.get("frase_vibra") or "").strip()
+        if frase:
+            frases.append({
+                "frase": frase,
+                "source": src,
+                "source_label": label,
+                "review_url": r.get("review_url"),
+                "published_at": r.get("published_at"),
+            })
+        vibra += list(r.get("vibra") or [])
+        suena_a += list(r.get("suena_a") or [])
+        temas += list(r.get("temas_destacados") or [])
+    return {
+        "frases": frases,
+        "vibra": _dedup_preserve(vibra),
+        "suena_a": _dedup_preserve(suena_a),
+        "temas_destacados": _dedup_preserve(temas),
+        "sources": sources,
+    }
+
+
+def get_press_signals(work_id):
+    """Señales de prensa agregadas para UNA obra. Estructura vacía si no hay.
+
+    Ver `_aggregate_press_rows` para la forma del retorno.
+    """
+    sql = """
+        SELECT source, review_url, vibra, suena_a, temas_destacados,
+               frase_vibra, published_at
+        FROM work_press_signals
+        WHERE work_id = %(work_id)s
+        ORDER BY published_at DESC NULLS LAST, source
+    """
+    with _cursor() as cur:
+        cur.execute(sql, {"work_id": work_id})
+        rows = cur.fetchall()
+    return _aggregate_press_rows(rows)
+
+
+def press_signals_batch(work_ids):
+    """Señales de prensa para un CONJUNTO de obras, en UNA sola query (sin N+1).
+
+    Devuelve {work_id: agregado} solo para las obras que tienen señales. Las
+    obras sin señales simplemente no aparecen en el dict. Usado por la reco para
+    apoyar el `porque` en la crítica real sin disparar una query por obra.
+    """
+    ids = [int(w) for w in (work_ids or []) if w is not None]
+    if not ids:
+        return {}
+    sql = """
+        SELECT work_id, source, review_url, vibra, suena_a, temas_destacados,
+               frase_vibra, published_at
+        FROM work_press_signals
+        WHERE work_id = ANY(%(ids)s)
+        ORDER BY published_at DESC NULLS LAST, source
+    """
+    with _cursor() as cur:
+        cur.execute(sql, {"ids": ids})
+        rows = cur.fetchall()
+    by_work = {}
+    for r in rows:
+        by_work.setdefault(r["work_id"], []).append(r)
+    return {wid: _aggregate_press_rows(rws) for wid, rws in by_work.items()}
+
+
+def resolve_suena_a_artists(names):
+    """Mapea nombres de `suena_a` (crítica) a artistas de core CON vinilo.
+
+    Devuelve {nombre_original: artist_id} SOLO para los que resuelven a un
+    artista primary con al menos una obra en vinilo (para que el enlace a
+    /artista tenga sentido). Match exacto por nombre normalizado (unaccent+lower);
+    la crítica escribe el nombre canónico, no hace falta trigram agresivo.
+    Sin match → el nombre no aparece (la vista lo pinta como texto plano).
+    """
+    names = _dedup_preserve(names)
+    if not names:
+        return {}
+    sql = """
+        SELECT DISTINCT ON (norm) input.name AS input_name, a.id AS artist_id
+        FROM unnest(%(names)s::text[]) input(name)
+        JOIN LATERAL (
+            SELECT lower(immutable_unaccent(input.name)) AS norm
+        ) n ON true
+        JOIN artists a
+          ON lower(immutable_unaccent(a.name)) = n.norm
+         AND a.is_primary = true
+         AND EXISTS (
+             SELECT 1 FROM works w
+             WHERE w.primary_artist_id = a.id AND w.has_vinyl = true
+         )
+        ORDER BY norm, a.listeners DESC NULLS LAST
+    """
+    with _cursor() as cur:
+        cur.execute(sql, {"names": names})
+        rows = cur.fetchall()
+    return {r["input_name"]: r["artist_id"] for r in rows}
+
+
+# ---------------------------------------------------------------------------
 # Recomendación por CONTENIDO (embeddings precalculados de core, SQL puro)
 # ---------------------------------------------------------------------------
 #
@@ -464,10 +692,11 @@ def recommend_similar_to_work(work_id, limit=12):
           AND w.work_type = ANY(%(work_types)s::work_type[])
           AND w.primary_artist_id <> (SELECT primary_artist_id FROM seed)
           AND w.id <> %(work_id)s
+          AND {artist_ok}
           AND EXISTS (SELECT 1 FROM seed)
         ORDER BY w.primary_artist_id, dist
         LIMIT %(cand)s
-    """
+    """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL)
     with _cursor() as cur:
         # Seed info para el `porque` y guard de "sin embedding".
         has_emb, _seed_artist = _seed_embedding_for_work(cur, work_id)
@@ -573,9 +802,10 @@ def recommend_similar_to_artist(artist_id, limit=12):
               AND w.has_vinyl = true
               AND w.work_type = ANY(%(work_types)s::work_type[])
               AND w.primary_artist_id <> %(artist_id)s
+              AND {artist_ok}
             ORDER BY w.primary_artist_id, dist
             LIMIT %(cand)s
-        """.format(seed=seed_clause)
+        """.format(seed=seed_clause, artist_ok=_ARTIST_NOT_MORRALLA_SQL)
 
         cur.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
         cur.execute(sql, {
@@ -588,6 +818,76 @@ def recommend_similar_to_artist(artist_id, limit=12):
     ranked = _rerank_candidates(rows, limit)
     for r in ranked:
         r["porque"] = "en la onda de {}".format(artist_name)
+    return ranked
+
+
+# ---------------------------------------------------------------------------
+# Afines por VIBRA DE CRÍTICA (embedding_press) — BONUS de M2
+# ---------------------------------------------------------------------------
+#
+# Complementa (no sustituye) a recommend_similar_to_work. `embedding_press`
+# destila la voz de la crítica española y solo cubre ~9K works con vinilo, así
+# que esta señal es un BONUS: donde el seed tiene embedding_press, damos "afines
+# por lo que dice la crítica"; donde no, [] y la ficha oculta la sub-sección.
+# Mismas reglas duras: excluir el mismo artista, cap 1/artista, solo vinilo +
+# obra de verdad, sin morralla de artista.
+
+
+def similar_by_press(work_id, limit=8):
+    """Afines a la OBRA por VIBRA DE CRÍTICA (`embedding_press <=>`).
+
+    Solo funciona si el seed tiene embedding_press. Vecinos con embedding_press,
+    de OTRO artista, capados 1/artista y re-rankeados igual que la reco general.
+    Seed sin embedding_press → [] (la ficha no muestra la sub-sección).
+    """
+    sql = """
+        WITH seed AS (
+            SELECT embedding_press, primary_artist_id
+            FROM works
+            WHERE id = %(work_id)s AND embedding_press IS NOT NULL
+        )
+        SELECT DISTINCT ON (w.primary_artist_id)
+               w.id,
+               w.title,
+               w.work_type,
+               w.year,
+               w.releases_count,
+               a.id   AS artist_id,
+               a.name AS artist_name,
+               vc.preferred_thumb AS cover_thumb,
+               vc.preferred_url   AS cover_url,
+               (w.embedding_press <=> (SELECT embedding_press FROM seed)) AS dist
+        FROM works w
+        JOIN artists a ON a.id = w.primary_artist_id
+        LEFT JOIN v_work_cover vc ON vc.work_id = w.id
+        WHERE w.embedding_press IS NOT NULL
+          AND w.has_vinyl = true
+          AND w.work_type = ANY(%(work_types)s::work_type[])
+          AND w.primary_artist_id <> (SELECT primary_artist_id FROM seed)
+          AND w.id <> %(work_id)s
+          AND {artist_ok}
+          AND EXISTS (SELECT 1 FROM seed)
+        ORDER BY w.primary_artist_id, dist
+        LIMIT %(cand)s
+    """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL)
+    with _cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM works WHERE id = %(id)s AND embedding_press IS NOT NULL",
+            {"id": work_id},
+        )
+        if not cur.fetchone():
+            return []
+        cur.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
+        cur.execute(sql, {
+            "work_id": work_id,
+            "work_types": list(_RECO_WORK_TYPES),
+            "cand": _ANN_CANDIDATE_LIMIT,
+        })
+        rows = cur.fetchall()
+
+    ranked = _rerank_candidates(rows, limit)
+    for r in ranked:
+        r["porque"] = "la crítica lo sitúa en una vibra afín"
     return ranked
 
 
@@ -644,6 +944,7 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
             JOIN works w ON w.id = m.id
             JOIN artists a ON a.id = m.primary_artist_id
             LEFT JOIN v_work_cover vc ON vc.work_id = m.id
+            WHERE {artist_ok}
         ),
         ranked AS (
             SELECT s.*,
@@ -665,7 +966,7 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
                  releases_count DESC NULLS LAST,
                  lastfm_playcount DESC NULLS LAST
         LIMIT %(limit)s
-    """
+    """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL)
     with _cursor() as cur:
         cur.execute(sql, {
             "styles": style_names,
