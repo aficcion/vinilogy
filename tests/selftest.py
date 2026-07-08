@@ -128,6 +128,80 @@ def derive_fixtures():
     """)
     fx["work_without_embedding"] = rows[0]["id"] if rows else None
 
+    # -- M2 --
+
+    # Work con vinilo cuya edición representativa tiene tracklist (para tracklist).
+    rows = _q("""
+        SELECT r.work_id AS id
+        FROM releases r
+        JOIN works w ON w.id = r.work_id
+        WHERE w.has_vinyl = true
+          AND r.format = 'vinyl'
+          AND r.tracklist_cache IS NOT NULL
+          AND jsonb_typeof(r.tracklist_cache) = 'array'
+          AND jsonb_array_length(r.tracklist_cache) >= 4
+        ORDER BY w.releases_count DESC NULLS LAST
+        LIMIT 1
+    """)
+    fx["work_with_tracklist"] = rows[0]["id"] if rows else None
+
+    # Work con vinilo que SÍ tiene señales de prensa con frase_vibra (para press).
+    rows = _q("""
+        SELECT p.work_id AS id
+        FROM work_press_signals p
+        JOIN works w ON w.id = p.work_id
+        WHERE w.has_vinyl = true AND p.frase_vibra IS NOT NULL
+        ORDER BY w.releases_count DESC NULLS LAST
+        LIMIT 1
+    """)
+    fx["work_with_press"] = rows[0]["id"] if rows else None
+
+    # Work con vinilo SIN ninguna señal de prensa (camino honesto → []).
+    rows = _q("""
+        SELECT w.id
+        FROM works w
+        WHERE w.has_vinyl = true
+          AND NOT EXISTS (SELECT 1 FROM work_press_signals p WHERE p.work_id = w.id)
+        ORDER BY w.releases_count DESC NULLS LAST
+        LIMIT 1
+    """)
+    fx["work_no_press"] = rows[0]["id"] if rows else None
+
+    # Seed CON embedding_press (para similar_by_press) — obra de verdad, vinilo.
+    rows = _q("""
+        SELECT w.id
+        FROM works w
+        WHERE w.has_vinyl = true
+          AND w.embedding_press IS NOT NULL
+          AND w.work_type IN ('studio_album','ep')
+        ORDER BY w.releases_count DESC NULLS LAST
+        LIMIT 1
+    """)
+    fx["work_with_embedding_press"] = rows[0]["id"] if rows else None
+
+    # Work con vinilo SIN embedding_press (para similar_by_press → []).
+    rows = _q("""
+        SELECT id FROM works
+        WHERE has_vinyl = true AND embedding IS NOT NULL AND embedding_press IS NULL
+          AND work_type IN ('studio_album','ep')
+        LIMIT 1
+    """)
+    fx["work_without_embedding_press"] = rows[0]["id"] if rows else None
+
+    # Seed cuyos vecinos por contenido incluyen alguna obra CON prensa (para el
+    # check de porqué editorial). Se busca en Python en run_checks (necesita reco);
+    # aquí solo dejamos la lista de candidatos-semilla (populares con prensa).
+    rows = _q("""
+        SELECT w.id
+        FROM works w
+        JOIN work_press_signals p ON p.work_id = w.id
+        WHERE w.has_vinyl = true AND w.embedding IS NOT NULL
+          AND w.work_type IN ('studio_album','ep')
+        ORDER BY w.releases_count DESC NULLS LAST
+        LIMIT 40
+    """)
+    fx["press_seed_candidates"] = [r["id"] for r in rows]
+
     return fx
 
 
@@ -474,6 +548,202 @@ def run_checks(fx):
         "no resolvió domingo lluvioso",
     )
 
+    # -----------------------------------------------------------------------
+    # M2 — tracklist, prensa, porqué editorial, similar_by_press, anti-morralla
+    # -----------------------------------------------------------------------
+
+    # 14. get_work_tracklist: pistas normalizadas (position/title/duration).
+    if fx["work_with_tracklist"]:
+        tl = db.get_work_tracklist(fx["work_with_tracklist"])
+        check(
+            "get_work_tracklist devuelve pistas",
+            len(tl) >= 1,
+            "work {} sin tracklist".format(fx["work_with_tracklist"]),
+        )
+        if tl:
+            shape_ok = all(
+                set(t.keys()) == {"position", "title", "duration"} for t in tl
+            )
+            check("tracklist normalizada a {position,title,duration}", shape_ok,
+                  "claves inesperadas: {}".format(tl[0].keys()))
+            titles_ok = all((t["title"] or "").strip() for t in tl)
+            check("tracklist: todos los títulos presentes (no vacíos)", titles_ok,
+                  "alguna pista sin título")
+            pos_ok = any(t["position"] for t in tl)
+            check("tracklist: al menos alguna posición presente (A1/B2…)", pos_ok,
+                  "ninguna pista con posición")
+    else:
+        check("fixture work_with_tracklist existe", False, "no derivada")
+
+    # 15. get_press_signals: frase/vibra/suena_a para obra CON prensa.
+    if fx["work_with_press"]:
+        from app.domains import press as press_dom
+        ps = db.get_press_signals(fx["work_with_press"])
+        check(
+            "get_press_signals: >=1 frase_vibra para obra con prensa",
+            len(ps["frases"]) >= 1,
+            "sin frases",
+        )
+        check(
+            "get_press_signals: frase con atribución a cabecera (source_label)",
+            all(f.get("source_label") for f in ps["frases"]),
+            "alguna frase sin cabecera",
+        )
+        check(
+            "get_press_signals: vibra o suena_a poblados",
+            bool(ps["vibra"] or ps["suena_a"]),
+            "vibra/suena_a vacíos",
+        )
+        # dedup case-insensitive de vibra
+        low = [v.lower() for v in ps["vibra"]]
+        check("get_press_signals: vibra dedup (sin repes case-insensitive)",
+              len(low) == len(set(low)), "vibra con duplicados")
+        # fachada press.get_signals marca has_signals True + links de suena_a
+        sig = press_dom.get_signals(fx["work_with_press"])
+        check("press.get_signals: has_signals=True para obra con prensa",
+              sig["has_signals"] is True, "has_signals no True")
+        check("press.get_signals: suena_a_links poblado (mismo nº que suena_a)",
+              len(sig["suena_a_links"]) == len(sig["suena_a"]),
+              "links descuadrados")
+    else:
+        check("fixture work_with_press existe", False, "no derivada")
+
+    # 16. get_press_signals: obra SIN prensa → estructura vacía limpia.
+    if fx["work_no_press"]:
+        ps = db.get_press_signals(fx["work_no_press"])
+        empty_ok = (ps["frases"] == [] and ps["vibra"] == []
+                    and ps["suena_a"] == [] and ps["temas_destacados"] == []
+                    and ps["sources"] == [])
+        check("get_press_signals: obra sin prensa → estructura vacía", empty_ok,
+              "esperado vacío, obtenido {}".format(ps))
+        from app.domains import press as press_dom
+        sig = press_dom.get_signals(fx["work_no_press"])
+        check("press.get_signals: has_signals=False sin prensa",
+              sig["has_signals"] is False, "has_signals no False")
+    else:
+        print("SKIP  fixture work_no_press (sin caso limpio)")
+
+    # 17. Porqué editorial: alguna obra recomendada con prensa refleja la crítica
+    #     (NO el genérico), vía batch sin N+1.
+    from app.domains import reco as reco_dom
+    press_backed_found = False
+    for seed in (fx.get("press_seed_candidates") or []):
+        items = reco_dom.similar_to_work(seed, limit=12)
+        press_items = [it for it in items if it.get("porque_source") == "press"]
+        if press_items:
+            press_backed_found = True
+            it = press_items[0]
+            gen = "afín en género y estilo"
+            check(
+                "porqué editorial: item con prensa NO usa el porqué genérico",
+                gen not in (it.get("porque") or ""),
+                "porqué sigue genérico: {}".format(it.get("porque")),
+            )
+            check(
+                "porqué editorial: refleja la crítica ('la crítica'/'según la crítica')",
+                "crítica" in (it.get("porque") or "").lower(),
+                "porqué no menciona la crítica: {}".format(it.get("porque")),
+            )
+            break
+    check("porqué editorial: se encontró al menos una reco apoyada en prensa",
+          press_backed_found,
+          "ningún seed candidato produjo recos con prensa")
+
+    # 17b. Batch sin N+1: press_signals_batch trae N obras en 1 query (nº acotado).
+    ids = (fx.get("press_seed_candidates") or [])[:10]
+    if ids:
+        import app.db as _dbmod
+        calls = {"n": 0}
+        orig = _dbmod._cursor
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _counting_cursor(*a, **k):
+            calls["n"] += 1
+            with orig(*a, **k) as cur:
+                yield cur
+
+        _dbmod._cursor = _counting_cursor
+        try:
+            db.press_signals_batch(ids)
+        finally:
+            _dbmod._cursor = orig
+        check("press_signals_batch: 1 sola query para el conjunto (sin N+1)",
+              calls["n"] == 1, "usó {} cursores".format(calls["n"]))
+
+    # 18. similar_by_press: seed CON embedding_press → excluye mismo artista,
+    #     cap 1/artista, solo vinilo, `porque` de crítica.
+    if fx["work_with_embedding_press"]:
+        seed_id = fx["work_with_embedding_press"]
+        seed_w = db.get_work(seed_id)
+        seed_artist = seed_w["artist_id"] if seed_w else None
+        sims = db.similar_by_press(seed_id, limit=8)
+        check("similar_by_press devuelve resultados para seed con embedding_press",
+              len(sims) > 0, "seed {} sin afines por prensa".format(seed_id))
+        check("similar_by_press excluye el propio artista",
+              all(s["artist_id"] != seed_artist for s in sims),
+              "coló el propio artista")
+        aids = [s["artist_id"] for s in sims]
+        check("similar_by_press cap 1/artista", len(set(aids)) == len(aids),
+              "artistas repetidos")
+        vinyl_ok = True
+        for s in sims:
+            w = db.get_work(s["id"])
+            if not (w and w["has_vinyl"] is True
+                    and w["work_type"] in ("studio_album", "ep")):
+                vinyl_ok = False
+                break
+        check("similar_by_press solo vinilo + studio_album/ep", vinyl_ok,
+              "algún afín sin vinilo o con morralla")
+        check("similar_by_press todos con `porque`",
+              all((s.get("porque") or "").strip() for s in sims),
+              "algún afín sin porque")
+    else:
+        check("fixture work_with_embedding_press existe", False, "no derivada")
+
+    # 19. similar_by_press: seed SIN embedding_press → [] honesto.
+    if fx["work_without_embedding_press"]:
+        sims = db.similar_by_press(fx["work_without_embedding_press"])
+        check("similar_by_press sin embedding_press → [] honesto", sims == [],
+              "esperado [], obtenido {}".format(len(sims)))
+    else:
+        print("SKIP  fixture work_without_embedding_press (no hay caso limpio)")
+
+    # 20. Anti-morralla: ningún camino de reco devuelve artistas kind='various'
+    #     ni el literal "Various"/"Various Artists" ni tributos.
+    def _artist_kinds_and_names(items):
+        aids = [it["artist_id"] for it in items if it.get("artist_id")]
+        if not aids:
+            return []
+        return _q("SELECT kind, lower(btrim(name)) AS lname, lower(name) AS namel "
+                  "FROM artists WHERE id = ANY(%(ids)s)", {"ids": aids})
+
+    BAD_NAMES = {"various", "various artists", "varios", "v.a.", "va"}
+    checked_any = False
+    for seed in (fx.get("press_seed_candidates") or [])[:5]:
+        for items in (reco_dom.similar_to_work(seed, limit=12),):
+            meta = _artist_kinds_and_names(items)
+            checked_any = checked_any or bool(meta)
+            no_various = all(
+                m["kind"] != "various"
+                and m["lname"] not in BAD_NAMES
+                and "tribute" not in m["namel"]
+                for m in meta
+            )
+            check(
+                "afines (obra) sin artistas various/tributo (seed {})".format(seed),
+                no_various,
+                "coló un artista morralla",
+            )
+    # mood también
+    from app.domains import editorial as ed_dom
+    mres = ed_dom.recommend_by_mood(mood_lexicon.MOODS[0]["key"], limit=20)
+    mmeta = _artist_kinds_and_names(mres["results"])
+    check("mood sin artistas various/tributo",
+          all(m["kind"] != "various" and m["lname"] not in BAD_NAMES
+              and "tribute" not in m["namel"] for m in mmeta),
+          "coló un artista morralla en mood")
+
     # 6. get_work / get_artist → None para id inexistente sin excepción.
     BOGUS = 999999999
     try:
@@ -503,6 +773,19 @@ def run_http_smoke(fx):
     r = client.get("/buscar", params={"q": "radiohead"})
     check("GET /buscar?q=radiohead → 200", r.status_code == 200,
           "status {}".format(r.status_code))
+
+    # M2: ficha de obra CON prensa muestra el bloque "crítica" + tracklist.
+    if fx["work_with_press"]:
+        r = client.get("/obra/{}".format(fx["work_with_press"]))
+        check("GET /obra/{id_con_prensa} → 200", r.status_code == 200,
+              "status {}".format(r.status_code))
+        low = r.text.lower()
+        check("GET /obra/{id_con_prensa} contiene 'crítica' (bloque de prensa)",
+              "crítica" in low,
+              "no aparece 'crítica' en la ficha con prensa")
+        check("GET /obra/{id_con_prensa} muestra tracklist ('canciones')",
+              "canciones" in low,
+              "no aparece tracklist en la ficha con prensa")
 
     if fx["work_with_embedding"]:
         r = client.get("/obra/{}".format(fx["work_with_embedding"]))
