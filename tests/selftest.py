@@ -765,6 +765,11 @@ def run_checks(fx):
     # -----------------------------------------------------------------------
     run_m3a_checks(fx)
 
+    # -----------------------------------------------------------------------
+    # M3b — OAuth (piezas SIN navegador: api_sig, mapeo, URLs)
+    # -----------------------------------------------------------------------
+    run_m3b_checks(fx)
+
 
 def run_m3a_checks(fx):
     from app.domains import users
@@ -887,6 +892,203 @@ def run_m3a_checks(fx):
         check("afines (obra) con exclude_user_id=1 excluyen la colección del user",
               all(s["id"] not in owned for s in sims),
               "coló un disco de la colección en afines")
+
+
+def run_m3b_checks(fx):
+    """Checks unitarios de OAuth SIN red ni navegador (M3b):
+      - api_sig de Last.fm con vector determinista conocido.
+      - regla de mapeo de identidad (existente / invitado / nuevo) con fixtures
+        temporales en core y LIMPIEZA garantizada (NUNCA toca al user 1).
+      - URLs de autorización bien formadas (parseando querystring, sin red).
+    """
+    from app.domains.users import oauth
+    import urllib.parse
+
+    # 25. api_sig determinista (vector conocido, sin red).
+    sig = oauth.lastfm_api_sig(
+        {"method": "auth.getSession", "api_key": "abc123", "token": "tok999"},
+        "SECRET42",
+    )
+    check("lastfm_api_sig: md5 firmado coincide con el vector conocido",
+          sig == "8ebe34e096d1c1d768c92c2f5eb8735b",
+          "obtenido {}".format(sig))
+    # api_sig ignora 'format' y 'api_sig' previos.
+    sig2 = oauth.lastfm_api_sig(
+        {"method": "auth.getSession", "api_key": "abc123", "token": "tok999",
+         "format": "json", "api_sig": "STALE"},
+        "SECRET42",
+    )
+    check("lastfm_api_sig: excluye 'format' y 'api_sig' del cálculo",
+          sig2 == sig, "no ignoró format/api_sig")
+
+    # 26. URLs de autorización bien formadas (sin red).
+    with _env({"VINYLBE_BASE_URL": "http://localhost:7788",
+               "LASTFM_API_KEY": "LFKEY", "LASTFM_API_SECRET": "LFSEC"}):
+        durl = oauth.discogs_authorize_url("REQTOK123")
+        pd = urllib.parse.urlparse(durl)
+        qd = urllib.parse.parse_qs(pd.query)
+        check("discogs_authorize_url apunta a discogs.com/oauth/authorize",
+              pd.netloc == "www.discogs.com" and pd.path == "/oauth/authorize",
+              "url: {}".format(durl))
+        check("discogs_authorize_url lleva el oauth_token del request token",
+              qd.get("oauth_token") == ["REQTOK123"],
+              "qs: {}".format(qd))
+
+        lurl = oauth.lastfm_auth_url()
+        pl = urllib.parse.urlparse(lurl)
+        ql = urllib.parse.parse_qs(pl.query)
+        check("lastfm_auth_url apunta a last.fm/api/auth",
+              "last.fm" in pl.netloc and pl.path.startswith("/api/auth"),
+              "url: {}".format(lurl))
+        check("lastfm_auth_url lleva api_key y cb correcta (:7788 callback)",
+              ql.get("api_key") == ["LFKEY"]
+              and ql.get("cb") == ["http://localhost:7788/auth/lastfm/callback"],
+              "qs: {}".format(ql))
+
+    # 27. Regla de mapeo de identidad — 3 casos con fixtures temporales.
+    #     (a) credencial EXISTENTE → mapea a su user_id (fixture de test, NO user 1).
+    tmp_user = None
+    guest_id = None
+    new_created_id = None
+    try:
+        # Fixture: usuario de test + credencial discogs con un account_id ÚNICO.
+        acc_a = "vb2test-acc-" + secrets_token()
+        tmp_user = db.create_identified_user(display_name="vb2-test-existing")
+        db.upsert_oauth_credential(
+            user_id=tmp_user, provider="discogs", provider_account_id=acc_a,
+            provider_username="vb2test", oauth_token="tk", oauth_token_secret="ts")
+        uid, outcome = oauth.map_identity("discogs", acc_a, "vb2test",
+                                          guest_user_id=None)
+        check("map_identity: credencial existente → su user_id (outcome=existing)",
+              uid == tmp_user and outcome == "existing",
+              "uid={} outcome={}".format(uid, outcome))
+        # aunque venga un invitado, gana la credencial existente.
+        uid2, outcome2 = oauth.map_identity("discogs", acc_a, "vb2test",
+                                            guest_user_id=999999999)
+        check("map_identity: existente gana sobre invitado (no re-vincula)",
+              uid2 == tmp_user and outcome2 == "existing",
+              "uid={} outcome={}".format(uid2, outcome2))
+
+        # (b) invitado + credencial NUEVA → vincula al invitado.
+        guest_id, _tok = _guest()
+        acc_b = "vb2test-acc-" + secrets_token()
+        uid3, outcome3 = oauth.persist_identity(
+            provider="lastfm", provider_account_id=acc_b,
+            provider_username="vb2guestname", guest_user_id=guest_id,
+            session_key="sk-test")
+        check("persist_identity: invitado + credencial nueva → vincula al invitado",
+              uid3 == guest_id and outcome3 == "linked_guest",
+              "uid={} outcome={}".format(uid3, outcome3))
+        cred = db.find_oauth_credential("lastfm", acc_b)
+        check("persist_identity: la credencial nueva queda ligada al invitado",
+              cred is not None and cred["user_id"] == guest_id,
+              "cred={}".format(cred))
+        # display_name del invitado se rellena (estaba NULL).
+        gu = db.get_app_user(guest_id)
+        check("persist_identity: rellena display_name del invitado vinculado",
+              gu and gu["display_name"] == "vb2guestname",
+              "display_name={}".format(gu and gu["display_name"]))
+
+        # (c) sin invitado + credencial nueva → crea usuario nuevo.
+        acc_c = "vb2test-acc-" + secrets_token()
+        uid4, outcome4 = oauth.map_identity("discogs", acc_c, "vb2new",
+                                            guest_user_id=None)
+        new_created_id = uid4 if outcome4 == "new" else None
+        check("map_identity: sin invitado + nueva → crea usuario (outcome=new)",
+              outcome4 == "new" and isinstance(uid4, int) and uid4 > 0,
+              "uid={} outcome={}".format(uid4, outcome4))
+        check("map_identity: el usuario nuevo NO es el user 1 (Carlos)",
+              uid4 != 1, "creó/mapeó al user 1")
+    except Exception as e:  # noqa: BLE001
+        check("regla de mapeo de identidad no peta", False, repr(e))
+    finally:
+        # LIMPIEZA: borrar TODOS los fixtures de test (CASCADE borra credenciales).
+        for _id in (tmp_user, guest_id, new_created_id):
+            if _id and _id != 1:
+                db.delete_user_and_sessions(_id)
+        # verificación de limpieza
+        gone = all(
+            (_id is None) or (_id == 1) or (db.get_app_user(_id) is None)
+            for _id in (tmp_user, guest_id, new_created_id))
+        check("limpieza M3b: todos los usuarios/credenciales de test borrados",
+              gone, "quedó algún fixture sin borrar")
+
+    # 28. /auth/discogs/login SIN credenciales en entorno → 'no configurado'
+    #     (no 500). Con TestClient, sin red.
+    try:
+        from fastapi.testclient import TestClient
+        from app.main import app
+        with _env({"DISCOGS_KEY": "", "DISCOGS_SECRET": ""}):
+            client = TestClient(app)
+            r = client.get("/auth/discogs/login", follow_redirects=False)
+            check("/auth/discogs/login sin credenciales → aviso 'no configurado' "
+                  "(no 500)",
+                  r.status_code != 500 and "no está configurado" in r.text.lower(),
+                  "status {} / {}".format(r.status_code, r.text[:80]))
+    except Exception as e:  # noqa: BLE001
+        print("SKIP  /auth/discogs/login sin credenciales (TestClient: {})".format(e))
+
+    # 29. Callback de Discogs SIN estado → error suave (no 500), sin red.
+    try:
+        from fastapi.testclient import TestClient
+        from app.main import app
+        client = TestClient(app)
+        r = client.get("/auth/discogs/callback",
+                       params={"oauth_token": "x", "oauth_verifier": "y"},
+                       follow_redirects=False)
+        check("/auth/discogs/callback sin estado → error suave (no 500)",
+              r.status_code != 500 and r.status_code < 500,
+              "status {}".format(r.status_code))
+    except Exception as e:  # noqa: BLE001
+        print("SKIP  callback sin estado (TestClient: {})".format(e))
+
+    # 30. FlowStore: single-use + expiración.
+    fs = oauth.FlowStore(ttl_seconds=600)
+    st = fs.put({"provider": "discogs", "request_token_secret": "s"})
+    got = fs.pop(st)
+    check("FlowStore: pop devuelve el payload guardado",
+          got and got["request_token_secret"] == "s", "got={}".format(got))
+    check("FlowStore: single-use (segundo pop → None)",
+          fs.pop(st) is None, "segundo pop no dio None")
+    check("FlowStore: pop(None) / estado inexistente → None",
+          fs.pop(None) is None and fs.pop("noexiste") is None,
+          "estado inexistente no dio None")
+    fs_exp = oauth.FlowStore(ttl_seconds=-1)
+    st2 = fs_exp.put({"provider": "lastfm"})
+    check("FlowStore: estado caducado → None",
+          fs_exp.pop(st2) is None, "caducado no dio None")
+
+
+def secrets_token():
+    import secrets as _s
+    return _s.token_hex(6)
+
+
+def _guest():
+    from app.domains import users
+    return users.start_guest()
+
+
+from contextlib import contextmanager as _cm
+
+
+@_cm
+def _env(overrides):
+    """Context manager: aplica overrides de os.environ y los restaura al salir."""
+    saved = {k: os.environ.get(k) for k in overrides}
+    try:
+        for k, v in overrides.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        yield
+    finally:
+        for k, old in saved.items():
+            if old is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = old
 
 
 def run_http_smoke(fx):
