@@ -128,6 +128,18 @@ def recommend_for_user(user_id, limit=12):
     return press.enrich_porque_batch(items)
 
 
+def recommend_from_listening(user_id, limit=12):
+    """Recomendación por ESCUCHA de Last.fm (centroide de escucha, embeddings de
+    core). [] honesto si el usuario no tiene datos Last.fm resueltos con embedding
+    (la sección de /mi simplemente no aparece). Anónimo → [].
+
+    A diferencia de recommend_for_user, NO se pasa por press.enrich_porque_batch:
+    el `porque` de esta sección ES la atribución a la escucha ("en la onda de lo
+    que escuchas (…)") y el valor de la sección es precisamente esa atribución —
+    la vibra de crítica sería otra sección, no esta."""
+    return db.recommend_from_listening(user_id, limit=limit)
+
+
 def vinyl_gap(user_id, limit=24):
     """Gap de vinilo con PRECIO por obra (reutiliza pricing). Cada ítem lleva sus
     ediciones de vinilo y su bloque de precios (o vacío honesto)."""

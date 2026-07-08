@@ -1427,6 +1427,190 @@ def _owned_artist_ids(cur, user_id):
 
 
 # ---------------------------------------------------------------------------
+# CAPA PERSONAL DE RECO — por ESCUCHA de Last.fm (M3b)
+# ---------------------------------------------------------------------------
+#
+# Complementa a recommend_for_user (centroide de COLECCIÓN) con un centroide de
+# ESCUCHA: la señal de Last.fm ya sincronizada en core (user_lastfm_albums /
+# user_lastfm_artists, con work_id / artist_id RESUELTOS). CERO API externa, CERO
+# embed en vivo — todo son embeddings YA calculados en core.
+#
+# Composición del centroide de escucha (media PONDERADA por log1p(playcount)):
+#   (a) señal PRINCIPAL, álbum-nivel: embeddings de los works de
+#       `user_lastfm_albums` con work_id resuelto y embedding. Peso pleno.
+#   (b) señal COMPLEMENTARIA, artista-nivel: el CENTROIDE de los works con
+#       vinilo/obra-de-verdad de cada top `user_lastfm_artists` resuelto (cubre a
+#       los artistas escuchados sin un álbum concreto resuelto). Peso a la MITAD
+#       (`_LISTEN_ARTIST_WEIGHT`) — el álbum concreto es señal más fina que el
+#       agregado del artista.
+# Se usa `period='overall'` (gusto ESTABLE) — simple y suficiente (26 works de
+# álbum + 44 artistas resueltos con embedding para Carlos → 1.196 works afines).
+# El centroide se calcula en SQL y viaja a Python como LITERAL ::vector para el
+# KNN de dos fases (mismo patrón de rendimiento que recommend_for_user).
+
+# Peso relativo de la señal artista-nivel frente a la de álbum-nivel en el
+# centroide de escucha (la de álbum es más específica → manda).
+_LISTEN_ARTIST_WEIGHT = 0.5
+
+# Period de Last.fm usado para el gusto estable.
+_LISTEN_PERIOD = "overall"
+
+
+def listening_centroid_literal(cur, user_id, period=_LISTEN_PERIOD):
+    """Centroide de ESCUCHA como LITERAL ::vector (texto '[x,y,…]') o None.
+
+    Media ponderada por log1p(playcount) de:
+      - embeddings de works de `user_lastfm_albums` (work_id resuelto, embedding),
+        con peso log1p(playcount);
+      - centroide de works vinilo/obra-de-verdad de cada `user_lastfm_artists`
+        resuelto, con peso `_LISTEN_ARTIST_WEIGHT * log1p(playcount)`.
+    None si no hay NINGUNA señal de escucha con embedding (el caller degrada []).
+    """
+    cur.execute(
+        """
+        WITH album_sig AS (
+            -- señal álbum-nivel: embedding del work escuchado, peso log1p(pc).
+            SELECT w.embedding AS emb,
+                   ln(1 + ula.playcount) AS wgt
+            FROM user_lastfm_albums ula
+            JOIN works w ON w.id = ula.work_id
+            WHERE ula.user_id = %(u)s AND ula.period = %(p)s
+              AND ula.work_id IS NOT NULL
+              AND w.embedding IS NOT NULL
+        ),
+        artist_sig AS (
+            -- señal artista-nivel: centroide de sus works vinilo/obra-de-verdad,
+            -- peso _LISTEN_ARTIST_WEIGHT * log1p(pc). Un artista aporta una fila.
+            SELECT ac.centroid AS emb,
+                   %(aw)s * ln(1 + ula.playcount) AS wgt
+            FROM user_lastfm_artists ula
+            JOIN LATERAL (
+                SELECT avg(w.embedding)::vector(512) AS centroid, count(*) AS n
+                FROM works w
+                WHERE w.primary_artist_id = ula.artist_id
+                  AND w.embedding IS NOT NULL
+                  AND w.has_vinyl = true
+                  AND w.work_type = ANY(%(work_types)s::work_type[])
+            ) ac ON ac.n > 0
+            WHERE ula.user_id = %(u)s AND ula.period = %(p)s
+              AND ula.artist_id IS NOT NULL
+        ),
+        sig AS (
+            SELECT emb, wgt FROM album_sig
+            UNION ALL
+            SELECT emb, wgt FROM artist_sig
+        )
+        -- Centroide ponderado como DIRECCIÓN: sum(emb * w). No dividimos por sum(w)
+        -- porque el KNN es por coseno (`<=>`), invariante a la escala del vector — la
+        -- normalización solo cambiaría la magnitud, no la dirección ni el orden ANN.
+        -- pgvector 0.8 no tiene vector*escalar, así que el peso w se difunde a un
+        -- vector constante (array_fill, 512d) y se usa el producto elementwise
+        -- `vector * vector`; sum(vector) es agregado nativo.
+        SELECT
+            sum(emb * array_fill(wgt::float4, ARRAY[512])::vector)
+                ::vector(512)::text AS centroid,
+            count(*) AS n
+        FROM sig
+        WHERE wgt > 0
+        """,
+        {"u": user_id, "p": period, "aw": _LISTEN_ARTIST_WEIGHT,
+         "work_types": list(_RECO_WORK_TYPES)},
+    )
+    row = cur.fetchone()
+    if not row or not row["n"] or row["centroid"] is None:
+        return None
+    return row["centroid"]
+
+
+def listening_top_artist_names(cur, user_id, limit=2, period=_LISTEN_PERIOD):
+    """1-2 nombres de sus top artistas Last.fm resueltos (para el `porque`).
+
+    Prioriza artistas con works vinilo (los que de verdad sostienen la señal).
+    NO expone playcounts. Lista posiblemente vacía."""
+    cur.execute(
+        """
+        SELECT ula.artist_name
+        FROM user_lastfm_artists ula
+        WHERE ula.user_id = %(u)s AND ula.period = %(p)s
+          AND ula.artist_id IS NOT NULL
+          AND EXISTS (
+              SELECT 1 FROM works w
+              WHERE w.primary_artist_id = ula.artist_id
+                AND w.has_vinyl = true AND w.embedding IS NOT NULL
+          )
+        ORDER BY ula.rank ASC
+        LIMIT %(lim)s
+        """,
+        {"u": user_id, "p": period, "lim": limit},
+    )
+    return [r["artist_name"] for r in cur.fetchall()]
+
+
+def recommend_from_listening(user_id, limit=12):
+    """Recomendación PERSONAL por centroide de ESCUCHA (Last.fm, embeddings core).
+
+    KNN dos fases sobre `works.embedding <=> (centroide de escucha)`, filtrando a
+    vinilo + obra de verdad + sin morralla de artista, EXCLUYENDO todo work y todo
+    artista de su colección (para DESCUBRIR, como recommend_for_user) y capando 1
+    obra por artista. Cada fila lleva `porque` que refleja la escucha, con 1-2 de
+    sus top artistas Last.fm. Sin datos de escucha resueltos con embedding →
+    [] honesto (la sección no aparece). Anónimo/user inexistente → [].
+
+    Rendimiento: el centroide viaja como literal ::vector → el KNN usa el índice
+    HNSW; portada/artista solo se juntan sobre el puñado ya capado (patrón M2).
+    """
+    if not user_id:
+        return []
+    with _cursor() as cur:
+        seed = listening_centroid_literal(cur, user_id)
+        if seed is None:
+            return []
+        owned = _owned_work_ids(cur, user_id)
+        owned_artists = _owned_artist_ids(cur, user_id)
+        top_artists = listening_top_artist_names(cur, user_id, limit=2)
+
+        cand_sql = """
+            WITH cand AS (
+                SELECT DISTINCT ON (w.primary_artist_id)
+                       w.id,
+                       w.primary_artist_id AS artist_id,
+                       (w.embedding <=> %(seed)s::vector) AS dist
+                FROM works w
+                JOIN artists a ON a.id = w.primary_artist_id
+                WHERE w.embedding IS NOT NULL
+                  AND w.has_vinyl = true
+                  AND w.work_type = ANY(%(work_types)s::work_type[])
+                  AND NOT (w.id = ANY(%(owned)s::bigint[]))
+                  AND NOT (w.primary_artist_id = ANY(%(owned_artists)s::bigint[]))
+                  AND {artist_ok}
+                ORDER BY w.primary_artist_id, w.embedding <=> %(seed)s::vector
+                LIMIT %(cand)s
+            )
+        """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL)
+        sql = cand_sql + _PERSONAL_PHASE2_SQL
+
+        cur.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
+        cur.execute(sql, {
+            "seed": seed,
+            "work_types": list(_RECO_WORK_TYPES),
+            "owned": owned or [0],
+            "owned_artists": owned_artists or [0],
+            "cand": _ANN_CANDIDATE_LIMIT,
+        })
+        rows = cur.fetchall()
+
+    ranked = _rerank_candidates(rows, limit)
+    if top_artists:
+        who = ", ".join(top_artists)
+        porque = "en la onda de lo que escuchas ({}…)".format(who)
+    else:
+        porque = "en la onda de lo que escuchas en Last.fm"
+    for r in ranked:
+        r["porque"] = porque
+    return ranked
+
+
+# ---------------------------------------------------------------------------
 # GAP DE VINILO — la feature estrella (§4.3.4 del DESIGN)
 # ---------------------------------------------------------------------------
 #
