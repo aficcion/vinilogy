@@ -1154,6 +1154,121 @@ def delete_user_and_sessions(user_id):
         cur.execute("DELETE FROM app_users WHERE id = %(u)s", {"u": user_id})
 
 
+# ---------------------------------------------------------------------------
+# CAPA DE USUARIO — credenciales OAuth + mapeo de identidad (M3b)
+# ---------------------------------------------------------------------------
+#
+# Escritura ACOTADA a `user_oauth_credentials` (+ `app_users` para crear/tocar
+# last_login) — es la función de la capa de usuario, NO es DDL (las tablas ya
+# existen en core). El catálogo sigue SOLO LECTURA.
+#
+# El schema de core impone (verificado 8-jul-2026):
+#   - UNIQUE (provider, provider_account_id)  → una identidad = un usuario.
+#   - UNIQUE (user_id, provider)              → un usuario, una credencial/proveedor.
+#   - CHECK user_oauth_creds_shape: discogs exige oauth_token+oauth_token_secret;
+#     lastfm exige session_key. Los helpers de abajo respetan la forma por proveedor.
+
+
+def find_oauth_credential(provider, provider_account_id):
+    """Fila de credencial por (provider, provider_account_id) o None.
+
+    Es el paso 2 de la regla de mapeo: si existe, su `user_id` es el dueño de la
+    identidad (para Carlos: discogs 8383997 / lastfm 'aficcion' → user_id=1).
+    """
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, user_id, provider::text AS provider,
+                   provider_account_id, provider_username
+            FROM user_oauth_credentials
+            WHERE provider = %(p)s::oauth_provider
+              AND provider_account_id = %(acc)s
+            """,
+            {"p": provider, "acc": str(provider_account_id)},
+        )
+        return cur.fetchone()
+
+
+def upsert_oauth_credential(user_id, provider, provider_account_id,
+                            provider_username=None, oauth_token=None,
+                            oauth_token_secret=None, session_key=None):
+    """UPSERT de la credencial de un usuario para un proveedor (tokens frescos).
+
+    Clave de conflicto = UNIQUE (user_id, provider): re-conectar el MISMO
+    proveedor refresca los tokens en la fila existente en vez de duplicar. Los
+    campos por proveedor respetan la CHECK del schema (discogs: token+secret;
+    lastfm: session_key). Devuelve el id de la credencial.
+    """
+    with _cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO user_oauth_credentials
+                (user_id, provider, provider_account_id, provider_username,
+                 oauth_token, oauth_token_secret, session_key, updated_at)
+            VALUES
+                (%(uid)s, %(p)s::oauth_provider, %(acc)s, %(uname)s,
+                 %(tok)s, %(sec)s, %(skey)s, now())
+            ON CONFLICT (user_id, provider) DO UPDATE
+                SET provider_account_id = EXCLUDED.provider_account_id,
+                    provider_username   = EXCLUDED.provider_username,
+                    oauth_token         = EXCLUDED.oauth_token,
+                    oauth_token_secret  = EXCLUDED.oauth_token_secret,
+                    session_key         = EXCLUDED.session_key,
+                    updated_at          = now()
+            RETURNING id
+            """,
+            {"uid": user_id, "p": provider, "acc": str(provider_account_id),
+             "uname": provider_username, "tok": oauth_token,
+             "sec": oauth_token_secret, "skey": session_key},
+        )
+        return cur.fetchone()["id"]
+
+
+def create_identified_user(display_name=None):
+    """Crea un `app_users` NUEVO con identidad (display_name opcional). Devuelve el
+    id. Es el paso 4 de la regla de mapeo (credencial nueva sin invitado)."""
+    with _cursor() as cur:
+        cur.execute(
+            "INSERT INTO app_users (email, display_name) VALUES (NULL, %(dn)s) "
+            "RETURNING id",
+            {"dn": display_name},
+        )
+        return cur.fetchone()["id"]
+
+
+def set_display_name_if_empty(user_id, display_name):
+    """Rellena `display_name` de un usuario SOLO si está vacío (no pisa lo que ya
+    tenga). Usado al vincular identidad a un invitado. No-op si display_name None."""
+    if not display_name:
+        return
+    with _cursor() as cur:
+        cur.execute(
+            "UPDATE app_users SET display_name = %(dn)s, updated_at = now() "
+            "WHERE id = %(u)s AND (display_name IS NULL OR btrim(display_name) = '')",
+            {"dn": display_name, "u": user_id},
+        )
+
+
+def touch_last_login(user_id):
+    """Actualiza `app_users.last_login_at = now()` al abrir sesión por OAuth."""
+    with _cursor() as cur:
+        cur.execute(
+            "UPDATE app_users SET last_login_at = now(), updated_at = now() "
+            "WHERE id = %(u)s",
+            {"u": user_id},
+        )
+
+
+def delete_oauth_credential(user_id, provider):
+    """Borra la credencial (user_id, provider). Solo para LIMPIEZA de test."""
+    with _cursor() as cur:
+        cur.execute(
+            "DELETE FROM user_oauth_credentials "
+            "WHERE user_id = %(u)s AND provider = %(p)s::oauth_provider",
+            {"u": user_id, "p": provider},
+        )
+
+
 def user_collection_summary(user_id):
     """Resumen ligero de la colección de un usuario: nº ítems, nº resueltos a
     release, y desglose por formato físico real (release.format). Sin filas → 0s.
