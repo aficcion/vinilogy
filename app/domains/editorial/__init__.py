@@ -25,13 +25,15 @@ def _porque_for(mood, row):
     return "por su vibra {}".format(mood["label"].lower())
 
 
-def recommend_by_mood(text_or_key, limit=20):
+def recommend_by_mood(text_or_key, limit=20, exclude_user_id=None):
     """Resuelve el texto→mood y devuelve vinilos afines con `porque`.
 
     Devuelve un dict:
       - mood: {key, label} reconocido, o None
       - items: filas con `porque` (o [] si no reconocido / sin resultados)
       - suggestions: chips sugeridos (siempre, para degradación honesta)
+
+    `exclude_user_id` (M3a): excluye la colección del logueado de la reco por mood.
     """
     suggestions = mood_lexicon.list_moods()
     mood = mood_lexicon.resolve(text_or_key)
@@ -42,6 +44,7 @@ def recommend_by_mood(text_or_key, limit=20):
         style_names=mood["styles"],
         tag_whitelist=mood.get("tags"),
         limit=limit,
+        exclude_user_id=exclude_user_id,
     )
     items = []
     for r in rows:

@@ -707,7 +707,7 @@ _RECO_PHASE2_SQL = """
 """
 
 
-def recommend_similar_to_work(work_id, limit=12):
+def recommend_similar_to_work(work_id, limit=12, exclude_user_id=None):
     """Vinilos afines a una OBRA por embedding precalculado.
 
     ANN sobre `works.embedding <=> (embedding del seed)`, filtrando a vinilo +
@@ -715,6 +715,9 @@ def recommend_similar_to_work(work_id, limit=12):
     semilla (los vecinos crudos serían variantes del propio artista) y la propia
     semilla. Trae candidatos holgados por distancia, capa 1 por artista y re-rankea
     con distancia+popularidad (ver _rerank_candidates).
+
+    `exclude_user_id` (M3a): si se pasa, EXCLUYE además los works de la colección
+    de ese usuario — la reco anónima deja de recomendar lo que el logueado ya tiene.
 
     RENDIMIENTO (dos fases): el KNN corre sobre `works` PURO (sin joins) con el
     embedding del seed como literal `::vector` → usa el índice HNSW; la portada
@@ -742,6 +745,7 @@ def recommend_similar_to_work(work_id, limit=12):
               AND w.work_type = ANY(%(work_types)s::work_type[])
               AND w.primary_artist_id <> %(seed_artist)s
               AND w.id <> %(work_id)s
+              AND NOT (w.id = ANY(%(owned)s::bigint[]))
               AND {artist_ok}
             ORDER BY w.primary_artist_id, w.embedding <=> %(seed)s::vector
             LIMIT %(cand)s
@@ -754,6 +758,7 @@ def recommend_similar_to_work(work_id, limit=12):
         if seed_emb is None:
             return []
         seed_title = seed_title or "esta obra"
+        owned = _owned_work_ids(cur, exclude_user_id) if exclude_user_id else []
 
         cur.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
         cur.execute(sql, {
@@ -761,6 +766,7 @@ def recommend_similar_to_work(work_id, limit=12):
             "seed": seed_emb,
             "seed_artist": seed_artist,
             "work_types": list(_RECO_WORK_TYPES),
+            "owned": owned or [0],
             "cand": _ANN_CANDIDATE_LIMIT,
         })
         rows = cur.fetchall()
@@ -771,13 +777,16 @@ def recommend_similar_to_work(work_id, limit=12):
     return ranked
 
 
-def recommend_similar_to_artist(artist_id, limit=12):
+def recommend_similar_to_artist(artist_id, limit=12, exclude_user_id=None):
     """Vinilos afines a un ARTISTA por centroide de sus embeddings.
 
     Centroide = avg de los embeddings de sus works con vinilo/obra-de-verdad. Si
     el centroide falla (sin works embebidos) → DEGRADA a la semilla de su obra más
     popular con embedding. Vecinos con primary_artist_id <> artist_id, mismas reglas
     de filtro/cap. `porque` = "en la onda de {artista}". Sin semilla posible → [].
+
+    `exclude_user_id` (M3a): si se pasa, EXCLUYE los works de la colección de ese
+    usuario (la reco anónima no recomienda lo que el logueado ya tiene).
     """
     # Dos fases: el SEED (centroide o embedding de la obra más popular) se
     # calcula/trae a Python como LITERAL ::vector; luego KNN puro sobre works y
@@ -827,6 +836,7 @@ def recommend_similar_to_artist(artist_id, limit=12):
                   AND w.has_vinyl = true
                   AND w.work_type = ANY(%(work_types)s::work_type[])
                   AND w.primary_artist_id <> %(artist_id)s
+                  AND NOT (w.id = ANY(%(owned)s::bigint[]))
                   AND {artist_ok}
                 ORDER BY w.primary_artist_id, w.embedding <=> %(seed)s::vector
                 LIMIT %(cand)s
@@ -834,10 +844,12 @@ def recommend_similar_to_artist(artist_id, limit=12):
         """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL)
         sql = cand_sql + _RECO_PHASE2_SQL
 
+        owned = _owned_work_ids(cur, exclude_user_id) if exclude_user_id else []
         cur.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
         cur.execute(sql, {
             "artist_id": artist_id,
             "seed": seed_emb,
+            "owned": owned or [0],
             "work_types": list(_RECO_WORK_TYPES),
             "cand": _ANN_CANDIDATE_LIMIT,
         })
@@ -916,7 +928,7 @@ def similar_by_press(work_id, limit=8):
 # ---------------------------------------------------------------------------
 
 def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
-                             per_artist_cap=2):
+                             per_artist_cap=2, exclude_user_id=None):
     """Works con vinilo que casan un conjunto de STYLES (base) + tags whitelisted.
 
     Base fiable = `work_styles` con styles limpios. Los tags (folksonomía Last.fm,
@@ -924,6 +936,9 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
     solos. Ranked por popularidad (releases_count/playcount). Cap por artista para
     diversidad. El número de styles/tags casados va en `match_count` (para el
     `porque`), pero NUNCA se expone playcount crudo.
+
+    `exclude_user_id` (M3a): excluye los works de la colección de ese usuario (mood
+    para el logueado no repite lo que ya tiene).
 
     Sin styles → [] (el caller degrada honesto).
     """
@@ -953,6 +968,7 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
                           AND st.name = ANY(%(styles)s)
             WHERE w.has_vinyl = true
               AND w.work_type = ANY(%(work_types)s::work_type[])
+              AND NOT (w.id = ANY(%(owned)s::bigint[]))
             GROUP BY w.id, w.title, w.work_type, w.year, w.releases_count,
                      w.lastfm_playcount, w.primary_artist_id
         ),
@@ -1000,11 +1016,444 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
                  p.lastfm_playcount DESC NULLS LAST
     """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL)
     with _cursor() as cur:
+        owned = _owned_work_ids(cur, exclude_user_id) if exclude_user_id else []
         cur.execute(sql, {
             "styles": style_names,
             "tags": tag_whitelist,
             "work_types": list(_RECO_WORK_TYPES),
             "cap": per_artist_cap,
             "limit": limit,
+            "owned": owned or [0],
         })
         return cur.fetchall()
+
+
+# ---------------------------------------------------------------------------
+# CAPA DE USUARIO — sesiones + invitado (M3a)
+# ---------------------------------------------------------------------------
+#
+# Esta es la ÚNICA parte de la app que ESCRIBE en core, y solo en las tablas de
+# usuario (`app_users`, `user_sessions`) — es su función, NO es DDL (las tablas
+# ya existen). El catálogo (works/releases/artists/…) sigue siendo SOLO LECTURA.
+#
+# OAuth de Discogs/Last.fm es M3b (necesita credenciales + navegador): aquí NO se
+# escribe en `user_oauth_credentials`; solo se lee para saber si un usuario tiene
+# identidad vinculada.
+
+import secrets
+
+# Vida de la sesión (días). El token es opaco y seguro (secrets.token_urlsafe).
+SESSION_TTL_DAYS = int(os.environ.get("VINYLBE_SESSION_TTL_DAYS", "90"))
+
+
+def create_guest_user():
+    """Crea una cuenta LIGERA (invitado): fila `app_users` con email/display_name
+    NULL. Devuelve el id nuevo. Sin identidad OAuth (eso vincula M3b)."""
+    with _cursor() as cur:
+        cur.execute(
+            "INSERT INTO app_users (email, display_name) VALUES (NULL, NULL) "
+            "RETURNING id"
+        )
+        return cur.fetchone()["id"]
+
+
+def create_session(user_id, ttl_days=None):
+    """Abre una sesión server-side para `user_id`. Token aleatorio SEGURO
+    (`secrets.token_urlsafe`, 32 bytes ≈ 43 chars). Guarda expiry a `ttl_days`
+    (def. SESSION_TTL_DAYS). Devuelve el token."""
+    ttl = ttl_days if ttl_days is not None else SESSION_TTL_DAYS
+    token = secrets.token_urlsafe(32)
+    with _cursor() as cur:
+        cur.execute(
+            "INSERT INTO user_sessions (session_token, user_id, expires_at) "
+            "VALUES (%(t)s, %(u)s, now() + make_interval(days => %(d)s))",
+            {"t": token, "u": user_id, "d": ttl},
+        )
+    return token
+
+
+def get_user_by_session(token):
+    """Resuelve un token de sesión → app_user (dict) o None.
+
+    Valida expiry (expires_at NULL = no expira; futuro = válida). Al validar,
+    refresca `last_used_at`. Token inexistente/expirado → None (sin excepción).
+    Adjunta `providers` = lista de proveedores OAuth vinculados (para saber si el
+    usuario es invitado puro o ya tiene identidad; SOLO lectura).
+    """
+    if not token:
+        return None
+    with _cursor() as cur:
+        cur.execute(
+            """
+            UPDATE user_sessions
+               SET last_used_at = now()
+             WHERE session_token = %(t)s
+               AND (expires_at IS NULL OR expires_at > now())
+            RETURNING user_id
+            """,
+            {"t": token},
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        user_id = row["user_id"]
+        cur.execute(
+            """
+            SELECT u.id, u.email, u.display_name,
+                   u.collection_value_min, u.collection_value_median,
+                   u.collection_value_max, u.collection_value_currency,
+                   u.collection_value_updated_at,
+                   COALESCE(
+                     (SELECT array_agg(oc.provider::text ORDER BY oc.provider::text)
+                        FROM user_oauth_credentials oc WHERE oc.user_id = u.id),
+                     ARRAY[]::text[]
+                   ) AS providers
+            FROM app_users u
+            WHERE u.id = %(u)s
+            """,
+            {"u": user_id},
+        )
+        return cur.fetchone()
+
+
+def get_app_user(user_id):
+    """app_user (dict) por id, con `providers`. None si no existe."""
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT u.id, u.email, u.display_name,
+                   u.collection_value_min, u.collection_value_median,
+                   u.collection_value_max, u.collection_value_currency,
+                   u.collection_value_updated_at,
+                   COALESCE(
+                     (SELECT array_agg(oc.provider::text ORDER BY oc.provider::text)
+                        FROM user_oauth_credentials oc WHERE oc.user_id = u.id),
+                     ARRAY[]::text[]
+                   ) AS providers
+            FROM app_users u
+            WHERE u.id = %(u)s
+            """,
+            {"u": user_id},
+        )
+        return cur.fetchone()
+
+
+def delete_session(token):
+    """Cierra una sesión (logout). No-op si no existe."""
+    if not token:
+        return
+    with _cursor() as cur:
+        cur.execute("DELETE FROM user_sessions WHERE session_token = %(t)s",
+                    {"t": token})
+
+
+def delete_user_and_sessions(user_id):
+    """Borra un usuario y sus sesiones (CASCADE). Solo para LIMPIEZA de test —
+    nunca se llama desde el flujo web. Sin efecto si el id no existe."""
+    with _cursor() as cur:
+        cur.execute("DELETE FROM app_users WHERE id = %(u)s", {"u": user_id})
+
+
+def user_collection_summary(user_id):
+    """Resumen ligero de la colección de un usuario: nº ítems, nº resueltos a
+    release, y desglose por formato físico real (release.format). Sin filas → 0s.
+    """
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT count(*) AS total,
+                   count(uc.release_id) AS resolved,
+                   count(*) FILTER (WHERE r.format = 'vinyl')    AS vinyl,
+                   count(*) FILTER (WHERE r.format = 'cd')       AS cd,
+                   count(*) FILTER (WHERE r.format NOT IN ('vinyl','cd')
+                                      AND r.format IS NOT NULL)  AS other
+            FROM user_collection uc
+            LEFT JOIN releases r ON r.id = uc.release_id
+            WHERE uc.user_id = %(u)s
+            """,
+            {"u": user_id},
+        )
+        return cur.fetchone()
+
+
+# ---------------------------------------------------------------------------
+# CAPA PERSONAL DE RECO — centroide de gusto + exclusión de colección
+# ---------------------------------------------------------------------------
+#
+# Todo por CONTENIDO precalculado (embeddings de core), CERO embed en vivo. El
+# centroide de gusto se calcula en SQL (`avg(embedding)`) y se trae a Python como
+# LITERAL ::vector para el KNN de dos fases — mismo patrón de rendimiento que la
+# reco anónima (§4.2 del DESIGN, lección de M2).
+
+
+# Fase 2 del patrón de dos fases PARA RECO PERSONAL: idéntica a `_RECO_PHASE2_SQL`
+# pero arrastra `porque_kind` (para explicabilidad) — se junta portada/artista solo
+# sobre las pocas filas ya capadas. (No reusamos `_RECO_PHASE2_SQL` porque el CTE
+# personal excluye la colección y queremos el mismo contrato de salida.)
+_PERSONAL_PHASE2_SQL = _RECO_PHASE2_SQL
+
+
+def _owned_work_ids(cur, user_id):
+    """Set de work_ids que el usuario POSEE (vía release_id resuelto). Es la base
+    de la EXCLUSIÓN de colección: nunca recomendar lo que ya tiene."""
+    cur.execute(
+        """
+        SELECT DISTINCT r.work_id
+        FROM user_collection uc
+        JOIN releases r ON r.id = uc.release_id
+        WHERE uc.user_id = %(u)s AND uc.release_id IS NOT NULL
+        """,
+        {"u": user_id},
+    )
+    return [row["work_id"] for row in cur.fetchall()]
+
+
+def taste_centroid_literal(cur, user_id):
+    """Centroide de gusto del usuario como LITERAL ::vector (texto '[x,y,…]').
+
+    Media de los embeddings de los works de su colección con embedding (una obra
+    cuenta UNA vez aunque tenga varias ediciones). Devuelve None si no hay ningún
+    work de colección con embedding (el caller degrada honesto). No pondera aún por
+    Last.fm — la colección sola ya es señal fuerte; ponderar por escucha es una
+    mejora acotada para M3b (anotada).
+    """
+    cur.execute(
+        """
+        WITH owned AS (
+            SELECT DISTINCT r.work_id
+            FROM user_collection uc
+            JOIN releases r ON r.id = uc.release_id
+            WHERE uc.user_id = %(u)s AND uc.release_id IS NOT NULL
+        )
+        SELECT avg(w.embedding)::vector(512)::text AS centroid,
+               count(*) AS n
+        FROM owned o
+        JOIN works w ON w.id = o.work_id
+        WHERE w.embedding IS NOT NULL
+        """,
+        {"u": user_id},
+    )
+    row = cur.fetchone()
+    if not row or not row["n"]:
+        return None
+    return row["centroid"]
+
+
+def recommend_for_user(user_id, limit=12):
+    """Recomendación PERSONAL por centroide de gusto (embeddings de colección).
+
+    KNN dos fases sobre `works.embedding <=> (centroide de gusto)`, filtrando a
+    vinilo + obra de verdad + sin morralla de artista, EXCLUYENDO todo work de su
+    colección (exclude_owned) y capando 1 obra por artista (para variedad). Cada
+    fila lleva `porque` ("por tu gusto: …"). Sin colección con embeddings →
+    [] honesto (el caller lo explica; NO peta).
+
+    Rendimiento: el centroide viaja como literal ::vector → el KNN usa el índice
+    HNSW; portada/artista solo se juntan sobre el puñado ya capado (patrón M2).
+    """
+    with _cursor() as cur:
+        seed = taste_centroid_literal(cur, user_id)
+        if seed is None:
+            return []
+        owned = _owned_work_ids(cur, user_id)
+        owned_artists = _owned_artist_ids(cur, user_id)
+
+        cand_sql = """
+            WITH cand AS (
+                SELECT DISTINCT ON (w.primary_artist_id)
+                       w.id,
+                       w.primary_artist_id AS artist_id,
+                       (w.embedding <=> %(seed)s::vector) AS dist
+                FROM works w
+                JOIN artists a ON a.id = w.primary_artist_id
+                WHERE w.embedding IS NOT NULL
+                  AND w.has_vinyl = true
+                  AND w.work_type = ANY(%(work_types)s::work_type[])
+                  AND NOT (w.id = ANY(%(owned)s::bigint[]))
+                  AND NOT (w.primary_artist_id = ANY(%(owned_artists)s::bigint[]))
+                  AND {artist_ok}
+                ORDER BY w.primary_artist_id, w.embedding <=> %(seed)s::vector
+                LIMIT %(cand)s
+            )
+        """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL)
+        sql = cand_sql + _PERSONAL_PHASE2_SQL
+
+        cur.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
+        cur.execute(sql, {
+            "seed": seed,
+            "work_types": list(_RECO_WORK_TYPES),
+            "owned": owned or [0],
+            "owned_artists": owned_artists or [0],
+            "cand": _ANN_CANDIDATE_LIMIT,
+        })
+        rows = cur.fetchall()
+
+    ranked = _rerank_candidates(rows, limit)
+    for r in ranked:
+        r["porque"] = "por tu gusto: en la onda de lo que tienes"
+    return ranked
+
+
+def _owned_artist_ids(cur, user_id):
+    """Set de primary_artist_id de los works que el usuario posee. Se usa para NO
+    recomendar (en la capa personal) discos de artistas que el usuario ya colecciona
+    — el objetivo del centroide es DESCUBRIR, no devolver más del mismo artista."""
+    cur.execute(
+        """
+        SELECT DISTINCT w.primary_artist_id AS artist_id
+        FROM user_collection uc
+        JOIN releases r ON r.id = uc.release_id
+        JOIN works w ON w.id = r.work_id
+        WHERE uc.user_id = %(u)s AND uc.release_id IS NOT NULL
+        """,
+        {"u": user_id},
+    )
+    return [row["artist_id"] for row in cur.fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# GAP DE VINILO — la feature estrella (§4.3.4 del DESIGN)
+# ---------------------------------------------------------------------------
+#
+# Obras que el usuario tiene en formato ≠ vinilo, que EXISTEN en vinilo
+# (works.has_vinyl), y de las que NO posee ya una release de vinilo. Devuelve la
+# obra + sus ediciones de vinilo (para enlazar/comprar). El "no posee ya el
+# vinilo" es DURO: se cruza contra las releases que el usuario tiene resueltas y su
+# format real (release.format='vinyl'), no contra el texto de user_collection.
+
+
+def vinyl_gap_count(user_id):
+    """Conteo interno del gap de vinilo (sin paginar). Para el resumen honesto."""
+    with _cursor() as cur:
+        cur.execute("""
+            WITH owned AS (
+                SELECT DISTINCT r.work_id, r.format AS rel_format
+                FROM user_collection uc
+                JOIN releases r ON r.id = uc.release_id
+                WHERE uc.user_id = %(u)s AND uc.release_id IS NOT NULL
+            ),
+            owned_work AS (
+                SELECT work_id,
+                       bool_or(rel_format = 'vinyl')  AS owns_vinyl,
+                       bool_or(rel_format <> 'vinyl') AS owns_nonvinyl
+                FROM owned GROUP BY work_id
+            )
+            SELECT count(*) AS gap
+            FROM owned_work ow
+            JOIN works w ON w.id = ow.work_id
+            WHERE w.has_vinyl = true
+              AND ow.owns_nonvinyl = true
+              AND ow.owns_vinyl = false
+        """, {"u": user_id})
+        return cur.fetchone()["gap"]
+
+
+def vinyl_gap(user_id, limit=24, per_artist_cap=2):
+    """Gap de vinilo: obras que el usuario tiene en NO-vinilo y existen en vinilo,
+    y de las que NO posee ya un prensado de vinilo. Con las ediciones de vinilo de
+    cada obra y el formato en que la tiene.
+
+    Orden por relevancia (releases_count DESC, playcount DESC). Cap por artista
+    para variedad. Cada fila trae:
+      - work + cover + artista
+      - owned_format: el/los formato(s) físico(s) en que la tiene (p.ej. 'cd')
+      - editions: sus releases de vinilo (year/country/label/catno/cover)
+      - porque: "lo tienes en {formato}, existe en vinilo"
+    El precio lo añade la fachada del dominio (pricing), no la BD.
+
+    "No posee ya el vinilo" es DURO: `owns_vinyl = false` sobre las releases
+    resueltas del usuario con format real 'vinyl'.
+    """
+    with _cursor() as cur:
+        # Fase 1: obras del gap (rank+cap+LIMIT) SIN tocar ediciones/portada.
+        cur.execute("""
+            WITH owned AS (
+                SELECT DISTINCT r.work_id, r.format::text AS rel_format
+                FROM user_collection uc
+                JOIN releases r ON r.id = uc.release_id
+                WHERE uc.user_id = %(u)s AND uc.release_id IS NOT NULL
+            ),
+            owned_work AS (
+                SELECT work_id,
+                       bool_or(rel_format = 'vinyl')  AS owns_vinyl,
+                       bool_or(rel_format <> 'vinyl') AS owns_nonvinyl,
+                       array_agg(DISTINCT rel_format) FILTER (
+                           WHERE rel_format <> 'vinyl') AS owned_formats
+                FROM owned GROUP BY work_id
+            ),
+            gap AS (
+                SELECT w.id,
+                       w.title,
+                       w.work_type,
+                       w.year,
+                       w.releases_count,
+                       w.primary_artist_id,
+                       ow.owned_formats,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY w.primary_artist_id
+                           ORDER BY w.releases_count DESC NULLS LAST,
+                                    w.lastfm_playcount DESC NULLS LAST
+                       ) AS rn_artist
+                FROM owned_work ow
+                JOIN works w ON w.id = ow.work_id
+                WHERE w.has_vinyl = true
+                  AND ow.owns_nonvinyl = true
+                  AND ow.owns_vinyl = false
+            ),
+            picked AS (
+                SELECT id, title, work_type, year, releases_count,
+                       primary_artist_id, owned_formats
+                FROM gap
+                WHERE rn_artist <= %(cap)s
+                ORDER BY releases_count DESC NULLS LAST
+                LIMIT %(limit)s
+            )
+            SELECT p.id, p.title, p.work_type, p.year, p.releases_count,
+                   p.owned_formats,
+                   a.id   AS artist_id,
+                   a.name AS artist_name,
+                   vc.preferred_thumb AS cover_thumb,
+                   vc.preferred_url   AS cover_url
+            FROM picked p
+            JOIN artists a ON a.id = p.primary_artist_id
+            LEFT JOIN v_work_cover vc ON vc.work_id = p.id
+            ORDER BY p.releases_count DESC NULLS LAST
+        """, {"u": user_id, "cap": per_artist_cap, "limit": limit})
+        rows = cur.fetchall()
+
+        if not rows:
+            return []
+
+        # Fase 2: ediciones de vinilo de las obras elegidas, en UNA query (sin N+1).
+        work_ids = [r["id"] for r in rows]
+        cur.execute("""
+            SELECT r.work_id,
+                   r.id, r.year, r.country, r.catno, r.cover_url,
+                   l.name AS label_name
+            FROM releases r
+            LEFT JOIN labels l ON l.id = r.label_id
+            WHERE r.work_id = ANY(%(ids)s)
+              AND r.format = 'vinyl'
+            ORDER BY r.work_id, r.year ASC NULLS LAST, r.country ASC NULLS LAST
+        """, {"ids": work_ids})
+        eds_by_work = {}
+        for e in cur.fetchall():
+            eds_by_work.setdefault(e["work_id"], []).append({
+                "id": e["id"], "year": e["year"], "country": e["country"],
+                "catno": e["catno"], "cover_url": e["cover_url"],
+                "label_name": e["label_name"],
+            })
+
+    _FMT_LABEL = {"cd": "CD", "cassette": "cassette", "digital": "digital",
+                  "other": "otro formato"}
+    out = []
+    for r in rows:
+        r = dict(r)
+        fmts = [f for f in (r.get("owned_formats") or []) if f and f != "vinyl"]
+        labels = [_FMT_LABEL.get(f, f) for f in fmts]
+        owned_label = " y ".join(labels) if labels else "otro formato"
+        r["owned_format_label"] = owned_label
+        r["editions"] = eds_by_work.get(r["id"], [])
+        r["porque"] = "lo tienes en {}, existe en vinilo".format(owned_label)
+        out.append(r)
+    return out

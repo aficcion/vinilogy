@@ -16,12 +16,14 @@ from app import db
 from app.domains import press
 
 
-def similar_to_work(work_id, limit=12):
+def similar_to_work(work_id, limit=12, exclude_user_id=None):
     """Vinilos afines a una obra. [] honesto si el seed no tiene embedding.
 
-    Con porqué editorial donde haya prensa (batch, 1 query extra).
+    Con porqué editorial donde haya prensa (batch, 1 query extra). `exclude_user_id`
+    (M3a): excluye la colección del logueado de las recomendaciones.
     """
-    items = db.recommend_similar_to_work(work_id, limit=limit)
+    items = db.recommend_similar_to_work(
+        work_id, limit=limit, exclude_user_id=exclude_user_id)
     return press.enrich_porque_batch(items)
 
 
@@ -31,16 +33,18 @@ def similar_by_press_to_work(work_id, limit=8):
     return db.similar_by_press(work_id, limit=limit)
 
 
-def similar_to_artist(artist_id, limit=12):
+def similar_to_artist(artist_id, limit=12, exclude_user_id=None):
     """Vinilos en la onda de un artista (centroide con fallback). [] si no hay semilla.
 
-    Con porqué editorial donde haya prensa (batch, 1 query extra).
+    Con porqué editorial donde haya prensa (batch, 1 query extra). `exclude_user_id`
+    (M3a): excluye la colección del logueado de las recomendaciones.
     """
-    items = db.recommend_similar_to_artist(artist_id, limit=limit)
+    items = db.recommend_similar_to_artist(
+        artist_id, limit=limit, exclude_user_id=exclude_user_id)
     return press.enrich_porque_batch(items)
 
 
-def affine_for_search(works, artists, limit=12):
+def affine_for_search(works, artists, limit=12, exclude_user_id=None):
     """Bloque "Vinilos afines" para /buscar desde el primer resultado FUERTE.
 
     Preferencia: la primera OBRA (más específica que un artista). Si no hay obra
@@ -51,7 +55,8 @@ def affine_for_search(works, artists, limit=12):
     """
     if works:
         seed = works[0]
-        items = similar_to_work(seed["id"], limit=limit)
+        items = similar_to_work(seed["id"], limit=limit,
+                                exclude_user_id=exclude_user_id)
         return {
             "kind": "work",
             "seed_id": seed["id"],
@@ -61,7 +66,8 @@ def affine_for_search(works, artists, limit=12):
         }
     if artists:
         seed = artists[0]
-        items = similar_to_artist(seed["id"], limit=limit)
+        items = similar_to_artist(seed["id"], limit=limit,
+                                  exclude_user_id=exclude_user_id)
         return {
             "kind": "artist",
             "seed_id": seed["id"],
