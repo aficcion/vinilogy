@@ -1,0 +1,19 @@
+{# Tarjeta de recomendación: reutiliza _work_card y añade el `porque`. Espera `w`. #}
+<a class="card reco-card" href="/obra/{{ w.id }}">
+  <div class="card-cover">
+    {% if w.cover_thumb or w.cover_url %}
+      <img src="{{ w.cover_thumb or w.cover_url }}" alt="" loading="lazy">
+    {% else %}
+      <div class="card-cover-empty">♫</div>
+    {% endif %}
+  </div>
+  <div class="card-body">
+    <div class="card-title">{{ w.title }}</div>
+    {% if w.artist_name %}<div class="card-artist">{{ w.artist_name }}</div>{% endif %}
+    <div class="card-meta">
+      {% if w.year %}{{ w.year }}{% endif %}
+      {% if w.work_type %}· {{ w.work_type|replace('_', ' ') }}{% endif %}
+    </div>
+    {% if w.porque %}<div class="card-porque">{{ w.porque }}</div>{% endif %}
+  </div>
+</a>

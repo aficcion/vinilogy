@@ -34,6 +34,23 @@
       <p class="empty">No hemos encontrado obras con vinilo para “{{ q }}”.</p>
     {% endif %}
   </section>
+
+  {% if affines and affines.results %}
+  <section class="block reco-block">
+    <h2>Vinilos afines
+      {% if affines.seed_title %}
+        <span class="reco-seed">
+          {% if affines.kind == 'work' %}a “{{ affines.seed_title }}”
+          {% else %}a {{ affines.seed_title }}{% endif %}
+        </span>
+      {% endif %}
+    </h2>
+    <p class="hint">Otros artistas en la misma onda, con vinilo.</p>
+    <div class="grid">
+      {% for w in affines.results %}{% include "_reco_card.html" %}{% endfor %}
+    </div>
+  </section>
+  {% endif %}
 {% endif %}
 
 {% endblock %}

@@ -30,6 +30,18 @@
       <p class="empty">Sin álbumes de estudio o EPs en vinilo localizados.</p>
     {% endif %}
   </section>
+
+  <section class="block reco-block">
+    <h2>En la onda de {{ artist.name }}</h2>
+    {% if similar %}
+      <p class="hint">Otros artistas afines, con vinilo.</p>
+      <div class="grid">
+        {% for w in similar %}{% include "_reco_card.html" %}{% endfor %}
+      </div>
+    {% else %}
+      <p class="empty">Sin afines localizados para este artista.</p>
+    {% endif %}
+  </section>
 </article>
 
 {% endblock %}

@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.domains import catalog, pricing
+from app.domains import catalog, pricing, reco, editorial
 
 _HERE = os.path.dirname(__file__)
 _TEMPLATES_DIR = os.path.join(_HERE, "web", "templates")
@@ -39,11 +39,16 @@ def home(request: Request):
 def buscar(request: Request, q: str = ""):
     q = (q or "").strip()
     results = catalog.search(q) if q else {"works": [], "artists": []}
+    affines = (
+        reco.affine_for_search(results["works"], results["artists"])
+        if q else None
+    )
     return _render(
         request, "search.html",
         q=q,
         works=results["works"],
         artists=results["artists"],
+        affines=affines,
     )
 
 
@@ -54,11 +59,13 @@ def obra(request: Request, work_id: int):
         return _render(request, "404.html", what="obra", ident=work_id, status_code=404)
     editions = catalog.get_work_vinyl_editions(work_id)
     prices = pricing.get_prices_for_work(work_id)
+    similar = reco.similar_to_work(work_id)
     return _render(
         request, "work.html",
         work=work,
         editions=editions,
         prices=prices,
+        similar=similar,
     )
 
 
@@ -68,8 +75,24 @@ def artista(request: Request, artist_id: int):
     if not artist:
         return _render(request, "404.html", what="artista", ident=artist_id, status_code=404)
     discography = catalog.get_artist_discography(artist_id)
+    similar = reco.similar_to_artist(artist_id)
     return _render(
         request, "artist.html",
         artist=artist,
         discography=discography,
+        similar=similar,
+    )
+
+
+@app.get("/vibra", response_class=HTMLResponse)
+def vibra(request: Request, mood: str = "", q: str = ""):
+    # Acepta `mood` (chip/key) o `q` (texto libre). El texto libre gana si viene.
+    entry = (q or mood or "").strip()
+    chips = editorial.list_mood_chips()
+    result = editorial.recommend_by_mood(entry) if entry else None
+    return _render(
+        request, "vibra.html",
+        entry=entry,
+        chips=chips,
+        result=result,
     )

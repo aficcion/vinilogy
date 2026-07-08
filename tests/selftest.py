@@ -95,6 +95,39 @@ def derive_fixtures():
     """)
     fx["artist_with_discog"] = rows[0]["artist_id"] if rows else None
 
+    # Work POPULAR con embedding y con vinilo (semilla de similar_to_work).
+    rows = _q("""
+        SELECT w.id
+        FROM works w
+        WHERE w.has_vinyl = true
+          AND w.embedding IS NOT NULL
+          AND w.work_type IN ('studio_album','ep')
+        ORDER BY w.releases_count DESC NULLS LAST
+        LIMIT 1
+    """)
+    fx["work_with_embedding"] = rows[0]["id"] if rows else None
+
+    # Artista con >=1 work con embedding y vinilo (semilla de similar_to_artist).
+    rows = _q("""
+        SELECT w.primary_artist_id AS artist_id
+        FROM works w
+        WHERE w.has_vinyl = true
+          AND w.embedding IS NOT NULL
+          AND w.work_type IN ('studio_album','ep')
+        GROUP BY w.primary_artist_id
+        ORDER BY max(w.releases_count) DESC NULLS LAST
+        LIMIT 1
+    """)
+    fx["artist_with_embedding"] = rows[0]["artist_id"] if rows else None
+
+    # Work con vinilo SIN embedding (camino honesto → similar = []).
+    rows = _q("""
+        SELECT id FROM works
+        WHERE has_vinyl = true AND embedding IS NULL
+        LIMIT 1
+    """)
+    fx["work_without_embedding"] = rows[0]["id"] if rows else None
+
     return fx
 
 
@@ -248,6 +281,199 @@ def run_checks(fx):
     else:
         check("fixture artist_with_discog existe", False, "no derivada")
 
+    # -----------------------------------------------------------------------
+    # M1 — recomendación por contenido (embeddings) + mood
+    # -----------------------------------------------------------------------
+
+    # 7. similar_to_work: excluye el propio artista, cap 1/artista, vinilo,
+    #    studio_album/ep, todos con `porque`.
+    if fx["work_with_embedding"]:
+        seed_id = fx["work_with_embedding"]
+        seed_w = db.get_work(seed_id)
+        seed_artist = seed_w["artist_id"] if seed_w else None
+        sims = db.recommend_similar_to_work(seed_id, limit=12)
+        check(
+            "similar_to_work devuelve resultados",
+            len(sims) > 0,
+            "seed {} sin similares".format(seed_id),
+        )
+        check(
+            "similar_to_work NUNCA devuelve el mismo primary_artist_id que el seed",
+            all(s["artist_id"] != seed_artist for s in sims),
+            "seed artist {} coló".format(seed_artist),
+        )
+        art_ids = [s["artist_id"] for s in sims]
+        check(
+            "similar_to_work cap por artista = 1 (sin artistas repetidos)",
+            len(set(art_ids)) == len(art_ids),
+            "artistas repetidos: {}".format(art_ids),
+        )
+        # Verificar vinilo/tipo/porque contra la BD.
+        all_ok = True
+        for s in sims:
+            w = db.get_work(s["id"])
+            if not (w and w["has_vinyl"] is True
+                    and w["work_type"] in ("studio_album", "ep")):
+                all_ok = False
+                break
+        check(
+            "similar_to_work solo vinilo + studio_album/ep",
+            all_ok,
+            "algún similar sin vinilo o con morralla",
+        )
+        check(
+            "similar_to_work todos con `porque` no vacío",
+            all((s.get("porque") or "").strip() for s in sims),
+            "algún similar sin porque",
+        )
+    else:
+        check("fixture work_with_embedding existe", False, "no derivada")
+
+    # 8. similar_to_work con seed SIN embedding → [] honesto.
+    if fx["work_without_embedding"]:
+        try:
+            sims = db.recommend_similar_to_work(fx["work_without_embedding"])
+            check(
+                "similar_to_work sin embedding → [] honesto",
+                sims == [],
+                "esperado [], obtenido {}".format(len(sims)),
+            )
+        except Exception as e:  # noqa: BLE001
+            check("similar_to_work sin embedding no peta", False, repr(e))
+    else:
+        print("SKIP  fixture work_without_embedding (no hay works sin embedding)")
+
+    # 9. similar_to_artist: excluye al propio artista, cap, vinilo/sin morralla.
+    if fx["artist_with_embedding"]:
+        aid = fx["artist_with_embedding"]
+        sims = db.recommend_similar_to_artist(aid, limit=12)
+        check(
+            "similar_to_artist devuelve resultados",
+            len(sims) > 0,
+            "artista {} sin similares".format(aid),
+        )
+        check(
+            "similar_to_artist excluye al propio artista",
+            all(s["artist_id"] != aid for s in sims),
+            "el propio artista coló",
+        )
+        art_ids = [s["artist_id"] for s in sims]
+        check(
+            "similar_to_artist cap por artista = 1",
+            len(set(art_ids)) == len(art_ids),
+            "artistas repetidos: {}".format(art_ids),
+        )
+        all_ok = True
+        for s in sims:
+            w = db.get_work(s["id"])
+            if not (w and w["has_vinyl"] is True
+                    and w["work_type"] in ("studio_album", "ep")):
+                all_ok = False
+                break
+        check(
+            "similar_to_artist solo vinilo + studio_album/ep",
+            all_ok,
+            "algún similar sin vinilo o con morralla",
+        )
+        check(
+            "similar_to_artist todos con `porque`",
+            all((s.get("porque") or "").strip() for s in sims),
+            "algún similar sin porque",
+        )
+    else:
+        check("fixture artist_with_embedding existe", False, "no derivada")
+
+    # 9b. similar_to_artist fallback: probamos un artista con >=1 work embebido.
+    #     La función degrada a la obra más popular si el centroide falla; en
+    #     ambos casos debe devolver resultados válidos (ya cubierto por el
+    #     artista popular; verificamos que NO peta con un artista de 1 solo work).
+    rows = _q("""
+        SELECT w.primary_artist_id AS aid
+        FROM works w
+        WHERE w.has_vinyl = true AND w.embedding IS NOT NULL
+          AND w.work_type IN ('studio_album','ep')
+        GROUP BY w.primary_artist_id
+        HAVING count(*) = 1
+        ORDER BY max(w.releases_count) DESC NULLS LAST
+        LIMIT 1
+    """)
+    if rows:
+        try:
+            sims = db.recommend_similar_to_artist(rows[0]["aid"], limit=6)
+            check(
+                "similar_to_artist (artista de 1 work, ruta fallback) no peta y da resultados",
+                len(sims) > 0 and all(s["artist_id"] != rows[0]["aid"] for s in sims),
+                "fallback vacío o coló el propio artista",
+            )
+        except Exception as e:  # noqa: BLE001
+            check("similar_to_artist fallback no peta", False, repr(e))
+
+    # 10. recommend_by_mood: mood conocido → >=N vinilos, todos con porque.
+    from app.domains import editorial
+    from app.domains.editorial import mood_lexicon
+    known = mood_lexicon.MOODS[0]["key"]
+    res = editorial.recommend_by_mood(known, limit=20)
+    check(
+        "recommend_by_mood(mood conocido) devuelve >=5 vinilos",
+        res["mood"] is not None and len(res["results"]) >= 5,
+        "mood '{}' devolvió {}".format(known, len(res["results"])),
+    )
+    if res["results"]:
+        # todos con vinilo (via get_work) + porque no vacío.
+        vinyl_ok = True
+        for it in res["results"]:
+            w = db.get_work(it["id"])
+            if not (w and w["has_vinyl"] is True):
+                vinyl_ok = False
+                break
+        check("recommend_by_mood: todos los items tienen has_vinyl", vinyl_ok,
+              "algún item sin vinilo")
+        check(
+            "recommend_by_mood: todos con `porque` no vacío",
+            all((it.get("porque") or "").strip() for it in res["results"]),
+            "algún item sin porque",
+        )
+
+    # 11. recommend_by_mood: texto inexistente → degradación honesta sin excepción.
+    try:
+        res = editorial.recommend_by_mood("xyzqwerty-no-existe-vibra")
+        check(
+            "recommend_by_mood(texto inexistente) → mood None + items []",
+            res["mood"] is None and res["results"] == [],
+            "esperado degradación honesta, obtenido {}".format(res),
+        )
+        check(
+            "recommend_by_mood degradado ofrece chips sugeridos",
+            len(res.get("suggestions") or []) > 0,
+            "sin sugerencias",
+        )
+    except Exception as e:  # noqa: BLE001
+        check("recommend_by_mood(texto inexistente) no peta", False, repr(e))
+
+    # 12. Léxico: todos los styles del léxico EXISTEN en core (no inventados).
+    all_styles = set()
+    for m in mood_lexicon.MOODS:
+        all_styles.update(m["styles"])
+    present = _q(
+        "SELECT name FROM styles WHERE name = ANY(%(names)s)",
+        {"names": list(all_styles)},
+    )
+    present_names = {r["name"] for r in present}
+    missing = all_styles - present_names
+    check(
+        "léxico de mood: todos los styles existen en core",
+        not missing,
+        "styles inexistentes: {}".format(sorted(missing)),
+    )
+
+    # 13. Resolución de texto libre del léxico (acentos/sinónimos).
+    check(
+        "léxico resuelve texto libre con acentos ('domingo lluvioso')",
+        (mood_lexicon.resolve("algo para un domingo lluvioso") or {}).get("key")
+        == "domingo_lluvioso",
+        "no resolvió domingo lluvioso",
+    )
+
     # 6. get_work / get_artist → None para id inexistente sin excepción.
     BOGUS = 999999999
     try:
@@ -278,10 +504,34 @@ def run_http_smoke(fx):
     check("GET /buscar?q=radiohead → 200", r.status_code == 200,
           "status {}".format(r.status_code))
 
-    if fx["work_top_vinyl"]:
+    if fx["work_with_embedding"]:
+        r = client.get("/obra/{}".format(fx["work_with_embedding"]))
+        check("GET /obra/{id} real → 200", r.status_code == 200,
+              "status {}".format(r.status_code))
+        check("GET /obra/{id} contiene 'afines'",
+              "afines" in r.text.lower(),
+              "no aparece 'afines' en la ficha de obra")
+    elif fx["work_top_vinyl"]:
         r = client.get("/obra/{}".format(fx["work_top_vinyl"]))
         check("GET /obra/{id} real → 200", r.status_code == 200,
               "status {}".format(r.status_code))
+
+    if fx["artist_with_embedding"]:
+        r = client.get("/artista/{}".format(fx["artist_with_embedding"]))
+        check("GET /artista/{id} → 200", r.status_code == 200,
+              "status {}".format(r.status_code))
+        check("GET /artista/{id} contiene 'onda'",
+              "onda" in r.text.lower(),
+              "no aparece 'onda' en la ficha de artista")
+
+    r = client.get("/vibra")
+    check("GET /vibra → 200", r.status_code == 200,
+          "status {}".format(r.status_code))
+    r = client.get("/vibra", params={"mood": "festivo"})
+    check("GET /vibra?mood=festivo → 200 con grid",
+          r.status_code == 200 and "porque" in r.text.lower()
+          and "card-porque" in r.text,
+          "status {} / falta porque".format(r.status_code))
 
     r = client.get("/obra/999999999")
     check("GET /obra/{inexistente} → 404", r.status_code == 404,
