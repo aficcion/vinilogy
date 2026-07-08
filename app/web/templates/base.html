@@ -17,11 +17,20 @@
     <a class="nav-vibra" href="/vibra">Por vibra ✦</a>
     <nav class="topbar-user">
       {% if user %}
+        {% set providers = user.providers or [] %}
+        {% if 'discogs' not in providers %}
+          <a class="nav-connect" href="/auth/discogs/login">{{ 'Vincular Discogs' if (user.providers|length == 0 and not user.display_name) else 'Conectar Discogs' }}</a>
+        {% endif %}
+        {% if 'lastfm' not in providers %}
+          <a class="nav-connect" href="/auth/lastfm/login">Conectar Last.fm</a>
+        {% endif %}
         <a class="nav-mi" href="/mi">{{ display_label }}</a>
         <form class="inline-form" action="/auth/logout" method="post">
           <button class="linkish" type="submit">Salir</button>
         </form>
       {% else %}
+        <a class="nav-connect" href="/auth/discogs/login">Entrar con Discogs</a>
+        <a class="nav-connect" href="/auth/lastfm/login">Entrar con Last.fm</a>
         <form class="inline-form" action="/auth/guest" method="post">
           <button class="btn-ghost" type="submit">Entrar como invitado</button>
         </form>

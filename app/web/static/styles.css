@@ -235,3 +235,17 @@ th { color: var(--ink-3); font-weight: 600; font-size: 12px; text-transform: upp
 .gap-meta { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
 .gap-price { color: var(--accent); font-weight: 600; }
 .gap-noprice { color: var(--ink-3); font-style: italic; font-size: 12px; }
+
+/* --- M3b: conexión OAuth (Discogs / Last.fm) --- */
+.nav-connect {
+  color: var(--ink-3);
+  font-size: 13px;
+  padding: 4px 8px;
+  border: 1px solid var(--line, rgba(255,255,255,.12));
+  border-radius: 8px;
+  white-space: nowrap;
+}
+.nav-connect:hover { color: var(--ink); border-color: var(--accent); }
+.mi-connect-cta { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0; }
+.oauth-error .lead { color: var(--ink-2, var(--ink)); }
+.oauth-error-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Conexión con {{ provider }}{% endblock %}
+{% block content %}
+<section class="hero oauth-error">
+  <h1>No pudimos conectar con {{ provider }}</h1>
+  <p class="lead">{{ detail }}</p>
+  <p class="oauth-error-actions">
+    {% if provider == 'Discogs' %}
+      <a class="btn-primary" href="/auth/discogs/login">Reintentar con Discogs</a>
+    {% elif provider == 'Last.fm' %}
+      <a class="btn-primary" href="/auth/lastfm/login">Reintentar con Last.fm</a>
+    {% endif %}
+    <a class="btn-ghost" href="/">Volver al inicio</a>
+  </p>
+</section>
+{% endblock %}

@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.domains import catalog, pricing, reco, editorial, press, users
+from app.domains.users import oauth
 
 _HERE = os.path.dirname(__file__)
 _TEMPLATES_DIR = os.path.join(_HERE, "web", "templates")
@@ -50,6 +51,42 @@ def _set_session_cookie(response, token):
     response.set_cookie(
         users.SESSION_COOKIE, token,
         max_age=_COOKIE_MAX_AGE, httponly=True, samesite="lax",
+    )
+
+
+# TTL corto para la cookie de estado del flow OAuth (segundos). El secreto real
+# (request-token-secret de Discogs) vive en el proceso; aquí solo viaja el `state`
+# opaco single-use que lo indexa (ver oauth.FlowStore).
+_OAUTH_STATE_MAX_AGE = 600
+
+
+def _set_oauth_state_cookie(response, state):
+    response.set_cookie(
+        oauth.OAUTH_STATE_COOKIE, state,
+        max_age=_OAUTH_STATE_MAX_AGE, httponly=True, samesite="lax",
+    )
+
+
+def _clear_oauth_state_cookie(response):
+    response.delete_cookie(oauth.OAUTH_STATE_COOKIE)
+
+
+def _login_after_oauth(user_id):
+    """Abre sesión para user_id, redirige a /mi con set-cookie de sesión y limpia
+    la cookie de estado del flow."""
+    token = users.open_session(user_id)
+    resp = RedirectResponse(url="/mi", status_code=303)
+    _set_session_cookie(resp, token)
+    _clear_oauth_state_cookie(resp)
+    return resp
+
+
+def _oauth_error(request, provider, detail, status_code=400):
+    """Error suave de OAuth (no 500): renderiza una página de aviso amable."""
+    user = users.current_user(request)
+    return _render(
+        request, "oauth_error.html", status_code=status_code,
+        provider=provider, detail=detail, user=user,
     )
 
 
@@ -203,6 +240,129 @@ def auth_logout(request: Request):
     resp = RedirectResponse(url="/", status_code=303)
     resp.delete_cookie(users.SESSION_COOKIE)
     return resp
+
+
+# ---------------------------------------------------------------------------
+# OAuth real — Discogs (OAuth 1.0a) + Last.fm (api_sig) (M3b)
+# ---------------------------------------------------------------------------
+# Solo establece IDENTIDAD + sesión (linking invitado→identidad incluido). NO
+# sincroniza colección/escucha (eso lo hace el pipeline de core; v2 solo lee).
+
+@app.get("/auth/discogs/login")
+def discogs_login(request: Request):
+    """Inicia OAuth1 de Discogs: pide request token (callback dinámico), guarda el
+    request-token-secret server-side y redirige a authorize. Sin credenciales en
+    entorno → aviso 'login no configurado' (no 500)."""
+    if not oauth.discogs_configured():
+        return _oauth_error(
+            request, "Discogs",
+            "El login con Discogs no está configurado en este entorno.")
+    guest = users.current_user(request)
+    guest_id = guest["id"] if (guest and users.is_guest(guest)) else None
+    try:
+        token, secret = oauth.discogs_request_token()
+    except Exception as e:  # noqa: BLE001 — degradación honesta ante rechazo
+        return _oauth_error(
+            request, "Discogs",
+            "Discogs no devolvió un request token ({}).".format(e))
+    state = oauth.FLOW_STORE.put({
+        "provider": "discogs",
+        "oauth_token": token,
+        "request_token_secret": secret,
+        "guest_user_id": guest_id,
+    })
+    resp = RedirectResponse(url=oauth.discogs_authorize_url(token),
+                            status_code=302)
+    _set_oauth_state_cookie(resp, state)
+    return resp
+
+
+@app.get("/auth/discogs/callback")
+def discogs_callback(request: Request, oauth_token: str = "",
+                     oauth_verifier: str = ""):
+    """Callback de Discogs: recupera el estado del flow por la cookie, intercambia
+    por access token, resuelve identidad y aplica la regla de mapeo. Callback sin
+    estado (llegada directa) → error suave (no 500)."""
+    state = request.cookies.get(oauth.OAUTH_STATE_COOKIE)
+    flow = oauth.FLOW_STORE.pop(state)
+    if not flow or flow.get("provider") != "discogs":
+        return _oauth_error(
+            request, "Discogs",
+            "No encontramos el estado de tu inicio de sesión (expiró o llegaste "
+            "directo). Vuelve a empezar desde el botón de conexión.")
+    if not oauth_verifier or not oauth_token:
+        return _oauth_error(
+            request, "Discogs",
+            "Discogs no devolvió el verificador. Cancela y vuelve a intentarlo.")
+    # El oauth_token del callback debe coincidir con el del request token.
+    if oauth_token != flow.get("oauth_token"):
+        return _oauth_error(
+            request, "Discogs",
+            "El token de Discogs no coincide con el de tu sesión. Reintenta.")
+    try:
+        access_token, access_secret = oauth.discogs_access_token(
+            oauth_token, flow["request_token_secret"], oauth_verifier)
+        account_id, username = oauth.discogs_identity(access_token, access_secret)
+    except Exception as e:  # noqa: BLE001
+        return _oauth_error(
+            request, "Discogs",
+            "No pudimos completar el intercambio con Discogs ({}).".format(e))
+    user_id, _outcome = oauth.persist_identity(
+        provider="discogs", provider_account_id=account_id,
+        provider_username=username, guest_user_id=flow.get("guest_user_id"),
+        oauth_token=access_token, oauth_token_secret=access_secret,
+    )
+    return _login_after_oauth(user_id)
+
+
+@app.get("/auth/lastfm/login")
+def lastfm_login(request: Request):
+    """Inicia el auth flow de Last.fm: guarda el invitado (si lo hay) en estado
+    server-side y redirige a last.fm/api/auth con api_key + cb. Sin credenciales
+    → aviso 'no configurado' (no 500)."""
+    if not oauth.lastfm_configured():
+        return _oauth_error(
+            request, "Last.fm",
+            "El login con Last.fm no está configurado en este entorno.")
+    guest = users.current_user(request)
+    guest_id = guest["id"] if (guest and users.is_guest(guest)) else None
+    state = oauth.FLOW_STORE.put({
+        "provider": "lastfm",
+        "guest_user_id": guest_id,
+    })
+    resp = RedirectResponse(url=oauth.lastfm_auth_url(), status_code=302)
+    _set_oauth_state_cookie(resp, state)
+    return resp
+
+
+@app.get("/auth/lastfm/callback")
+def lastfm_callback(request: Request, token: str = ""):
+    """Callback de Last.fm: recupera el estado del flow, cambia el token por una
+    sesión (auth.getSession firmado) y aplica la regla de mapeo. Callback sin
+    estado o sin token → error suave (no 500)."""
+    state = request.cookies.get(oauth.OAUTH_STATE_COOKIE)
+    flow = oauth.FLOW_STORE.pop(state)
+    if not flow or flow.get("provider") != "lastfm":
+        return _oauth_error(
+            request, "Last.fm",
+            "No encontramos el estado de tu inicio de sesión (expiró o llegaste "
+            "directo). Vuelve a empezar desde el botón de conexión.")
+    if not token:
+        return _oauth_error(
+            request, "Last.fm",
+            "Last.fm no devolvió el token de autorización. Reintenta.")
+    try:
+        session_key, username = oauth.lastfm_session(token)
+    except Exception as e:  # noqa: BLE001
+        return _oauth_error(
+            request, "Last.fm",
+            "No pudimos obtener tu sesión de Last.fm ({}).".format(e))
+    user_id, _outcome = oauth.persist_identity(
+        provider="lastfm", provider_account_id=username,
+        provider_username=username, guest_user_id=flow.get("guest_user_id"),
+        session_key=session_key,
+    )
+    return _login_after_oauth(user_id)
 
 
 # ---------------------------------------------------------------------------

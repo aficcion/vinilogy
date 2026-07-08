@@ -7,10 +7,15 @@
     <h1>Tu Vinylbe personal</h1>
     <p class="lead">Aquí verás recomendaciones a tu medida y tu gap de vinilo.
        Entra sin cuentas para empezar.</p>
+    <p class="mi-connect-cta">
+      <a class="btn-primary" href="/auth/discogs/login">Conectar Discogs</a>
+      <a class="btn-primary" href="/auth/lastfm/login">Conectar Last.fm</a>
+    </p>
     <form class="inline-form" action="/auth/guest" method="post">
-      <button class="btn-primary" type="submit">Entrar como invitado</button>
+      <button class="btn-ghost" type="submit">Entrar como invitado (sin cuentas)</button>
     </form>
-    <p class="hint">La conexión con Discogs y Last.fm llega en la próxima entrega.</p>
+    <p class="hint">Conecta Discogs para importar tu colección real (tu gap de
+       vinilo) o Last.fm para afinar por tu escucha. Ambas son opcionales.</p>
   </section>
 {% else %}
 
@@ -31,8 +36,10 @@
     </p>
     {% endif %}
     {% if user and (user.providers|length == 0) %}
-    <p class="hint mi-connect-note">Eres invitado. Conecta Discogs para importar
-       tu colección real y afinar todo esto (próximamente, M3b).</p>
+    <p class="hint mi-connect-note">Eres invitado. Vincula
+       <a href="/auth/discogs/login">Discogs</a> para importar tu colección real
+       (y ver tu gap de vinilo) o <a href="/auth/lastfm/login">Last.fm</a> para
+       afinar por tu escucha. Tu sesión de invitado se conservará.</p>
     {% endif %}
   </header>
 
