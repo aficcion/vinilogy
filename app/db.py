@@ -103,31 +103,50 @@ def search_works(q, limit=20):
     q = (q or "").strip()
     if not q:
         return []
+    # Dos fases: el ranking FTS+trgm y el LIMIT se resuelven sobre `works` PURO
+    # (sin cover ni artists); la portada (v_work_cover, cara) y el artista se juntan
+    # DESPUÉS, sobre las <=limit filas ya elegidas — no sobre todo el conjunto que
+    # casa la búsqueda. Semántica idéntica (mismo orden, mismo LIMIT).
     sql = """
-        SELECT w.id,
-               w.title,
-               w.work_type,
-               w.year,
-               w.releases_count,
+        WITH cand AS (
+            SELECT w.id,
+                   w.title,
+                   w.work_type,
+                   w.year,
+                   w.releases_count,
+                   w.primary_artist_id,
+                   ts_rank(w.search_doc,
+                           websearch_to_tsquery('simple', %(q)s)) AS fts_rank,
+                   similarity(lower(immutable_unaccent(w.title)),
+                              lower(immutable_unaccent(%(q)s)))    AS trgm_sim
+            FROM works w
+            WHERE w.has_vinyl = true
+              AND (
+                  w.search_doc @@ websearch_to_tsquery('simple', %(q)s)
+                  OR lower(immutable_unaccent(w.title)) %% lower(immutable_unaccent(%(q)s))
+              )
+            ORDER BY fts_rank DESC,
+                     trgm_sim DESC,
+                     w.releases_count DESC NULLS LAST
+            LIMIT %(limit)s
+        )
+        SELECT cand.id,
+               cand.title,
+               cand.work_type,
+               cand.year,
+               cand.releases_count,
                a.id   AS artist_id,
                a.name AS artist_name,
                vc.preferred_thumb AS cover_thumb,
                vc.preferred_url   AS cover_url,
-               ts_rank(w.search_doc, websearch_to_tsquery('simple', %(q)s)) AS fts_rank,
-               similarity(lower(immutable_unaccent(w.title)),
-                          lower(immutable_unaccent(%(q)s)))                 AS trgm_sim
-        FROM works w
-        JOIN artists a ON a.id = w.primary_artist_id
-        LEFT JOIN v_work_cover vc ON vc.work_id = w.id
-        WHERE w.has_vinyl = true
-          AND (
-              w.search_doc @@ websearch_to_tsquery('simple', %(q)s)
-              OR lower(immutable_unaccent(w.title)) %% lower(immutable_unaccent(%(q)s))
-          )
-        ORDER BY fts_rank DESC,
-                 trgm_sim DESC,
-                 w.releases_count DESC NULLS LAST
-        LIMIT %(limit)s
+               cand.fts_rank,
+               cand.trgm_sim
+        FROM cand
+        JOIN artists a ON a.id = cand.primary_artist_id
+        LEFT JOIN v_work_cover vc ON vc.work_id = cand.id
+        ORDER BY cand.fts_rank DESC,
+                 cand.trgm_sim DESC,
+                 cand.releases_count DESC NULLS LAST
     """
     with _cursor() as cur:
         cur.execute(sql, {"q": q, "limit": limit})
@@ -643,18 +662,49 @@ def _rerank_candidates(rows, limit):
     return capped[:limit]
 
 
-def _seed_embedding_for_work(cur, work_id):
-    """Devuelve (embedding_literal, primary_artist_id) de la obra, o (None, None)
-    si la obra no existe o no tiene embedding."""
+def _seed_embedding_for_work(cur, work_id, column="embedding"):
+    """Devuelve (embedding_literal, primary_artist_id, title) de la obra.
+
+    El embedding se trae a Python como LITERAL de texto (`[x,y,…]`) para pasarlo
+    después como parámetro `::vector` al KNN por índice — NO como subquery dentro
+    del ORDER BY (una subquery ahí puede impedir que el planner use el índice HNSW).
+    (None, None, None) si la obra no existe o no tiene ese embedding.
+    """
     cur.execute(
-        "SELECT primary_artist_id, embedding IS NOT NULL AS has_emb "
-        "FROM works WHERE id = %(id)s",
+        "SELECT primary_artist_id, title, {col}::text AS emb "
+        "FROM works WHERE id = %(id)s".format(col=column),
         {"id": work_id},
     )
     row = cur.fetchone()
-    if not row or not row["has_emb"]:
-        return None, None
-    return True, row["primary_artist_id"]
+    if not row or row["emb"] is None:
+        return None, None, None
+    return row["emb"], row["primary_artist_id"], row["title"]
+
+
+# SQL compartido: fase 2 del patrón de dos fases. El CTE `cand` (definido por
+# cada caller) ya viene CAPADO a 1 obra por artista y limitado a %(cand)s ARTISTAS
+# DISTINTOS por distancia — exactamente el mismo conjunto que producía el viejo
+# `SELECT DISTINCT ON (primary_artist_id) … ORDER BY primary_artist_id, dist LIMIT`
+# (misma semántica: la obra MÁS cercana de cada uno de los %(cand)s artistas más
+# próximos). Aquí SOLO ENTONCES se juntan `artists` + `v_work_cover` (la portada,
+# cara) sobre ese puñado de filas, no sobre el ~1,6M de works que pasan el WHERE.
+_RECO_PHASE2_SQL = """
+    SELECT w.id,
+           w.title,
+           w.work_type,
+           w.year,
+           w.releases_count,
+           a.id   AS artist_id,
+           a.name AS artist_name,
+           vc.preferred_thumb AS cover_thumb,
+           vc.preferred_url   AS cover_url,
+           cand.dist AS dist
+    FROM cand
+    JOIN works w   ON w.id = cand.id
+    JOIN artists a ON a.id = cand.artist_id
+    LEFT JOIN v_work_cover vc ON vc.work_id = w.id
+    ORDER BY cand.dist
+"""
 
 
 def recommend_similar_to_work(work_id, limit=12):
@@ -666,49 +716,50 @@ def recommend_similar_to_work(work_id, limit=12):
     semilla. Trae candidatos holgados por distancia, capa 1 por artista y re-rankea
     con distancia+popularidad (ver _rerank_candidates).
 
+    RENDIMIENTO (dos fases): el KNN corre sobre `works` PURO (sin joins) con el
+    embedding del seed como literal `::vector` → usa el índice HNSW; la portada
+    (cara) y `artists` solo se juntan DESPUÉS, sobre el puñado de candidatos ya
+    capados por artista. Semántica idéntica a la versión de un solo pase.
+
     Cada fila lleva `porque` explicable. Si el seed no tiene embedding → [] honesto.
     """
-    sql = """
-        WITH seed AS (
-            SELECT embedding, primary_artist_id
-            FROM works WHERE id = %(work_id)s AND embedding IS NOT NULL
+    # Fase 1: KNN puro sobre works (sin cover). El seed embedding va como literal
+    # ::vector. El WHERE aplica todos los filtros duros post-índice y el
+    # `DISTINCT ON (primary_artist_id) … ORDER BY primary_artist_id, dist LIMIT`
+    # capa 1/artista DENTRO del corte (misma semántica que el pase único original:
+    # los %(cand)s artistas más próximos, su obra más cercana), pero SIN el join de
+    # portada — por eso corre en ~2s en vez de ~18s.
+    cand_sql = """
+        WITH cand AS (
+            SELECT DISTINCT ON (w.primary_artist_id)
+                   w.id,
+                   w.primary_artist_id AS artist_id,
+                   (w.embedding <=> %(seed)s::vector) AS dist
+            FROM works w
+            JOIN artists a ON a.id = w.primary_artist_id
+            WHERE w.embedding IS NOT NULL
+              AND w.has_vinyl = true
+              AND w.work_type = ANY(%(work_types)s::work_type[])
+              AND w.primary_artist_id <> %(seed_artist)s
+              AND w.id <> %(work_id)s
+              AND {artist_ok}
+            ORDER BY w.primary_artist_id, w.embedding <=> %(seed)s::vector
+            LIMIT %(cand)s
         )
-        SELECT DISTINCT ON (w.primary_artist_id)
-               w.id,
-               w.title,
-               w.work_type,
-               w.year,
-               w.releases_count,
-               a.id   AS artist_id,
-               a.name AS artist_name,
-               vc.preferred_thumb AS cover_thumb,
-               vc.preferred_url   AS cover_url,
-               (w.embedding <=> (SELECT embedding FROM seed)) AS dist
-        FROM works w
-        JOIN artists a ON a.id = w.primary_artist_id
-        LEFT JOIN v_work_cover vc ON vc.work_id = w.id
-        WHERE w.embedding IS NOT NULL
-          AND w.has_vinyl = true
-          AND w.work_type = ANY(%(work_types)s::work_type[])
-          AND w.primary_artist_id <> (SELECT primary_artist_id FROM seed)
-          AND w.id <> %(work_id)s
-          AND {artist_ok}
-          AND EXISTS (SELECT 1 FROM seed)
-        ORDER BY w.primary_artist_id, dist
-        LIMIT %(cand)s
     """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL)
+    sql = cand_sql + _RECO_PHASE2_SQL
+
     with _cursor() as cur:
-        # Seed info para el `porque` y guard de "sin embedding".
-        has_emb, _seed_artist = _seed_embedding_for_work(cur, work_id)
-        if not has_emb:
+        seed_emb, seed_artist, seed_title = _seed_embedding_for_work(cur, work_id)
+        if seed_emb is None:
             return []
-        cur.execute("SELECT title FROM works WHERE id = %(id)s", {"id": work_id})
-        seed_row = cur.fetchone()
-        seed_title = seed_row["title"] if seed_row else "esta obra"
+        seed_title = seed_title or "esta obra"
 
         cur.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
         cur.execute(sql, {
             "work_id": work_id,
+            "seed": seed_emb,
+            "seed_artist": seed_artist,
             "work_types": list(_RECO_WORK_TYPES),
             "cand": _ANN_CANDIDATE_LIMIT,
         })
@@ -728,6 +779,9 @@ def recommend_similar_to_artist(artist_id, limit=12):
     popular con embedding. Vecinos con primary_artist_id <> artist_id, mismas reglas
     de filtro/cap. `porque` = "en la onda de {artista}". Sin semilla posible → [].
     """
+    # Dos fases: el SEED (centroide o embedding de la obra más popular) se
+    # calcula/trae a Python como LITERAL ::vector; luego KNN puro sobre works y
+    # cap+portada sobre lo reducido (ver recommend_similar_to_work).
     with _cursor() as cur:
         cur.execute("SELECT name FROM artists WHERE id = %(id)s", {"id": artist_id})
         arow = cur.fetchone()
@@ -735,9 +789,9 @@ def recommend_similar_to_artist(artist_id, limit=12):
             return []
         artist_name = arow["name"]
 
-        # Centroide sobre sus works con vinilo/obra de verdad.
+        # Centroide sobre sus works con vinilo/obra de verdad → literal de texto.
         cur.execute("""
-            SELECT avg(w.embedding)::vector(512) AS centroid, count(*) AS n
+            SELECT avg(w.embedding)::vector(512)::text AS centroid, count(*) AS n
             FROM works w
             WHERE w.primary_artist_id = %(id)s
               AND w.embedding IS NOT NULL
@@ -745,71 +799,45 @@ def recommend_similar_to_artist(artist_id, limit=12):
               AND w.work_type = ANY(%(work_types)s::work_type[])
         """, {"id": artist_id, "work_types": list(_RECO_WORK_TYPES)})
         crow = cur.fetchone()
-        use_centroid = bool(crow and crow["n"] and crow["centroid"] is not None)
+        seed_emb = crow["centroid"] if (crow and crow["n"]) else None
 
-        if use_centroid:
-            seed_clause = "(SELECT centroid FROM seed)"
-            seed_cte = """
-                WITH seed AS (
-                    SELECT avg(w.embedding)::vector(512) AS centroid
-                    FROM works w
-                    WHERE w.primary_artist_id = %(artist_id)s
-                      AND w.embedding IS NOT NULL
-                      AND w.has_vinyl = true
-                      AND w.work_type = ANY(%(work_types)s::work_type[])
-                )
-            """
-        else:
+        if seed_emb is None:
             # Degradación: embedding de la obra más popular con embedding.
             cur.execute("""
-                SELECT embedding IS NOT NULL AS ok
+                SELECT embedding::text AS emb
                 FROM works
                 WHERE primary_artist_id = %(id)s AND embedding IS NOT NULL
                 ORDER BY releases_count DESC NULLS LAST, lastfm_playcount DESC NULLS LAST
                 LIMIT 1
             """, {"id": artist_id})
             frow = cur.fetchone()
-            if not (frow and frow["ok"]):
+            if not (frow and frow["emb"] is not None):
                 return []
-            seed_clause = "(SELECT embedding FROM seed)"
-            seed_cte = """
-                WITH seed AS (
-                    SELECT embedding
-                    FROM works
-                    WHERE primary_artist_id = %(artist_id)s AND embedding IS NOT NULL
-                    ORDER BY releases_count DESC NULLS LAST,
-                             lastfm_playcount DESC NULLS LAST
-                    LIMIT 1
-                )
-            """
+            seed_emb = frow["emb"]
 
-        sql = seed_cte + """
-            SELECT DISTINCT ON (w.primary_artist_id)
-                   w.id,
-                   w.title,
-                   w.work_type,
-                   w.year,
-                   w.releases_count,
-                   a.id   AS artist_id,
-                   a.name AS artist_name,
-                   vc.preferred_thumb AS cover_thumb,
-                   vc.preferred_url   AS cover_url,
-                   (w.embedding <=> {seed}) AS dist
-            FROM works w
-            JOIN artists a ON a.id = w.primary_artist_id
-            LEFT JOIN v_work_cover vc ON vc.work_id = w.id
-            WHERE w.embedding IS NOT NULL
-              AND w.has_vinyl = true
-              AND w.work_type = ANY(%(work_types)s::work_type[])
-              AND w.primary_artist_id <> %(artist_id)s
-              AND {artist_ok}
-            ORDER BY w.primary_artist_id, dist
-            LIMIT %(cand)s
-        """.format(seed=seed_clause, artist_ok=_ARTIST_NOT_MORRALLA_SQL)
+        cand_sql = """
+            WITH cand AS (
+                SELECT DISTINCT ON (w.primary_artist_id)
+                       w.id,
+                       w.primary_artist_id AS artist_id,
+                       (w.embedding <=> %(seed)s::vector) AS dist
+                FROM works w
+                JOIN artists a ON a.id = w.primary_artist_id
+                WHERE w.embedding IS NOT NULL
+                  AND w.has_vinyl = true
+                  AND w.work_type = ANY(%(work_types)s::work_type[])
+                  AND w.primary_artist_id <> %(artist_id)s
+                  AND {artist_ok}
+                ORDER BY w.primary_artist_id, w.embedding <=> %(seed)s::vector
+                LIMIT %(cand)s
+            )
+        """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL)
+        sql = cand_sql + _RECO_PHASE2_SQL
 
         cur.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
         cur.execute(sql, {
             "artist_id": artist_id,
+            "seed": seed_emb,
             "work_types": list(_RECO_WORK_TYPES),
             "cand": _ANN_CANDIDATE_LIMIT,
         })
@@ -840,46 +868,38 @@ def similar_by_press(work_id, limit=8):
     de OTRO artista, capados 1/artista y re-rankeados igual que la reco general.
     Seed sin embedding_press → [] (la ficha no muestra la sub-sección).
     """
-    sql = """
-        WITH seed AS (
-            SELECT embedding_press, primary_artist_id
-            FROM works
-            WHERE id = %(work_id)s AND embedding_press IS NOT NULL
+    # Dos fases (ver recommend_similar_to_work): KNN puro sobre works por
+    # `embedding_press`, luego cap 1/artista + join de portada sobre lo reducido.
+    cand_sql = """
+        WITH cand AS (
+            SELECT DISTINCT ON (w.primary_artist_id)
+                   w.id,
+                   w.primary_artist_id AS artist_id,
+                   (w.embedding_press <=> %(seed)s::vector) AS dist
+            FROM works w
+            JOIN artists a ON a.id = w.primary_artist_id
+            WHERE w.embedding_press IS NOT NULL
+              AND w.has_vinyl = true
+              AND w.work_type = ANY(%(work_types)s::work_type[])
+              AND w.primary_artist_id <> %(seed_artist)s
+              AND w.id <> %(work_id)s
+              AND {artist_ok}
+            ORDER BY w.primary_artist_id, w.embedding_press <=> %(seed)s::vector
+            LIMIT %(cand)s
         )
-        SELECT DISTINCT ON (w.primary_artist_id)
-               w.id,
-               w.title,
-               w.work_type,
-               w.year,
-               w.releases_count,
-               a.id   AS artist_id,
-               a.name AS artist_name,
-               vc.preferred_thumb AS cover_thumb,
-               vc.preferred_url   AS cover_url,
-               (w.embedding_press <=> (SELECT embedding_press FROM seed)) AS dist
-        FROM works w
-        JOIN artists a ON a.id = w.primary_artist_id
-        LEFT JOIN v_work_cover vc ON vc.work_id = w.id
-        WHERE w.embedding_press IS NOT NULL
-          AND w.has_vinyl = true
-          AND w.work_type = ANY(%(work_types)s::work_type[])
-          AND w.primary_artist_id <> (SELECT primary_artist_id FROM seed)
-          AND w.id <> %(work_id)s
-          AND {artist_ok}
-          AND EXISTS (SELECT 1 FROM seed)
-        ORDER BY w.primary_artist_id, dist
-        LIMIT %(cand)s
     """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL)
+    sql = cand_sql + _RECO_PHASE2_SQL
+
     with _cursor() as cur:
-        cur.execute(
-            "SELECT 1 FROM works WHERE id = %(id)s AND embedding_press IS NOT NULL",
-            {"id": work_id},
-        )
-        if not cur.fetchone():
+        seed_emb, seed_artist, _title = _seed_embedding_for_work(
+            cur, work_id, column="embedding_press")
+        if seed_emb is None:
             return []
         cur.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
         cur.execute(sql, {
             "work_id": work_id,
+            "seed": seed_emb,
+            "seed_artist": seed_artist,
             "work_types": list(_RECO_WORK_TYPES),
             "cand": _ANN_CANDIDATE_LIMIT,
         })
@@ -912,6 +932,10 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
     if not style_names:
         return []
 
+    # Dos fases (patrón de rendimiento): todo el ranking/cap/LIMIT se resuelve SIN
+    # tocar la portada (v_work_cover, cara); `artists` entra en `scored` solo porque
+    # el filtro anti-morralla es por nombre de artista, pero la portada se junta al
+    # FINAL, sobre las <=limit filas ya elegidas — no sobre todas las matched.
     sql = """
         WITH matched AS (
             SELECT w.id,
@@ -935,15 +959,12 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
         scored AS (
             SELECT m.*,
                    a.name AS artist_name,
-                   vc.preferred_thumb AS cover_thumb,
-                   vc.preferred_url   AS cover_url,
                    -- tag hits desde la whitelist (folksonomía, solo suma)
                    (SELECT COUNT(*) FROM unnest(w.lastfm_tags) tg
                     WHERE lower(tg) = ANY(%(tags)s)) AS tag_hits
             FROM matched m
             JOIN works w ON w.id = m.id
             JOIN artists a ON a.id = m.primary_artist_id
-            LEFT JOIN v_work_cover vc ON vc.work_id = m.id
             WHERE {artist_ok}
         ),
         ranked AS (
@@ -955,17 +976,28 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
                                 s.lastfm_playcount DESC NULLS LAST
                    ) AS rn_artist
             FROM scored s
+        ),
+        picked AS (
+            SELECT id, title, work_type, year, releases_count, lastfm_playcount,
+                   primary_artist_id AS artist_id, artist_name,
+                   style_hits, tag_hits, matched_styles
+            FROM ranked
+            WHERE rn_artist <= %(cap)s
+            ORDER BY (style_hits + tag_hits) DESC,
+                     releases_count DESC NULLS LAST,
+                     lastfm_playcount DESC NULLS LAST
+            LIMIT %(limit)s
         )
-        SELECT id, title, work_type, year, releases_count,
-               primary_artist_id AS artist_id, artist_name,
-               cover_thumb, cover_url,
-               style_hits, tag_hits, matched_styles
-        FROM ranked
-        WHERE rn_artist <= %(cap)s
-        ORDER BY (style_hits + tag_hits) DESC,
-                 releases_count DESC NULLS LAST,
-                 lastfm_playcount DESC NULLS LAST
-        LIMIT %(limit)s
+        SELECT p.id, p.title, p.work_type, p.year, p.releases_count,
+               p.artist_id, p.artist_name,
+               vc.preferred_thumb AS cover_thumb,
+               vc.preferred_url   AS cover_url,
+               p.style_hits, p.tag_hits, p.matched_styles
+        FROM picked p
+        LEFT JOIN v_work_cover vc ON vc.work_id = p.id
+        ORDER BY (p.style_hits + p.tag_hits) DESC,
+                 p.releases_count DESC NULLS LAST,
+                 p.lastfm_playcount DESC NULLS LAST
     """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL)
     with _cursor() as cur:
         cur.execute(sql, {
