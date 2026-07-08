@@ -37,6 +37,28 @@ def _q(sql, params=None):
         return cur.fetchall()
 
 
+def _max_vinyl_tracks(work_id):
+    """Máximo nº de pistas entre los prensados de VINILO de la obra (o None). Es la
+    MISMA señal que usa el filtro de single disfrazado en db._album_track_ok_sql."""
+    rows = _q(
+        "SELECT max(jsonb_array_length(r.tracklist_cache)) AS m "
+        "FROM releases r WHERE r.work_id = %(w)s AND r.format = 'vinyl'",
+        {"w": work_id})
+    return rows[0]["m"] if rows else None
+
+
+def _no_disguised_singles(items):
+    """True si NINGÚN item studio_album es un single disfrazado (max pistas en
+    vinilo <=3 → single; >=4 es álbum/EP legítimo). ep/compilation/live_album
+    exentos (no son el problema del single mal tipado)."""
+    for it in items:
+        if it.get("work_type") == "studio_album":
+            mx = _max_vinyl_tracks(it["id"])
+            if mx is not None and mx <= 3:
+                return False, (it["id"], it.get("title"), mx)
+    return True, None
+
+
 # ---------------------------------------------------------------------------
 # Fixtures derivados por SQL
 # ---------------------------------------------------------------------------
@@ -202,6 +224,33 @@ def derive_fixtures():
     """)
     fx["press_seed_candidates"] = [r["id"] for r in rows]
 
+    # -- Single disfrazado de studio_album (core lo tipa mal) --
+    # (a) Un studio_album con vinilo de 4-5 pistas en su prensado de VINILO = EP
+    #     legítimo mal tipado → DEBE MANTENERSE (umbral >=4). Fixture derivado por
+    #     SQL (sin id hardcodeado): título distintivo para poder buscarlo.
+    rows = _q("""
+        WITH top AS (
+            SELECT w.id, w.title
+            FROM works w
+            WHERE w.has_vinyl = true AND w.work_type = 'studio_album'
+              AND length(w.title) > 6
+            ORDER BY w.releases_count DESC NULLS LAST
+            LIMIT 3000
+        )
+        SELECT t.id, t.title
+        FROM top t
+        WHERE (SELECT max(jsonb_array_length(r.tracklist_cache))
+               FROM releases r WHERE r.work_id = t.id AND r.format = 'vinyl')
+              BETWEEN 4 AND 5
+        LIMIT 1
+    """)
+    if rows:
+        fx["ep_studioalbum_id"] = rows[0]["id"]
+        fx["ep_studioalbum_title"] = rows[0]["title"]
+    else:
+        fx["ep_studioalbum_id"] = None
+        fx["ep_studioalbum_title"] = None
+
     # -- M3a: usuarios FIXTURE reales (user 1 = Carlos, con colección + gap) --
     # No los inventamos: si no existen, los checks personales se marcan skip.
     rows = _q("SELECT id FROM app_users WHERE id = 1")
@@ -243,6 +292,46 @@ def run_checks(fx):
         all_vinyl,
         "algún resultado no tenía has_vinyl",
     )
+
+    # 1-bis. SINGLE DISFRAZADO de studio_album: un studio_album cuyo prensado de
+    #        vinilo tiene <=3 pistas es un single mal tipado y NO debe aparecer.
+    #        Caso canónico: Interpol – "Evil" (work 11253669, 2 pistas en vinilo)
+    #        NO debe salir en search_works('interpol').
+    if _q("SELECT id FROM works WHERE id = 11253669"):
+        hits = db.search_works("interpol", limit=40)
+        check("search_works('interpol') NO devuelve el single disfrazado 'Evil'",
+              all(r["id"] != 11253669 for r in hits),
+              "'Evil' (11253669) se coló en la búsqueda")
+    # Genérico (no depende de un id): ningún studio_album devuelto por búsquedas
+    # amplias es un single disfrazado (<=3 pistas en vinilo).
+    disguised = []
+    for t in ["interpol", "radiohead", "the strokes"]:
+        for r in db.search_works(t, limit=30):
+            if r["work_type"] == "studio_album":
+                mx = _max_vinyl_tracks(r["id"])
+                if mx is not None and mx <= 3:
+                    disguised.append((t, r["title"], mx))
+    check("search_works: ningún studio_album devuelto es single disfrazado (<=3 "
+          "pistas en vinilo)", not disguised, "colaron: {}".format(disguised[:5]))
+
+    # 1-ter. Un ÁLBUM real conocido (Dark Side ~10 pistas) SÍ aparece.
+    dark = db.search_works("dark side of the moon", limit=20)
+    check("search_works: un álbum real (Dark Side of the Moon) SÍ aparece",
+          any("dark side" in (r["title"] or "").lower() for r in dark),
+          "no encontró un álbum real conocido")
+
+    # 1-quater. Un studio_album de 4-5 pistas en vinilo (EP legítimo mal tipado) SÍ
+    #        se MANTIENE (el umbral es >=4, no toca a los 4-5).
+    if fx.get("ep_studioalbum_id") and fx.get("ep_studioalbum_title"):
+        term_ep = fx["ep_studioalbum_title"].split(" ")[0]
+        kept = any(r["id"] == fx["ep_studioalbum_id"]
+                   for r in db.search_works(fx["ep_studioalbum_title"], limit=40)) \
+            or any(r["id"] == fx["ep_studioalbum_id"]
+                   for r in db.search_works(term_ep, limit=40))
+        check("search_works: studio_album de 4-5 pistas en vinilo SÍ se mantiene "
+              "(umbral >=4)", kept,
+              "cayó el fixture EP-legítimo '{}' (id {})".format(
+                  fx["ep_studioalbum_title"], fx["ep_studioalbum_id"]))
 
     # 2. Work top por popularidad con vinilo → >=1 edición vinilo.
     if fx["work_top_vinyl"]:
@@ -320,6 +409,10 @@ def run_checks(fx):
             types_ok,
             "tipos: {}".format(sorted({w["work_type"] for w in discog})),
         )
+        ok_disc, bad_disc = _no_disguised_singles(discog)
+        check(
+            "discografía: ningún studio_album es single disfrazado (<=3 pistas "
+            "en vinilo)", ok_disc, "coló: {}".format(bad_disc))
         # No expone playcount crudo al render.
         no_raw_playcount = all("lastfm_playcount" not in w for w in discog)
         check(
@@ -840,6 +933,9 @@ def run_m3a_checks(fx):
     check("recommend_for_user(1): todos con `porque` no vacío",
           all((r.get("porque") or "").strip() for r in recs),
           "alguna reco sin porque")
+    ok_ru, bad_ru = _no_disguised_singles(recs)
+    check("recommend_for_user(1): ninguna reco es single disfrazado (<=3 pistas "
+          "en vinilo)", ok_ru, "coló: {}".format(bad_ru))
 
     # 22-bis. recommend_from_listening(1) (M3b): >=N vinilos por ESCUCHA Last.fm,
     #     NINGUNO en la colección, cap 1/artista, todos vinilo+obra, `porque` que
@@ -863,6 +959,11 @@ def run_m3a_checks(fx):
           all((r.get("porque") or "").strip() for r in lrecs)
           and all("escuchas" in (r.get("porque") or "") for r in lrecs),
           "porque vacío o sin atribución a la escucha")
+    ok_l, bad_l = _no_disguised_singles(lrecs)
+    check("recommend_from_listening(1): ninguna reco es single disfrazado (<=3 "
+          "pistas en vinilo)", ok_l, "coló: {}".format(bad_l))
+    check("recommend_from_listening(1): NO devuelve 'Evil' (single disfrazado)",
+          all(r["id"] != 11253669 for r in lrecs), "coló 'Evil'")
     # Degradación: user de test SIN filas user_lastfm_* → [] (con LIMPIEZA).
     #     NUNCA se toca al user 1: se crea un invitado efímero sin datos lastfm.
     ltmp = None

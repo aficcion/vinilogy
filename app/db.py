@@ -31,6 +31,43 @@ _DISCOGRAPHY_WORK_TYPES = ("studio_album", "ep")
 # Filtro anti-morralla para RECOMENDACIÓN por contenido (solo obras de verdad).
 _RECO_WORK_TYPES = ("studio_album", "ep")
 
+# Desenmascarar SINGLES DISFRAZADOS de studio_album (core los tipa mal; el fix de
+# raíz en core —re-tipado sobre HNSW— se hará en otra ventana, así que este parche
+# vive en la app, permanente). Mapa de la decisión de core: ≤3 pistas = single,
+# 4-5 = ep, ≥6 = álbum → un `studio_album` cuenta como ÁLBUM solo si tiene ≥1
+# release con `jsonb_array_length(tracklist_cache) >= _MIN_ALBUM_TRACKS`. Los 4-5
+# (EPs legítimos) y ≥6 se MANTIENEN. Los `work_type='ep'` reales quedan EXENTOS del
+# umbral (cortos legítimamente).
+_MIN_ALBUM_TRACKS = 4
+
+# OJO — la cuenta de pistas se mide sobre los prensados de VINILO, NO sobre TODOS
+# los releases. Motivo (ratificado por el ejemplo del coordinador): el caso canónico
+# es Interpol – "Evil" (work 11253669), un single de Antics tipado studio_album cuyo
+# VINILO trae 2 pistas → debe EXCLUIRSE. Pero ese work tiene ediciones en CD/digital
+# de 4-5 pistas (recopilan caras B / sesiones BBC), así que `max sobre TODOS los
+# releases` daría 5 y lo dejaría pasar — contradiría el criterio de aceptación "Evil
+# NO aparece" + "Evil = 2 pistas". Como además recomendamos/vendemos VINILO, el nº de
+# pistas del PRENSADO DE VINILO es la señal correcta y la ÚNICA lectura que satisface
+# ambos requisitos. Cobertura del tracklist de vinilo: ~100% en el top del catálogo
+# (medido) → sin falsos-drop por dato ausente.
+
+
+def _album_track_ok_sql(work_alias="w"):
+    """Predicado SQL: `<alias>` es un disco de verdad (no un single disfrazado).
+
+    Verdadero si el work NO es `studio_album`, o si siéndolo tiene ≥1 release de
+    VINILO con al menos `_MIN_ALBUM_TRACKS` pistas. EXISTS acotado por work_id
+    (índice `idx_releases_work`) — barato SOLO sobre el conjunto YA REDUCIDO de
+    fase-2 / candidatos capados; NUNCA meter en la fase-1 del KNN sobre 1,6M filas.
+    """
+    return (
+        "({w}.work_type <> 'studio_album' OR EXISTS ("
+        " SELECT 1 FROM releases r_atc"
+        " WHERE r_atc.work_id = {w}.id AND r_atc.format = 'vinyl'"
+        " AND jsonb_array_length(r_atc.tracklist_cache) >= {n}))"
+    ).format(w=work_alias, n=_MIN_ALBUM_TRACKS)
+
+
 # Candidatos holgados a traer del índice ANN antes de filtrar/capar por artista.
 # Filtramos POST-índice (has_vinyl, work_type, exclusión de artista, cap 1/artista),
 # así que pedimos un margen amplio para no quedarnos cortos tras el capado.
@@ -128,28 +165,40 @@ def search_works(q, limit=20):
             ORDER BY fts_rank DESC,
                      trgm_sim DESC,
                      w.releases_count DESC NULLS LAST
+            LIMIT %(cand_limit)s
+        ),
+        cand2 AS (
+            -- El filtro de single disfrazado (album_track_ok) se aplica AQUÍ, sobre
+            -- el puñado YA rankeado/limitado por FTS (cand_limit = limit*3) — NO en
+            -- el WHERE de `cand`, donde el EXISTS de tracklist correría sobre TODO
+            -- el conjunto que casa la búsqueda (para "the"/"love" son miles → 20-27s).
+            SELECT c.* FROM cand c
+            JOIN works w ON w.id = c.id
+            WHERE {album_track_ok}
+            ORDER BY c.fts_rank DESC, c.trgm_sim DESC,
+                     c.releases_count DESC NULLS LAST
             LIMIT %(limit)s
         )
-        SELECT cand.id,
-               cand.title,
-               cand.work_type,
-               cand.year,
-               cand.releases_count,
+        SELECT cand2.id,
+               cand2.title,
+               cand2.work_type,
+               cand2.year,
+               cand2.releases_count,
                a.id   AS artist_id,
                a.name AS artist_name,
                vc.preferred_thumb AS cover_thumb,
                vc.preferred_url   AS cover_url,
-               cand.fts_rank,
-               cand.trgm_sim
-        FROM cand
-        JOIN artists a ON a.id = cand.primary_artist_id
-        LEFT JOIN v_work_cover vc ON vc.work_id = cand.id
-        ORDER BY cand.fts_rank DESC,
-                 cand.trgm_sim DESC,
-                 cand.releases_count DESC NULLS LAST
-    """
+               cand2.fts_rank,
+               cand2.trgm_sim
+        FROM cand2
+        JOIN artists a ON a.id = cand2.primary_artist_id
+        LEFT JOIN v_work_cover vc ON vc.work_id = cand2.id
+        ORDER BY cand2.fts_rank DESC,
+                 cand2.trgm_sim DESC,
+                 cand2.releases_count DESC NULLS LAST
+    """.format(album_track_ok=_album_track_ok_sql("w"))
     with _cursor() as cur:
-        cur.execute(sql, {"q": q, "limit": limit})
+        cur.execute(sql, {"q": q, "limit": limit, "cand_limit": limit * 3})
         return cur.fetchall()
 
 
@@ -356,10 +405,11 @@ def get_artist_discography(artist_id, limit=40):
         WHERE w.primary_artist_id = %(artist_id)s
           AND w.has_vinyl = true
           AND w.work_type = ANY(%(work_types)s::work_type[])
+          AND {album_track_ok}
         ORDER BY w.lastfm_playcount DESC NULLS LAST,
                  w.releases_count DESC NULLS LAST
         LIMIT %(limit)s
-    """
+    """.format(album_track_ok=_album_track_ok_sql("w"))
     with _cursor() as cur:
         cur.execute(sql, {
             "artist_id": artist_id,
@@ -703,8 +753,9 @@ _RECO_PHASE2_SQL = """
     JOIN works w   ON w.id = cand.id
     JOIN artists a ON a.id = cand.artist_id
     LEFT JOIN v_work_cover vc ON vc.work_id = w.id
+    WHERE {album_track_ok}
     ORDER BY cand.dist
-"""
+""".format(album_track_ok=_album_track_ok_sql("w"))
 
 
 def recommend_similar_to_work(work_id, limit=12, exclude_user_id=None):
@@ -994,6 +1045,10 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
             FROM scored s
         ),
         picked AS (
+            -- Se toma MARGEN (cand_limit = limit*3) porque el filtro de single
+            -- disfrazado (album_track_ok) se aplica DESPUÉS, sobre este puñado ya
+            -- rankeado/capado — NO sobre todo `scored` (ahí el EXISTS de tracklist
+            -- corría sobre miles de filas y disparaba la latencia a ~21s).
             SELECT id, title, work_type, year, releases_count, lastfm_playcount,
                    primary_artist_id AS artist_id, artist_name,
                    style_hits, tag_hits, matched_styles
@@ -1002,7 +1057,7 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
             ORDER BY (style_hits + tag_hits) DESC,
                      releases_count DESC NULLS LAST,
                      lastfm_playcount DESC NULLS LAST
-            LIMIT %(limit)s
+            LIMIT %(cand_limit)s
         )
         SELECT p.id, p.title, p.work_type, p.year, p.releases_count,
                p.artist_id, p.artist_name,
@@ -1011,10 +1066,14 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
                p.style_hits, p.tag_hits, p.matched_styles
         FROM picked p
         LEFT JOIN v_work_cover vc ON vc.work_id = p.id
+        JOIN works w ON w.id = p.id
+        WHERE {album_track_ok}
         ORDER BY (p.style_hits + p.tag_hits) DESC,
                  p.releases_count DESC NULLS LAST,
                  p.lastfm_playcount DESC NULLS LAST
-    """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL)
+        LIMIT %(limit)s
+    """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL,
+               album_track_ok=_album_track_ok_sql("w"))
     with _cursor() as cur:
         owned = _owned_work_ids(cur, exclude_user_id) if exclude_user_id else []
         cur.execute(sql, {
@@ -1023,6 +1082,7 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
             "work_types": list(_RECO_WORK_TYPES),
             "cap": per_artist_cap,
             "limit": limit,
+            "cand_limit": limit * 3,
             "owned": owned or [0],
         })
         return cur.fetchall()
@@ -1698,6 +1758,7 @@ def vinyl_gap(user_id, limit=24, per_artist_cap=2):
                 WHERE w.has_vinyl = true
                   AND ow.owns_nonvinyl = true
                   AND ow.owns_vinyl = false
+                  AND """ + _album_track_ok_sql("w") + """
             ),
             picked AS (
                 SELECT id, title, work_type, year, releases_count,
