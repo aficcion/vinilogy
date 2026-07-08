@@ -3,15 +3,22 @@
 Fachada fina sobre db.py. No hace SQL propio; expone la capa de catálogo al
 router web. Los límites internos son one-way (catalog no depende de pricing).
 """
+from concurrent.futures import ThreadPoolExecutor
+
 from app import db
 
 
 def search(q, limit=20):
-    """Búsqueda combinada: works con vinilo + artistas que casan."""
-    return {
-        "works": db.search_works(q, limit=limit),
-        "artists": db.search_artists(q, limit=limit),
-    }
+    """Búsqueda combinada: works con vinilo + artistas que casan.
+
+    Las dos queries son independientes y cada una tarda ~1-1,5s; se lanzan en
+    PARALELO (el pool es ThreadedConnectionPool, cada hilo saca su conexión) para
+    que `/buscar` no pague la suma en serie. Ver latencia medida en M2.
+    """
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fw = ex.submit(db.search_works, q, limit)
+        fa = ex.submit(db.search_artists, q, limit)
+        return {"works": fw.result(), "artists": fa.result()}
 
 
 def get_work(work_id):
