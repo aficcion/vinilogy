@@ -22,6 +22,36 @@ def get_work_vinyl_editions(work_id):
     return db.get_work_vinyl_editions(work_id)
 
 
+def get_work_tracklist(work_id):
+    """Tracklist normalizada de una edición de vinilo representativa. [] si no hay."""
+    return db.get_work_tracklist(work_id)
+
+
+_BIO_MAX_CHARS = 480
+
+
+def artist_bio_excerpt(artist, max_chars=_BIO_MAX_CHARS):
+    """Bio recortada del artista para el contexto en la ficha de obra.
+
+    Corta en el límite de frase/palabra más cercano bajo `max_chars` y añade '…'.
+    None/vacío → None (la vista oculta el bloque). No inventa.
+    """
+    bio = ((artist or {}).get("bio") or "").strip()
+    if not bio:
+        return None
+    if len(bio) <= max_chars:
+        return bio
+    cut = bio[:max_chars]
+    # Preferir cortar en el último punto; si no, en el último espacio.
+    dot = cut.rfind(". ")
+    if dot >= max_chars * 0.5:
+        return cut[: dot + 1]
+    sp = cut.rfind(" ")
+    if sp > 0:
+        cut = cut[:sp]
+    return cut.rstrip(",;:. ") + "…"
+
+
 def get_artist(artist_id):
     return db.get_artist(artist_id)
 

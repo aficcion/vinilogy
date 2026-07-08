@@ -6,19 +6,38 @@ embed en vivo, cero API externa). Explicabilidad `porque` en cada recomendación
 Además, un helper de orquestación para /buscar: dado el primer resultado fuerte
 de una búsqueda (obra o artista), devuelve los "vinilos afines".
 
-Límite one-way: reco depende de db/catalog, nunca al revés.
+Límite one-way: reco depende de db/catalog/press, nunca al revés.
+
+Porqués editoriales (M2): cuando una obra recomendada TIENE señales de prensa, su
+`porque` se apoya en la crítica real (batch sin N+1 vía `press.enrich_porque_batch`);
+sin señales, mantiene el `porque` de contenido de M1.
 """
 from app import db
+from app.domains import press
 
 
 def similar_to_work(work_id, limit=12):
-    """Vinilos afines a una obra. [] honesto si el seed no tiene embedding."""
-    return db.recommend_similar_to_work(work_id, limit=limit)
+    """Vinilos afines a una obra. [] honesto si el seed no tiene embedding.
+
+    Con porqué editorial donde haya prensa (batch, 1 query extra).
+    """
+    items = db.recommend_similar_to_work(work_id, limit=limit)
+    return press.enrich_porque_batch(items)
+
+
+def similar_by_press_to_work(work_id, limit=8):
+    """BONUS: afines por VIBRA DE CRÍTICA (`embedding_press`). [] si el seed no
+    tiene embedding_press (la ficha oculta la sub-sección)."""
+    return db.similar_by_press(work_id, limit=limit)
 
 
 def similar_to_artist(artist_id, limit=12):
-    """Vinilos en la onda de un artista (centroide con fallback). [] si no hay semilla."""
-    return db.recommend_similar_to_artist(artist_id, limit=limit)
+    """Vinilos en la onda de un artista (centroide con fallback). [] si no hay semilla.
+
+    Con porqué editorial donde haya prensa (batch, 1 query extra).
+    """
+    items = db.recommend_similar_to_artist(artist_id, limit=limit)
+    return press.enrich_porque_batch(items)
 
 
 def affine_for_search(works, artists, limit=12):

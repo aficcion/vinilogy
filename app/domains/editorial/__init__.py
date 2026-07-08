@@ -7,6 +7,7 @@ honesta (lista vacía + los chips sugeridos), NUNCA inventa.
 Límite one-way: editorial depende de db (y del léxico); nada depende de editorial.
 """
 from app import db
+from app.domains import press
 from app.domains.editorial import mood_lexicon
 
 
@@ -47,6 +48,9 @@ def recommend_by_mood(text_or_key, limit=20):
         r = dict(r)
         r["porque"] = _porque_for(mood, r)
         items.append(r)
+    # Porqué editorial donde haya prensa (batch, 1 query). Sin señales → el
+    # porqué de mood de M1.
+    press.enrich_porque_batch(items)
     return {
         "mood": {"key": mood["key"], "label": mood["label"]},
         "results": items,
