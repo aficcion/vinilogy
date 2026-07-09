@@ -1817,3 +1817,92 @@ def vinyl_gap(user_id, limit=24, per_artist_cap=2):
         r["porque"] = "lo tienes en {}, existe en vinilo".format(owned_label)
         out.append(r)
     return out
+
+
+# ---------------------------------------------------------------------------
+# PORTADAS (cover-backfill on-demand desde Discogs)
+# ---------------------------------------------------------------------------
+# La app SOLO LEE el CATÁLOGO; `cover_images` es ENRIQUECIMIENTO (como sessions):
+# guardar una portada de Discogs recuperada en vivo es una escritura acotada y
+# legítima, JAMÁS DDL (la tabla ya existe). La vista `v_work_cover` ya prefiere
+# 'discogs' sobre 'caa', así que en cuanto se guarda la de Discogs se usa sola.
+
+def cover_sources_for_works(work_ids):
+    """Para un conjunto de work_ids, qué FUENTE de portada tiene cada uno.
+
+    Devuelve dict work_id -> {"has_discogs": bool, "has_caa": bool}. UNA query
+    (agregación por work_id sobre `cover_images`, índice `cover_images_work_id_idx`),
+    NO N+1. Los work_ids sin ninguna fila NO aparecen en el dict (el caller los
+    trata como "sin portada"). Lista vacía → {} sin tocar la BD.
+    """
+    ids = [int(w) for w in (work_ids or []) if w is not None]
+    if not ids:
+        return {}
+    with _cursor() as cur:
+        cur.execute("""
+            SELECT work_id,
+                   bool_or(source = 'discogs') AS has_discogs,
+                   bool_or(source = 'caa')     AS has_caa
+            FROM cover_images
+            WHERE work_id = ANY(%(ids)s)
+            GROUP BY work_id
+        """, {"ids": ids})
+        return {
+            r["work_id"]: {
+                "has_discogs": bool(r["has_discogs"]),
+                "has_caa": bool(r["has_caa"]),
+            }
+            for r in cur.fetchall()
+        }
+
+
+def work_discogs_ids(work_ids):
+    """Para recuperar portada de Discogs: por work_id, su `discogs_master_id` y un
+    `discogs_release_id` de VINILO (para el fallback master→release del cliente).
+
+    Devuelve dict work_id -> {"master_id": int|None, "release_id": int|None}.
+    Solo aparecen works que tengan AL MENOS uno de los dos (sin ninguno no se
+    puede pedir a Discogs). UNA query. Lista vacía → {}.
+    """
+    ids = [int(w) for w in (work_ids or []) if w is not None]
+    if not ids:
+        return {}
+    with _cursor() as cur:
+        cur.execute("""
+            SELECT w.id AS work_id,
+                   w.discogs_master_id AS master_id,
+                   (SELECT r.discogs_release_id
+                      FROM releases r
+                     WHERE r.work_id = w.id
+                       AND r.format = 'vinyl'
+                       AND r.discogs_release_id IS NOT NULL
+                     ORDER BY r.year ASC NULLS LAST
+                     LIMIT 1) AS release_id
+            FROM works w
+            WHERE w.id = ANY(%(ids)s)
+        """, {"ids": ids})
+        out = {}
+        for r in cur.fetchall():
+            if r["master_id"] is None and r["release_id"] is None:
+                continue
+            out[r["work_id"]] = {
+                "master_id": r["master_id"],
+                "release_id": r["release_id"],
+            }
+        return out
+
+
+def store_cover_image(work_id, source, url, url_thumb):
+    """UPSERT de una portada en `cover_images` (enriquecimiento, no DDL).
+
+    Parametrizado. ON CONFLICT (work_id, source) refresca url/thumb/fetched_at.
+    """
+    with _cursor() as cur:
+        cur.execute("""
+            INSERT INTO cover_images (work_id, source, url, url_thumb, fetched_at)
+            VALUES (%(w)s, %(s)s, %(u)s, %(t)s, now())
+            ON CONFLICT (work_id, source) DO UPDATE
+              SET url = EXCLUDED.url,
+                  url_thumb = EXCLUDED.url_thumb,
+                  fetched_at = now()
+        """, {"w": int(work_id), "s": source, "u": url, "t": url_thumb})
