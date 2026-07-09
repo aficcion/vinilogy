@@ -941,18 +941,24 @@ def run_m3a_checks(fx):
         return
     U = fx["fixture_user"]
 
-    # 22. recommend_for_user(1): >=N vinilos, NINGUNO en la colección, con porque,
-    #     cap 1/artista.
+    # 22. recommend_for_user(1) — "Para ti" por GRAFO DE CO-ESCUCHA (getSimilar):
+    #     >=8 vinilos, NINGUNA obra poseída, NINGÚN artista poseído, con `porque`
+    #     que NOMBRA anclas REALES de su colección, cap 1/artista, sin singles
+    #     disfrazados, y calidad = co-escucha agregada (n_anclas alto en el top).
     recs = db.recommend_for_user(U, limit=12)
-    check("recommend_for_user(1) devuelve >=6 resultados",
-          len(recs) >= 6, "solo {} recos".format(len(recs)))
+    check("recommend_for_user(1) [co-escucha] devuelve >=8 resultados",
+          len(recs) >= 8, "solo {} recos".format(len(recs)))
     with db._cursor() as cur:
         owned = set(db._owned_work_ids(cur, U))
-    check("recommend_for_user(1): NINGUNA reco está en la colección del user",
+        owned_artists = set(db._owned_artist_ids(cur, U))
+    check("recommend_for_user(1): NINGUNA reco es obra que ya posees",
           all(r["id"] not in owned for r in recs),
           "coló un disco de la colección")
+    check("recommend_for_user(1): NINGUNA reco es de un artista que ya posees",
+          all(r["artist_id"] not in owned_artists for r in recs),
+          "coló un artista de la colección")
     aids = [r["artist_id"] for r in recs]
-    check("recommend_for_user(1): cap 1/artista (sin artistas repetidos)",
+    check("recommend_for_user(1): 1 obra por artista (sin artistas repetidos)",
           len(set(aids)) == len(aids), "artistas repetidos")
     all_ok = all(
         (lambda w: w and w["has_vinyl"] is True
@@ -966,6 +972,72 @@ def run_m3a_checks(fx):
     ok_ru, bad_ru = _no_disguised_singles(recs)
     check("recommend_for_user(1): ninguna reco es single disfrazado (<=3 pistas "
           "en vinilo)", ok_ru, "coló: {}".format(bad_ru))
+    # 22-a. El `porque` cita anclas REALES de su colección. Sacamos los nombres de
+    #     los artistas poseídos y comprobamos que cada nombre citado tras "porque
+    #     tienes " está entre ellos (co-escucha honesta, no inventada).
+    with db._cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT a.name FROM unnest(%(ids)s::bigint[]) t(aid) "
+            "JOIN artists a ON a.id = t.aid",
+            {"ids": list(owned_artists) or [0]})
+        owned_names = {row["name"] for row in cur.fetchall()}
+
+    def _anclas_del_porque(porque):
+        # "porque tienes A y B" / "porque tienes A"  → [A, B] / [A]
+        p = (porque or "").strip()
+        if not p.startswith("porque tienes "):
+            return None  # formato inesperado → falla el check
+        rest = p[len("porque tienes "):]
+        return [x.strip() for x in rest.split(" y ") if x.strip()]
+
+    porque_ok = True
+    bad_porque = None
+    for r in recs:
+        anc = _anclas_del_porque(r.get("porque"))
+        if not anc or any(name not in owned_names for name in anc):
+            porque_ok = False
+            bad_porque = r.get("porque")
+            break
+    check("recommend_for_user(1): el `porque` cita anclas REALES de su colección",
+          porque_ok, "porque con ancla no poseída: {}".format(bad_porque))
+    # 22-b. Calidad: los top candidatos son co-escucha AGREGADA (n_anclas>1), no un
+    #     match suelto. Verificamos sobre la agregación cruda del grafo (los top 5).
+    with db._cursor() as cur:
+        cur.execute("""
+            WITH owned AS (
+                SELECT DISTINCT r.work_id FROM user_collection uc
+                JOIN releases r ON r.id = uc.release_id
+                WHERE uc.user_id = %(u)s AND uc.release_id IS NOT NULL),
+            oa AS (SELECT DISTINCT w.primary_artist_id aid FROM owned o
+                   JOIN works w ON w.id = o.work_id)
+            SELECT count(DISTINCT s.artist_id) n_anclas
+            FROM lastfm_similar_artists s
+            JOIN oa ON oa.aid = s.artist_id
+            WHERE s.similar_artist_id IS NOT NULL
+              AND s.similar_artist_id NOT IN (SELECT aid FROM oa)
+            GROUP BY s.similar_artist_id
+            ORDER BY sum(s.match) DESC LIMIT 5
+        """, {"u": U})
+        top_nanclas = [row["n_anclas"] for row in cur.fetchall()]
+    check("recommend_for_user(1): top candidatos son co-escucha AGREGADA (n_anclas>1)",
+          bool(top_nanclas) and all(n > 1 for n in top_nanclas),
+          "n_anclas del top: {}".format(top_nanclas))
+    # 22-c. Degradación honesta: user de test SIN semillas en el grafo → []. Se crea
+    #     un invitado efímero (colección vacía → owned_artists vacío → sin aristas).
+    #     NUNCA se toca al user 1 ni el grafo.
+    gtmp = None
+    try:
+        gtmp = db.create_guest_user()
+        check("recommend_for_user(user sin semillas en el grafo) → [] (degradación)",
+              db.recommend_for_user(gtmp) == [],
+              "no degradó a [] sin semillas de co-escucha")
+        check("recommend_for_user(0 / anónimo) → []",
+              db.recommend_for_user(0) == [], "anónimo no dio []")
+    finally:
+        if gtmp is not None:
+            db.delete_user_and_sessions(gtmp)
+            check("limpieza: user de test sin semillas borrado",
+                  db.get_app_user(gtmp) is None, "no se borró el user de test")
 
     # 22-bis. recommend_from_listening(1) (M3b): >=N vinilos por ESCUCHA Last.fm,
     #     NINGUNO en la colección, cap 1/artista, todos vinilo+obra, `porque` que

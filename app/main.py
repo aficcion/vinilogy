@@ -5,7 +5,7 @@ añade:
   - auth ligera server-side (cookie `vb_session`): invitado, logout, y un
     LOGIN-DEV guardado (`VINYLBE_DEV_LOGIN=1`) para probar la capa personal sin
     OAuth real (eso es M3b).
-  - `/mi`: perfil del usuario — "Para ti" (centroide de gusto) + "Sube a vinilo"
+  - `/mi`: perfil del usuario — "Para ti" (grafo de co-escucha) + "Sube a vinilo"
     (gap de vinilo con precio) + resumen de colección.
   - la reco anónima (`/buscar`, `/obra`, `/artista`, `/vibra`) EXCLUYE la
     colección cuando hay usuario logueado.

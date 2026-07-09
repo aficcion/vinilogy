@@ -375,7 +375,11 @@ def get_artist(artist_id):
                a.listeners,
                a.bio,
                a.tags,
-               a.image_url
+               -- Last.fm quitó las fotos de artista: la estrella placeholder
+               -- (hash 2a96cbd8…) está colada en image_url de ~38K artistas. La
+               -- tratamos como SIN foto para que el front muestre el monograma.
+               CASE WHEN a.image_url LIKE '%%2a96cbd8b46e442fc41c2b86b821562f%%'
+                    THEN NULL ELSE a.image_url END AS image_url
         FROM artists a
         WHERE a.id = %(artist_id)s
     """
@@ -1352,19 +1356,47 @@ def user_collection_summary(user_id):
 
 
 # ---------------------------------------------------------------------------
-# CAPA PERSONAL DE RECO — centroide de gusto + exclusión de colección
+# CAPA PERSONAL DE RECO — "Para ti" por GRAFO DE CO-ESCUCHA (Last.fm getSimilar)
 # ---------------------------------------------------------------------------
 #
-# Todo por CONTENIDO precalculado (embeddings de core), CERO embed en vivo. El
-# centroide de gusto se calcula en SQL (`avg(embedding)`) y se trae a Python como
-# LITERAL ::vector para el KNN de dos fases — mismo patrón de rendimiento que la
-# reco anónima (§4.2 del DESIGN, lección de M2).
+# El "Para ti" ya NO es el centroide de gusto (promedio ciego de embeddings de la
+# colección) — daba recomendaciones "puré" y rarunas. La señal buena es el GRAFO
+# de co-escucha real `lastfm_similar_artists` (getSimilar, simétrico, de calidad
+# demostrada) ya poblado en core:
+#   The Strokes → garage/indie,  Idles → post-punk.
+#
+# Algoritmo (dos fases, medido ~130ms para user 1):
+#   Fase 1 — AGREGACIÓN de co-escucha: por cada artista que el usuario POSEE, sus
+#     afines del grafo; se agregan por artista candidato (score = Σ match, n_anclas
+#     = cuántas de sus semillas lo apuntan, anclas = las 2 semillas de mayor match
+#     para el `porque`). Se excluyen los artistas que ya posee. Orden por score.
+#   Fase 2 — MEJOR OBRA por candidato sobre el conjunto YA REDUCIDO: por cada uno
+#     de los top-N candidatos, su mejor vinilo NO poseído (LATERAL, cap natural 1
+#     por artista); portada Discogs + artista solo sobre ese puñado.
+#
+# Requiere que el usuario tenga semillas EN el grafo (artistas de su colección con
+# afines fetchados). Sin semillas → [] honesto (el caller explica "conecta/espera");
+# NO cae al centroide viejo (retirado). Anónimo → [].
+#
+# NOTA — `taste_centroid_literal` (centroide de gusto de la colección) queda RETIRADO
+# con esta reescritura: su ÚNICO caller era el viejo `recommend_for_user`. No se
+# borra la referencia de embeddings de core (los OTROS caminos —afines de obra/
+# artista, mood, `recommend_from_listening`— siguen usando embeddings); pero el
+# "Para ti" ya no pasa por él.
 
+# Cuántos candidatos del grafo (ordenados por score) llevamos a la fase 2. Margen
+# amplio sobre `limit` para no quedarnos cortos si alguno no tiene obra válida en
+# vinilo tras el filtro anti-single / suelo de popularidad.
+_COESCUCHA_CAND_LIMIT = 60
 
-# Fase 2 del patrón de dos fases PARA RECO PERSONAL: idéntica a `_RECO_PHASE2_SQL`
-# pero arrastra `porque_kind` (para explicabilidad) — se junta portada/artista solo
-# sobre las pocas filas ya capadas. (No reusamos `_RECO_PHASE2_SQL` porque el CTE
-# personal excluye la colección y queremos el mismo contrato de salida.)
+# Suelo de popularidad LIGERO para la mejor obra del candidato: descarta fantasmas
+# (obra sin escuchas Y sin ediciones decentes) pero NO por popularidad alta — el
+# mainstream no es el objetivo, el score de co-escucha ya prioriza afinidad. Umbral
+# de ediciones intencionadamente bajo: solo corta lo verdaderamente residual.
+_COESCUCHA_MIN_RELEASES = 3
+
+# Fase 2 del patrón de dos fases para la reco PERSONAL por ESCUCHA (Last.fm, KNN de
+# centroide) — SIGUE viva (`recommend_from_listening`); es `_RECO_PHASE2_SQL`.
 _PERSONAL_PHASE2_SQL = _RECO_PHASE2_SQL
 
 
@@ -1383,90 +1415,125 @@ def _owned_work_ids(cur, user_id):
     return [row["work_id"] for row in cur.fetchall()]
 
 
-def taste_centroid_literal(cur, user_id):
-    """Centroide de gusto del usuario como LITERAL ::vector (texto '[x,y,…]').
+def _coescucha_porque(anclas):
+    """Frase-porqué CONCRETA desde las anclas de co-escucha: "porque tienes A y B".
 
-    Media de los embeddings de los works de su colección con embedding (una obra
-    cuenta UNA vez aunque tenga varias ediciones). Devuelve None si no hay ningún
-    work de colección con embedding (el caller degrada honesto). No pondera aún por
-    Last.fm — la colección sola ya es señal fuerte; ponderar por escucha es una
-    mejora acotada para M3b (anotada).
-    """
-    cur.execute(
-        """
-        WITH owned AS (
-            SELECT DISTINCT r.work_id
-            FROM user_collection uc
-            JOIN releases r ON r.id = uc.release_id
-            WHERE uc.user_id = %(u)s AND uc.release_id IS NOT NULL
-        )
-        SELECT avg(w.embedding)::vector(512)::text AS centroid,
-               count(*) AS n
-        FROM owned o
-        JOIN works w ON w.id = o.work_id
-        WHERE w.embedding IS NOT NULL
-        """,
-        {"u": user_id},
-    )
-    row = cur.fetchone()
-    if not row or not row["n"]:
+    `anclas` = las 1-2 semillas de la colección del usuario que más apuntan al
+    candidato (mayor match), ya ordenadas. Vacío → None (el caller lo omite)."""
+    anclas = [a for a in (anclas or []) if a]
+    if not anclas:
         return None
-    return row["centroid"]
+    if len(anclas) == 1:
+        return "porque tienes {}".format(anclas[0])
+    return "porque tienes {} y {}".format(anclas[0], anclas[1])
+
+
+# Fase 1: AGREGA co-escucha por artista candidato. Por cada artista que el usuario
+# POSEE (owned_artists), sus afines del grafo `lastfm_similar_artists`; se agrupan
+# por candidato con score = Σ match, n_anclas = nº de semillas que lo apuntan, y
+# `anclas` = las 2 semillas de mayor match (para el `porque`). Excluye artistas ya
+# poseídos. Orden por score DESC; solo los top-N pasan a fase 2. Query VALIDADA.
+_COESCUCHA_CAND_SQL = """
+    WITH owned AS (
+        SELECT DISTINCT r.work_id
+        FROM user_collection uc
+        JOIN releases r ON r.id = uc.release_id
+        WHERE uc.user_id = %(u)s AND uc.release_id IS NOT NULL
+    ),
+    owned_artists AS (
+        SELECT DISTINCT w.primary_artist_id AS aid
+        FROM owned o JOIN works w ON w.id = o.work_id
+    ),
+    cand AS (
+        SELECT s.similar_artist_id AS aid,
+               sum(s.match) AS score,
+               count(DISTINCT s.artist_id) AS n_anclas,
+               (array_agg(sa.name ORDER BY s.match DESC))[1:2] AS anclas
+        FROM lastfm_similar_artists s
+        JOIN owned_artists oa ON oa.aid = s.artist_id
+        JOIN artists sa ON sa.id = s.artist_id
+        WHERE s.similar_artist_id IS NOT NULL
+          AND s.similar_artist_id NOT IN (SELECT aid FROM owned_artists)
+        GROUP BY s.similar_artist_id
+    ),
+    cand_top AS (
+        SELECT * FROM cand ORDER BY score DESC LIMIT %(cand_lim)s
+    ),
+    best AS (
+        SELECT c.aid, c.score, c.n_anclas, c.anclas, bw.id AS work_id
+        FROM cand_top c
+        CROSS JOIN LATERAL (
+            SELECT w.id
+            FROM works w
+            JOIN artists a ON a.id = w.primary_artist_id
+            WHERE w.primary_artist_id = c.aid
+              AND w.has_vinyl = true
+              AND w.work_type = ANY(%(work_types)s::work_type[])
+              AND w.id NOT IN (SELECT work_id FROM owned)
+              AND (coalesce(w.lastfm_playcount, 0) > 0
+                   OR coalesce(w.releases_count, 0) >= %(min_rc)s)
+              AND {album_track_ok}
+              AND {artist_ok}
+            ORDER BY w.lastfm_playcount DESC NULLS LAST, w.releases_count DESC
+            LIMIT 1
+        ) bw
+    )
+    SELECT b.aid AS artist_id,
+           a.name AS artist_name,
+           b.score,
+           b.n_anclas,
+           b.anclas,
+           w.id,
+           w.title,
+           w.work_type,
+           w.year,
+           w.releases_count,
+           vc.preferred_thumb AS cover_thumb,
+           vc.preferred_url   AS cover_url
+    FROM best b
+    JOIN artists a ON a.id = b.aid
+    JOIN works w   ON w.id = b.work_id
+    LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb
+               FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = w.id
+    ORDER BY b.score DESC
+    LIMIT %(limit)s
+""".format(album_track_ok=_album_track_ok_sql("w"), artist_ok=_ARTIST_NOT_MORRALLA_SQL)
 
 
 def recommend_for_user(user_id, limit=12):
-    """Recomendación PERSONAL por centroide de gusto (embeddings de colección).
+    """"Para ti": recomendación PERSONAL por GRAFO DE CO-ESCUCHA (Last.fm getSimilar).
 
-    KNN dos fases sobre `works.embedding <=> (centroide de gusto)`, filtrando a
-    vinilo + obra de verdad + sin morralla de artista, EXCLUYENDO todo work de su
-    colección (exclude_owned) y capando 1 obra por artista (para variedad). Cada
-    fila lleva `porque` ("por tu gusto: …"). Sin colección con embeddings →
-    [] honesto (el caller lo explica; NO peta).
+    Dos fases (ver bloque de doc arriba): (1) agrega afines de los artistas de su
+    colección desde `lastfm_similar_artists` (score = Σ match, anclas = semillas de
+    mayor match), excluyendo artistas ya poseídos; (2) por cada top-candidato, su
+    MEJOR obra en vinilo NO poseída (studio_album/ep de verdad — anti-single
+    `_album_track_ok_sql`; suelo de popularidad ligero anti-fantasma), orden por
+    escuchas y luego ediciones. Una obra por artista (cap natural del LATERAL).
 
-    Rendimiento: el centroide viaja como literal ::vector → el KNN usa el índice
-    HNSW; portada/artista solo se juntan sobre el puñado ya capado (patrón M2).
-    """
+    Cada fila lleva `porque` CONCRETO ("porque tienes A y B") con anclas REALES de
+    su colección. Sin semillas en el grafo (usuario cuyos artistas aún no se han
+    fetchado) → [] honesto: el caller explica "conecta/espera"; NO cae al centroide
+    viejo (retirado). Anónimo → []."""
+    if not user_id:
+        return []
     with _cursor() as cur:
-        seed = taste_centroid_literal(cur, user_id)
-        if seed is None:
-            return []
-        owned = _owned_work_ids(cur, user_id)
-        owned_artists = _owned_artist_ids(cur, user_id)
-
-        cand_sql = """
-            WITH cand AS (
-                SELECT DISTINCT ON (w.primary_artist_id)
-                       w.id,
-                       w.primary_artist_id AS artist_id,
-                       (w.embedding <=> %(seed)s::vector) AS dist
-                FROM works w
-                JOIN artists a ON a.id = w.primary_artist_id
-                WHERE w.embedding IS NOT NULL
-                  AND w.has_vinyl = true
-                  AND w.work_type = ANY(%(work_types)s::work_type[])
-                  AND NOT (w.id = ANY(%(owned)s::bigint[]))
-                  AND NOT (w.primary_artist_id = ANY(%(owned_artists)s::bigint[]))
-                  AND {artist_ok}
-                ORDER BY w.primary_artist_id, w.embedding <=> %(seed)s::vector
-                LIMIT %(cand)s
-            )
-        """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL)
-        sql = cand_sql + _PERSONAL_PHASE2_SQL
-
-        cur.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
-        cur.execute(sql, {
-            "seed": seed,
+        cur.execute(_COESCUCHA_CAND_SQL, {
+            "u": user_id,
             "work_types": list(_RECO_WORK_TYPES),
-            "owned": owned or [0],
-            "owned_artists": owned_artists or [0],
-            "cand": _ANN_CANDIDATE_LIMIT,
+            "cand_lim": _COESCUCHA_CAND_LIMIT,
+            "min_rc": _COESCUCHA_MIN_RELEASES,
+            "limit": limit,
         })
         rows = cur.fetchall()
 
-    ranked = _rerank_candidates(rows, limit)
-    for r in ranked:
-        r["porque"] = "por tu gusto: en la onda de lo que tienes"
-    return ranked
+    out = []
+    for r in rows:
+        item = dict(r)
+        item["porque"] = _coescucha_porque(item.get("anclas"))
+        item.pop("anclas", None)
+        item.pop("score", None)
+        out.append(item)
+    return out
 
 
 def _owned_artist_ids(cur, user_id):

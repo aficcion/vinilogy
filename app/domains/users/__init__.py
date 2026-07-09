@@ -4,8 +4,8 @@ Fachada fina sobre db.py para la capa de USUARIO (la única que escribe en core,
 solo en `app_users`/`user_sessions` — es su función, no es DDL). Aquí viven:
   - auth ligera: crear invitado, abrir/validar/cerrar sesión (server-side).
   - dependencia FastAPI `current_user` (lee la cookie `vb_session` → user o None).
-  - resumen de colección + recomendación PERSONAL (centroide de gusto) + gap de
-    vinilo, delegando en db.py + pricing.
+  - resumen de colección + recomendación PERSONAL ("Para ti" por grafo de
+    co-escucha de Last.fm) + gap de vinilo, delegando en db.py + pricing.
 
 OAuth de Discogs/Last.fm es M3b (necesita credenciales + navegador): NO se cablea
 aquí. `providers` de un usuario se LEE (para saber si es invitado puro o ya tiene
@@ -121,11 +121,15 @@ def _fmt_money(amount, currency):
 
 
 def recommend_for_user(user_id, limit=12):
-    """Recomendación personal por centroide de gusto. [] honesto si el usuario no
-    tiene colección con embeddings (el caller lo explica)."""
-    from app.domains import press
-    items = db.recommend_for_user(user_id, limit=limit)
-    return press.enrich_porque_batch(items)
+    """"Para ti" por GRAFO DE CO-ESCUCHA (Last.fm getSimilar). [] honesto si el
+    usuario no tiene semillas en el grafo (el caller lo explica).
+
+    NO se pasa por press.enrich_porque_batch (a diferencia de M1): el `porque` de
+    esta sección ES la atribución a la co-escucha ("porque tienes A y B", con
+    anclas REALES de su colección) y ese es precisamente el valor de la sección —
+    la vibra de crítica sería otra sección, no esta (mismo criterio que
+    recommend_from_listening)."""
+    return db.recommend_for_user(user_id, limit=limit)
 
 
 def recommend_from_listening(user_id, limit=12):
