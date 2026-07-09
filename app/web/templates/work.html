@@ -6,7 +6,8 @@
   <div class="work-head">
     <div class="work-cover">
       {% if work.cover_url or work.cover_thumb %}
-        <img src="{{ work.cover_url or work.cover_thumb }}" alt="Portada de {{ work.title }}">
+        <img src="{{ work.cover_url or work.cover_thumb }}" alt="Portada de {{ work.title }}"
+             onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'card-cover-empty big',textContent:'♫'}))">
       {% else %}
         <div class="card-cover-empty big">♫</div>
       {% endif %}

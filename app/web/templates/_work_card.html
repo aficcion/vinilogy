@@ -2,7 +2,8 @@
 <a class="card" href="/obra/{{ w.id }}">
   <div class="card-cover">
     {% if w.cover_thumb or w.cover_url %}
-      <img src="{{ w.cover_thumb or w.cover_url }}" alt="" loading="lazy">
+      <img src="{{ w.cover_thumb or w.cover_url }}" alt="" loading="lazy"
+           onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'card-cover-empty',textContent:'♫'}))">
     {% else %}
       <div class="card-cover-empty">♫</div>
     {% endif %}
