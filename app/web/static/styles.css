@@ -118,6 +118,10 @@ th { color: var(--ink-3); font-weight: 600; font-size: 12px; text-transform: upp
 /* Artist page */
 .artist-head { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
 .artist-photo { width: 140px; height: 140px; object-fit: cover; border-radius: var(--radius); }
+.artist-photo-empty {
+  display: grid; place-items: center; background: var(--panel-2);
+  color: var(--ink-3); font-size: 56px; font-weight: 700;
+}
 .artist-meta { color: var(--ink-3); display: flex; gap: 14px; text-transform: capitalize; }
 .artist-bio { color: var(--ink-2); max-width: 640px; }
 
