@@ -195,6 +195,13 @@ def obra(request: Request, work_id: int):
     if not work:
         return _render(request, "404.html", what="obra", ident=work_id,
                        status_code=404, user=user)
+    # Regla de portada OBLIGATORIA en TODAS partes (incluida la ficha): un disco sin
+    # portada de Discogs no se muestra. Se pide a Discogs (para la próxima); si no se
+    # puede recuperar, se queda en 404.
+    if not (work.get("cover_thumb") or work.get("cover_url")):
+        covers.request_missing(work)
+        return _render(request, "404.html", what="obra", ident=work_id,
+                       status_code=404, user=user)
     editions = catalog.get_work_vinyl_editions(work_id)
     tracklist = catalog.get_work_tracklist(work_id)
     prices = pricing.get_prices_for_work(work_id)
