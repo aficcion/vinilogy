@@ -15,6 +15,31 @@ import os
 # Permitir `python3 tests/selftest.py` además de `-m tests.selftest`.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+
+def _load_dotenv():
+    """Carga `.env` de la raíz del repo en os.environ SIN pisar lo ya definido.
+
+    Ligero (sin dependencia externa). Así el comando documentado del gate
+    (`.venv/bin/python -m tests.selftest`) tiene DSN/credenciales disponibles;
+    el selftest NO hace red real, pero deja el entorno como en producción.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, ".env")
+    if not os.path.exists(path):
+        return
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key, val = key.strip(), val.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = val
+
+
+_load_dotenv()
+
 from app import db  # noqa: E402
 
 _FAILS = []
@@ -863,6 +888,11 @@ def run_checks(fx):
     # -----------------------------------------------------------------------
     run_m3b_checks(fx)
 
+    # -----------------------------------------------------------------------
+    # cover-backfill — recuperación de portadas desde Discogs (SIN red real)
+    # -----------------------------------------------------------------------
+    run_covers_checks(fx)
+
 
 def run_m3a_checks(fx):
     from app.domains import users
@@ -1196,6 +1226,169 @@ def run_m3b_checks(fx):
     st2 = fs_exp.put({"provider": "lastfm"})
     check("FlowStore: estado caducado → None",
           fs_exp.pop(st2) is None, "caducado no dio None")
+
+
+def run_covers_checks(fx):
+    """cover-backfill: parser, upsert, needs_reliable_cover, enqueue dedup.
+
+    SIN red real (mock del cliente Discogs). El upsert usa un work_id real SIN
+    cover de Discogs y LIMPIA la fila de test al terminar (nunca deja basura).
+    """
+    from app.domains import covers
+
+    # -- Fixtures por SQL: works por fuente de portada --
+    caa_only = _q("""
+        SELECT ci.work_id FROM cover_images ci
+        WHERE ci.source = 'caa'
+          AND NOT EXISTS (SELECT 1 FROM cover_images d
+                          WHERE d.work_id = ci.work_id AND d.source = 'discogs')
+        LIMIT 1
+    """)
+    with_discogs = _q(
+        "SELECT work_id FROM cover_images WHERE source='discogs' LIMIT 1")
+    no_cover = _q("""
+        SELECT w.id AS work_id FROM works w
+        WHERE w.has_vinyl = true
+          AND NOT EXISTS (SELECT 1 FROM cover_images ci WHERE ci.work_id = w.id)
+        LIMIT 1
+    """)
+
+    # -- Parser (MOCK, sin red): master con primary+secondary → primary --
+    mock_images = [
+        {"type": "secondary", "uri": "https://i.discogs.com/sec.jpg",
+         "uri150": "https://i.discogs.com/sec150.jpg"},
+        {"type": "primary", "uri": "https://i.discogs.com/prim.jpg",
+         "uri150": "https://i.discogs.com/prim150.jpg"},
+    ]
+    picked = covers._pick_primary_image(mock_images)
+    check("covers: parser elige la imagen 'primary' (uri + uri150)",
+          picked == ("https://i.discogs.com/prim.jpg",
+                     "https://i.discogs.com/prim150.jpg"),
+          "picked={}".format(picked))
+    check("covers: parser sin images → None",
+          covers._pick_primary_image(None) is None
+          and covers._pick_primary_image([]) is None,
+          "no devolvió None sin images")
+    # Sin 'primary' → primera imagen.
+    first = covers._pick_primary_image(
+        [{"uri": "https://i.discogs.com/a.jpg", "uri150": "https://i.discogs.com/a150.jpg"}])
+    check("covers: parser sin 'primary' → primera imagen",
+          first == ("https://i.discogs.com/a.jpg", "https://i.discogs.com/a150.jpg"),
+          "first={}".format(first))
+
+    # -- fetch_cover con cliente mockeado (sin red): master trae imagen --
+    _orig_get_json = covers._get_json
+    try:
+        covers._get_json = lambda path: (
+            {"images": mock_images} if path.startswith("/masters/") else None)
+        fc = covers.fetch_cover(123, 456)
+        check("covers: fetch_cover usa el MASTER (mock, sin red)",
+              fc == ("https://i.discogs.com/prim.jpg",
+                     "https://i.discogs.com/prim150.jpg"),
+              "fc={}".format(fc))
+        # Master sin imagen → cae al release.
+        covers._get_json = lambda path: (
+            {"images": mock_images} if path.startswith("/releases/") else {"images": []})
+        fc2 = covers.fetch_cover(123, 456)
+        check("covers: fetch_cover cae al RELEASE si el master no trae imagen",
+              fc2 == ("https://i.discogs.com/prim.jpg",
+                      "https://i.discogs.com/prim150.jpg"),
+              "fc2={}".format(fc2))
+        # Ninguno trae imagen → None.
+        covers._get_json = lambda path: {"images": []}
+        check("covers: fetch_cover None si ni master ni release traen imagen",
+              covers.fetch_cover(123, 456) is None, "no dio None")
+    finally:
+        covers._get_json = _orig_get_json
+
+    # -- needs_reliable_cover: solo-CAA → True, discogs → False, sin cover → True --
+    if caa_only:
+        wid = caa_only[0]["work_id"]
+        src = db.cover_sources_for_works([wid])[wid]
+        check("covers: needs_reliable_cover(solo CAA) → True",
+              covers.needs_reliable_cover(
+                  {"id": wid, "cover_url": "https://coverartarchive.org/x.jpg",
+                   "has_caa": src["has_caa"], "has_discogs": src["has_discogs"]}),
+              "solo-CAA no marcó needs")
+        check("covers: db.cover_sources_for_works(solo CAA) = has_caa sin discogs",
+              src["has_caa"] and not src["has_discogs"], "src={}".format(src))
+    else:
+        print("SKIP  covers: sin work solo-CAA en core")
+    if with_discogs:
+        wid = with_discogs[0]["work_id"]
+        src = db.cover_sources_for_works([wid])[wid]
+        check("covers: needs_reliable_cover(con Discogs) → False",
+              not covers.needs_reliable_cover(
+                  {"id": wid, "cover_url": "https://i.discogs.com/x.jpg",
+                   "has_discogs": src["has_discogs"]}),
+              "con-discogs marcó needs")
+        check("covers: db.cover_sources_for_works(con Discogs).has_discogs",
+              src["has_discogs"], "src={}".format(src))
+    if no_cover:
+        wid = no_cover[0]["work_id"]
+        check("covers: needs_reliable_cover(sin cover) → True",
+              covers.needs_reliable_cover({"id": wid, "cover_url": None}),
+              "sin-cover no marcó needs")
+        check("covers: db.cover_sources_for_works(sin cover) no aparece",
+              db.cover_sources_for_works([wid]) == {}, "apareció sin cover")
+
+    # -- Upsert real + limpieza garantizada (work SIN discogs previo) --
+    if caa_only:
+        test_wid = caa_only[0]["work_id"]
+        try:
+            before = db.cover_sources_for_works([test_wid])[test_wid]
+            covers.store_cover(test_wid,
+                               "https://i.discogs.com/TEST.jpg",
+                               "https://i.discogs.com/TEST150.jpg")
+            after = db.cover_sources_for_works([test_wid])[test_wid]
+            check("covers: store_cover inserta la fila source='discogs'",
+                  (not before["has_discogs"]) and after["has_discogs"],
+                  "before={} after={}".format(before, after))
+            check("covers: tras store_cover, needs_reliable_cover → False",
+                  not covers.needs_reliable_cover(
+                      {"id": test_wid, "has_discogs": after["has_discogs"]}),
+                  "seguía marcando needs tras store")
+            # Upsert idempotente: segunda escritura no duplica (PK work_id,source).
+            covers.store_cover(test_wid, "https://i.discogs.com/TEST2.jpg", None)
+            rows = _q("SELECT url FROM cover_images WHERE work_id=%(w)s "
+                      "AND source='discogs'", {"w": test_wid})
+            check("covers: store_cover es UPSERT (1 fila, url actualizada)",
+                  len(rows) == 1 and rows[0]["url"] == "https://i.discogs.com/TEST2.jpg",
+                  "rows={}".format(rows))
+        finally:
+            # LIMPIEZA: borrar la fila de test (nunca dejar basura de test en core).
+            with db._cursor() as cur:
+                cur.execute("DELETE FROM cover_images WHERE work_id=%(w)s "
+                            "AND source='discogs'", {"w": test_wid})
+            leftover = db.cover_sources_for_works([test_wid]).get(test_wid, {})
+            check("covers: limpieza — fila discogs de test borrada",
+                  not leftover.get("has_discogs"),
+                  "quedó basura: {}".format(leftover))
+
+    # -- Enqueue: no bloquea y es dedup (mismo id 2x → 1 sola vez) --
+    from app.domains.covers import _CoverWorker
+    w = _CoverWorker()
+    # Encolar sin arrancar red: inspeccionamos la cola interna directamente.
+    w._queue.clear(); w._queued.clear()
+    with w._cv:
+        for wid in (777, 777, 778):
+            if wid not in w._queued and wid not in w._tried:
+                w._queue[wid] = True
+                w._queued.add(wid)
+    check("covers: enqueue dedup (777 dos veces → una sola en cola)",
+          list(w._queue.keys()) == [777, 778],
+          "cola={}".format(list(w._queue.keys())))
+    # request_missing NO bloquea y filtra por needs (mide O(1), sin red).
+    # Flag OFF durante la medición → no arranca el worker ni toca Discogs (el
+    # selftest NUNCA hace llamadas de red reales).
+    import time as _t
+    with _env({"VINYLBE_COVER_BACKFILL": "0"}):
+        t0 = _t.perf_counter()
+        covers.request_missing(
+            [{"id": 999001, "cover_url": "https://coverartarchive.org/x.jpg"}] * 50)
+        dt = _t.perf_counter() - t0
+    check("covers: request_missing(50 works) es no-bloqueante (<50ms)",
+          dt < 0.05, "tardó {:.3f}s".format(dt))
 
 
 def secrets_token():

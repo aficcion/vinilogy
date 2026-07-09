@@ -22,7 +22,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.domains import catalog, pricing, reco, editorial, press, users
+from app.domains import catalog, pricing, reco, editorial, press, users, covers
 from app.domains.users import oauth
 
 _HERE = os.path.dirname(__file__)
@@ -112,6 +112,10 @@ def buscar(request: Request, q: str = ""):
                                exclude_user_id=uid)
         if q else None
     )
+    # Backfill de portadas sin bloquear: los works listados + los afines.
+    covers.request_missing(results["works"])
+    if affines:
+        covers.request_missing(affines.get("results"))
     return _render(
         request, "search.html",
         q=q,
@@ -138,6 +142,10 @@ def obra(request: Request, work_id: int):
     similar_press = reco.similar_by_press_to_work(work_id)
     artist = catalog.get_artist(work["artist_id"])
     artist_bio = catalog.artist_bio_excerpt(artist)
+    # Backfill de portadas sin bloquear: la obra + sus afines (contenido y prensa).
+    covers.request_missing(work)
+    covers.request_missing(similar)
+    covers.request_missing(similar_press)
     return _render(
         request, "work.html",
         work=work,
@@ -162,6 +170,9 @@ def artista(request: Request, artist_id: int):
                        status_code=404, user=user)
     discography = catalog.get_artist_discography(artist_id)
     similar = reco.similar_to_artist(artist_id, exclude_user_id=uid)
+    # Backfill de portadas sin bloquear: discografía + afines.
+    covers.request_missing(discography)
+    covers.request_missing(similar)
     return _render(
         request, "artist.html",
         artist=artist,
@@ -179,6 +190,8 @@ def vibra(request: Request, mood: str = "", q: str = ""):
     chips = editorial.list_mood_chips()
     result = (editorial.recommend_by_mood(entry, exclude_user_id=uid)
               if entry else None)
+    if result:
+        covers.request_missing(result.get("results"))
     return _render(
         request, "vibra.html",
         entry=entry,
@@ -214,6 +227,10 @@ def mi(request: Request):
         listening = f_listening.result()
         gap = f_gap.result()
         gap_total = f_gap_total.result()
+    # Backfill de portadas sin bloquear: las 3 secciones de /mi.
+    covers.request_missing(for_you)
+    covers.request_missing(listening)
+    covers.request_missing(gap)
     return _render(
         request, "mi.html",
         user=user,
