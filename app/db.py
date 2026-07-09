@@ -192,7 +192,7 @@ def search_works(q, limit=20):
                cand2.trgm_sim
         FROM cand2
         JOIN artists a ON a.id = cand2.primary_artist_id
-        LEFT JOIN v_work_cover vc ON vc.work_id = cand2.id
+        LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = cand2.id
         ORDER BY cand2.fts_rank DESC,
                  cand2.trgm_sim DESC,
                  cand2.releases_count DESC NULLS LAST
@@ -259,7 +259,7 @@ def get_work(work_id):
                COALESCE(s.styles, ARRAY[]::text[]) AS styles
         FROM works w
         JOIN artists a ON a.id = w.primary_artist_id
-        LEFT JOIN v_work_cover vc ON vc.work_id = w.id
+        LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = w.id
         LEFT JOIN LATERAL (
             SELECT array_agg(gn.name ORDER BY gn.name) AS genres
             FROM work_genres wg JOIN genres gn ON gn.id = wg.genre_id
@@ -401,7 +401,7 @@ def get_artist_discography(artist_id, limit=40):
                vc.preferred_thumb AS cover_thumb,
                vc.preferred_url   AS cover_url
         FROM works w
-        LEFT JOIN v_work_cover vc ON vc.work_id = w.id
+        LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = w.id
         WHERE w.primary_artist_id = %(artist_id)s
           AND w.has_vinyl = true
           AND w.work_type = ANY(%(work_types)s::work_type[])
@@ -752,7 +752,7 @@ _RECO_PHASE2_SQL = """
     FROM cand
     JOIN works w   ON w.id = cand.id
     JOIN artists a ON a.id = cand.artist_id
-    LEFT JOIN v_work_cover vc ON vc.work_id = w.id
+    LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = w.id
     WHERE {album_track_ok}
     ORDER BY cand.dist
 """.format(album_track_ok=_album_track_ok_sql("w"))
@@ -1065,7 +1065,7 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
                vc.preferred_url   AS cover_url,
                p.style_hits, p.tag_hits, p.matched_styles
         FROM picked p
-        LEFT JOIN v_work_cover vc ON vc.work_id = p.id
+        LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = p.id
         JOIN works w ON w.id = p.id
         WHERE {album_track_ok}
         ORDER BY (p.style_hits + p.tag_hits) DESC,
@@ -1776,7 +1776,7 @@ def vinyl_gap(user_id, limit=24, per_artist_cap=2):
                    vc.preferred_url   AS cover_url
             FROM picked p
             JOIN artists a ON a.id = p.primary_artist_id
-            LEFT JOIN v_work_cover vc ON vc.work_id = p.id
+            LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = p.id
             ORDER BY p.releases_count DESC NULLS LAST
         """, {"u": user_id, "cap": per_artist_cap, "limit": limit})
         rows = cur.fetchall()
