@@ -2,9 +2,40 @@
 {% block title %}{% if q %}“{{ q }}” · {% endif %}Buscar · Vinylbe{% endblock %}
 {% block content %}
 
-{% if not q %}
+{% if mode == 'selection' %}
+  {# ---- Búsqueda por SELECCIÓN (chips): mejores por artista + combinadas ---- #}
+  <h1 class="page-title">Tu selección</h1>
+
+  {% for blk in artist_blocks %}
+  <section class="block">
+    <h2>Mejores de <a href="/artista/{{ blk.artist_id }}">{{ blk.artist_name }}</a></h2>
+    <p class="hint">Sus mejores álbumes en vinilo{% if user %}, que aún no tienes{% endif %}.</p>
+    <div class="grid">
+      {% for w in blk.works %}{% include "_work_card.html" %}{% endfor %}
+    </div>
+  </section>
+  {% endfor %}
+
+  <section class="block reco-block">
+    <h2>En la onda de tu selección</h2>
+    {% if combined and combined.results %}
+      <p class="hint">Otros artistas afines a lo que has elegido, con vinilo.</p>
+      <div class="grid">
+        {% for w in combined.results %}{% include "_reco_card.html" %}{% endfor %}
+      </div>
+    {% else %}
+      <p class="empty">No hemos encontrado afines para tu selección.</p>
+    {% endif %}
+  </section>
+
+  {% if not artist_blocks and not (combined and combined.results) %}
+    <p class="empty">Tu selección no ha dado resultados con vinilo y portada.</p>
+  {% endif %}
+
+{% elif not q %}
   <p class="empty">Escribe algo en el buscador para empezar.</p>
 {% else %}
+  {# ---- Búsqueda por TEXTO (§1): artistas + discos en bloques ---- #}
   <h1 class="page-title">Resultados para “{{ q }}”</h1>
 
   {% if artists %}

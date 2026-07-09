@@ -7,7 +7,7 @@ honesta (lista vacía + los chips sugeridos), NUNCA inventa.
 Límite one-way: editorial depende de db (y del léxico); nada depende de editorial.
 """
 from app import db
-from app.domains import press
+from app.domains import press, covers
 from app.domains.editorial import mood_lexicon
 
 
@@ -40,14 +40,16 @@ def recommend_by_mood(text_or_key, limit=20, exclude_user_id=None):
     if not mood:
         return {"mood": None, "results": [], "suggestions": suggestions}
 
-    rows = db.works_by_styles_and_tags(
+    res = db.works_by_styles_and_tags(
         style_names=mood["styles"],
         tag_whitelist=mood.get("tags"),
         limit=limit,
         exclude_user_id=exclude_user_id,
     )
+    # Convergencia de portada: encolar los candidatos de mood sin portada.
+    covers.request_missing_ids(res.get("missing_cover_ids"))
     items = []
-    for r in rows:
+    for r in res.get("works", []):
         r = dict(r)
         r["porque"] = _porque_for(mood, r)
         items.append(r)

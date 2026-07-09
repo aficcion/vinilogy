@@ -68,10 +68,107 @@ def _album_track_ok_sql(work_alias="w"):
     ).format(w=work_alias, n=_MIN_ALBUM_TRACKS)
 
 
+# Regla TRANSVERSAL de PORTADA OBLIGATORIA: un work solo se MUESTRA si tiene una
+# portada de Discogs en `cover_images` (source='discogs'). Se añade al WHERE de
+# TODA query que devuelva works a mostrar (search, todas las recos, afines,
+# discografía, mood, gap, multi-seed).
+#
+# CONVERGENCIA (crítico): este predicado NUNCA se aplica a solas — cada camino
+# calcula candidatos SIN filtro de portada primero, ENCOLA en el worker de covers
+# los candidatos aún sin portada, y solo DESPUÉS filtra por esta condición. Si
+# solo se consultaran los ya-con-portada, los nuevos jamás se pedirían. Por eso los
+# callers piden un candidate-limit HOLGADO y devuelven, además de los works a
+# mostrar, los ids de candidatos SIN portada para que el router los encole.
+#
+# RENDIMIENTO: cuando el conjunto de candidatos ya está ACOTADO (fase 2 / CTE
+# `cand` capado), este EXISTS por work_id usa `cover_images_work_id_idx` y es
+# barato. NUNCA aplicarlo sobre un conjunto de millones de works sin acotar antes
+# (el planner tiende a barrer las ~205K filas discogs de `cover_images` y a
+# re-ejecutar el candidato por cada una — ver nota en `search_works`).
+def _has_discogs_cover_sql(work_alias="w"):
+    """Predicado SQL: `<alias>` tiene portada de Discogs en `cover_images`."""
+    return (
+        "EXISTS (SELECT 1 FROM cover_images ci_hdc"
+        " WHERE ci_hdc.work_id = {w}.id AND ci_hdc.source = 'discogs')"
+    ).format(w=work_alias)
+
+
+# Normalización US→UK de la query ANTES de buscar (el catálogo de core rotula en
+# grafía británica con frecuencia). Palabra COMPLETA, case-insensitive; no toca
+# subcadenas ("colored" no pasa a "coloured" por accidente — el mapa es por token).
+# Los ~20 pares comunes. Se aplica a works y artists.
+_US_UK_SPELLING = {
+    "favorite": "favourite",
+    "favorites": "favourites",
+    "color": "colour",
+    "colors": "colours",
+    "colored": "coloured",
+    "honor": "honour",
+    "honors": "honours",
+    "theater": "theatre",
+    "theaters": "theatres",
+    "catalog": "catalogue",
+    "catalogs": "catalogue",
+    "analog": "analogue",
+    "license": "licence",
+    "defense": "defence",
+    "gray": "grey",
+    "traveled": "travelled",
+    "traveling": "travelling",
+    "traveler": "traveller",
+    "labor": "labour",
+    "neighbor": "neighbour",
+    "neighbors": "neighbours",
+    "rumor": "rumour",
+    "rumors": "rumours",
+    "harbor": "harbour",
+    "flavor": "flavour",
+    "flavors": "flavours",
+    "behavior": "behaviour",
+    "center": "centre",
+    "centers": "centres",
+    "meter": "metre",
+    "fiber": "fibre",
+    "liter": "litre",
+    "organize": "organise",
+    "realize": "realise",
+    "apologize": "apologise",
+}
+
+# Mínimo de caracteres de la query (más corto → sin resultados). Contrato del spec.
+_SEARCH_MIN_CHARS = 3
+
+
+def normalize_search_query(q):
+    """Normaliza la query de búsqueda: trim + US→UK por palabra completa.
+
+    Devuelve la query normalizada (misma si no hay nada que mapear). El mínimo de
+    caracteres lo comprueba el caller (query < 3 → sin resultados)."""
+    q = (q or "").strip()
+    if not q:
+        return q
+    import re
+    def _sub(m):
+        w = m.group(0)
+        repl = _US_UK_SPELLING.get(w.lower())
+        return repl if repl else w
+    return re.sub(r"[A-Za-z]+", _sub, q)
+
+
 # Candidatos holgados a traer del índice ANN antes de filtrar/capar por artista.
 # Filtramos POST-índice (has_vinyl, work_type, exclusión de artista, cap 1/artista),
 # así que pedimos un margen amplio para no quedarnos cortos tras el capado.
-_ANN_CANDIDATE_LIMIT = 400
+# 200 candidatos del ANN: suficiente para rellenar `limit` tras el cap 1/artista +
+# el filtro de portada, y ~2× más rápido que 400 (medido: KNN 1,6s→0,8s, mismos 12
+# resultados) — clave para el presupuesto de <3s de /buscar/obra/artista.
+_ANN_CANDIDATE_LIMIT = 200
+
+# Factor de holgura del pool que se rerankea ANTES de filtrar por portada de
+# Discogs (regla transversal + convergencia): se rerankea `limit * factor` para que,
+# tras descartar los que aún no tienen portada (y encolarlos), queden suficientes
+# CON portada hasta `limit`. Como ~83% de works con vinilo no tienen portada aún, el
+# factor es amplio; los que faltan se van poblando por el worker de covers.
+_COVER_POOL_FACTOR = 6
 
 # Boost de popularidad en el re-rank de contenido. La distancia coseno manda; el
 # boost es un empujón SUAVE (log escalado) para que, a distancias parecidas, gane
@@ -130,109 +227,211 @@ def _close_pool():
 # Búsqueda
 # ---------------------------------------------------------------------------
 
-def search_works(q, limit=20):
-    """Works que casan `q`, SOLO con vinilo.
+# Candidatos holgados de búsqueda antes del filtro de portada. Se pide MARGEN
+# porque muchos candidatos aún no tienen portada de Discogs (se encolan y caen del
+# resultado hasta que el worker las trae). Con margen amplio quedan suficientes CON
+# portada tras el filtro.
+_SEARCH_CAND_LIMIT = 120
 
-    Combina full-text (search_doc @@ websearch) con trigram sobre el título
-    para tolerar typos/parciales. Orden por relevancia FTS y luego popularidad
-    (releases_count DESC NULLS LAST). Incluye artista y cover.
+
+def search_works(q, limit=20):
+    """Works que casan `q`, cumpliendo la regla TRANSVERSAL (vinilo + álbum/EP +
+    anti-single + PORTADA de Discogs). Devuelve un dict:
+        {"works": [filas a mostrar, con portada],
+         "missing_cover_ids": [ids de candidatos SIN portada, para encolar]}
+
+    Ranking (spec): exacto de título primero (CASE), luego `ts_rank` de FTS, luego
+    popularidad (`lastfm_playcount DESC NULLS LAST, releases_count DESC NULLS LAST`).
+    El TRIGRAM va SOLO en el WHERE (typos), NUNCA en el ORDER BY.
+
+    CONVERGENCIA: `cand` calcula candidatos SIN el filtro de portada; se aplican
+    los filtros de álbum/anti-single en `showable`; de esos, `missing_cover_ids`
+    son los que aún NO tienen portada de Discogs (el router los encola) y `works`
+    los que SÍ (se muestran hasta `limit`).
+
+    RENDIMIENTO (crítico): las CTE van `MATERIALIZED` para que la fase de ranking
+    corra UNA vez; y el filtro de portada se hace restringiendo `cover_images` a los
+    ids candidatos (`work_id = ANY(...)`) — NO con un EXISTS que el planner
+    convertiría en un barrido de las ~205K filas discogs re-ejecutando el candidato
+    por cada una (medido: 27s → <1s).
     """
-    q = (q or "").strip()
-    if not q:
-        return []
-    # Dos fases: el ranking FTS+trgm y el LIMIT se resuelven sobre `works` PURO
-    # (sin cover ni artists); la portada (v_work_cover, cara) y el artista se juntan
-    # DESPUÉS, sobre las <=limit filas ya elegidas — no sobre todo el conjunto que
-    # casa la búsqueda. Semántica idéntica (mismo orden, mismo LIMIT).
+    q = normalize_search_query(q)
+    if not q or len(q) < _SEARCH_MIN_CHARS:
+        return {"works": [], "missing_cover_ids": []}
     sql = """
-        WITH cand AS (
-            SELECT w.id,
-                   w.title,
-                   w.work_type,
-                   w.year,
-                   w.releases_count,
-                   w.primary_artist_id,
-                   ts_rank(w.search_doc,
-                           websearch_to_tsquery('simple', %(q)s)) AS fts_rank,
-                   similarity(lower(immutable_unaccent(w.title)),
-                              lower(immutable_unaccent(%(q)s)))    AS trgm_sim
-            FROM works w
+        WITH params AS MATERIALIZED (
+            SELECT immutable_unaccent(%(q)s)               AS uq,
+                   lower(immutable_unaccent(%(q)s))        AS nq
+        ),
+        cand AS MATERIALIZED (
+            -- Ranking + LIMIT holgado SIN filtro de portada (convergencia) y SIN el
+            -- anti-single (que corre sobre este puñado, no sobre todo lo que casa).
+            SELECT w.id, w.title, w.work_type, w.year, w.releases_count,
+                   w.primary_artist_id, w.lastfm_playcount,
+                   ts_rank(w.search_doc, plainto_tsquery('simple', p.uq)) AS fts_rank
+            FROM works w, params p
             WHERE w.has_vinyl = true
+              AND w.work_type = ANY(%(work_types)s::work_type[])
               AND (
-                  w.search_doc @@ websearch_to_tsquery('simple', %(q)s)
-                  OR lower(immutable_unaccent(w.title)) %% lower(immutable_unaccent(%(q)s))
+                  w.search_doc @@ plainto_tsquery('simple', p.uq)
+                  OR lower(immutable_unaccent(w.title)) %% p.nq
               )
-            ORDER BY fts_rank DESC,
-                     trgm_sim DESC,
+            ORDER BY CASE WHEN lower(immutable_unaccent(w.title)) = p.nq
+                          THEN 0 ELSE 1 END,
+                     ts_rank(w.search_doc, plainto_tsquery('simple', p.uq)) DESC,
+                     w.lastfm_playcount DESC NULLS LAST,
                      w.releases_count DESC NULLS LAST
             LIMIT %(cand_limit)s
         ),
-        cand2 AS (
-            -- El filtro de single disfrazado (album_track_ok) se aplica AQUÍ, sobre
-            -- el puñado YA rankeado/limitado por FTS (cand_limit = limit*3) — NO en
-            -- el WHERE de `cand`, donde el EXISTS de tracklist correría sobre TODO
-            -- el conjunto que casa la búsqueda (para "the"/"love" son miles → 20-27s).
+        albumok AS MATERIALIZED (
+            -- Candidatos que además son disco de verdad (anti-single disfrazado).
             SELECT c.* FROM cand c
-            JOIN works w ON w.id = c.id
-            WHERE {album_track_ok}
-            ORDER BY c.fts_rank DESC, c.trgm_sim DESC,
-                     c.releases_count DESC NULLS LAST
-            LIMIT %(limit)s
+            WHERE {album_track_ok_c}
+        ),
+        with_cover AS MATERIALIZED (
+            -- Restringir cover_images a los ids candidatos (usa el índice por
+            -- work_id) en vez de un EXISTS que barrería las 205K filas discogs.
+            SELECT DISTINCT work_id FROM cover_images
+            WHERE source = 'discogs'
+              AND work_id = ANY(ARRAY(SELECT id FROM albumok))
         )
-        SELECT cand2.id,
-               cand2.title,
-               cand2.work_type,
-               cand2.year,
-               cand2.releases_count,
+        SELECT ao.id, ao.title, ao.work_type, ao.year, ao.releases_count,
+               ao.fts_rank,
+               (ao.id IN (SELECT work_id FROM with_cover)) AS has_cover,
                a.id   AS artist_id,
                a.name AS artist_name,
                vc.preferred_thumb AS cover_thumb,
-               vc.preferred_url   AS cover_url,
-               cand2.fts_rank,
-               cand2.trgm_sim
-        FROM cand2
-        JOIN artists a ON a.id = cand2.primary_artist_id
-        LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = cand2.id
-        ORDER BY cand2.fts_rank DESC,
-                 cand2.trgm_sim DESC,
-                 cand2.releases_count DESC NULLS LAST
-    """.format(album_track_ok=_album_track_ok_sql("w"))
+               vc.preferred_url   AS cover_url
+        FROM albumok ao
+        CROSS JOIN params p
+        JOIN artists a ON a.id = ao.primary_artist_id
+        LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb
+                   FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = ao.id
+        ORDER BY CASE WHEN lower(immutable_unaccent(ao.title)) = p.nq
+                      THEN 0 ELSE 1 END,
+                 ao.fts_rank DESC,
+                 ao.lastfm_playcount DESC NULLS LAST,
+                 ao.releases_count DESC NULLS LAST
+    """.format(album_track_ok_c=_album_track_ok_sql("c"))
     with _cursor() as cur:
-        cur.execute(sql, {"q": q, "limit": limit, "cand_limit": limit * 3})
-        return cur.fetchall()
+        cur.execute(sql, {
+            "q": q,
+            "work_types": list(_DISCOGRAPHY_WORK_TYPES),
+            "cand_limit": _SEARCH_CAND_LIMIT,
+        })
+        rows = cur.fetchall()
+    works, missing = [], []
+    for r in rows:
+        r = dict(r)
+        has_cover = r.pop("has_cover", False)
+        if has_cover:
+            r["has_discogs"] = True  # señal para needs_reliable_cover
+            if len(works) < limit:
+                works.append(r)
+        else:
+            missing.append(r["id"])
+    return {"works": works, "missing_cover_ids": missing}
+
+
+def _clean_artist_name_sql(col="a.name"):
+    """SQL: nombre de artista SIN el disambiguador numérico de Discogs "(N)".
+
+    Discogs añade "(11)" a nombres homónimos ("Ace (11)"); NUNCA se muestra. Strip
+    del sufijo `\\s*\\(\\d+\\)$`. Se usa dondequiera que se exponga el nombre."""
+    return "regexp_replace({col}, '\\s*\\(\\d+\\)$', '')".format(col=col)
+
+
+def _clean_disambiguation_sql(col="a.disambiguation"):
+    """SQL: disambiguation SOLO si NO es numérica (la "(N)" de Discogs → NULL).
+
+    Una disambiguation que casa `^\\d+$` es la (N) de Discogs → se oculta (NULL)."""
+    return ("CASE WHEN {col} ~ '^[0-9]+$' THEN NULL ELSE {col} END").format(col=col)
 
 
 def search_artists(q, limit=20):
-    """Artistas por nombre/search_doc, prefiriendo `is_primary`.
+    """Artistas que casan `q`, DEDUP de homónimos y SIN "(N)" de Discogs.
 
-    Orden: primary primero, luego relevancia y `listeners DESC NULLS LAST`.
+    Solo artistas con ≥1 work MOSTRABLE (vinilo + álbum/EP + anti-single + portada
+    de Discogs) → los homónimos-basura sin discos caen. Dedup por nombre normalizado
+    (`name_clean`) quedándose con el canónico (is_primary DESC, nº de works
+    mostrables DESC, listeners DESC) → no salen dos "Geese".
+
+    Ranking (spec): boost exacto por `name_clean`=normalize(q) primero, `is_primary`,
+    luego `ts_rank` de FTS, luego `listeners DESC NULLS LAST`. Trigram SOLO en el
+    WHERE (typos), NUNCA en el ORDER BY. `disambiguation` numérica → NULL; `name`
+    sin la "(N)".
+
+    RENDIMIENTO (dos fases, medido <1s): `cand` rankea/limita barato por FTS+trgm
+    sobre `artists`; el filtro de work-mostrable (EXISTS acotado) y el dedup corren
+    sobre ese puñado, no sobre todo lo que casa.
     """
-    q = (q or "").strip()
-    if not q:
+    q = normalize_search_query(q)
+    if not q or len(q) < _SEARCH_MIN_CHARS:
         return []
     sql = """
-        SELECT a.id,
-               a.name,
-               a.kind,
-               a.disambiguation,
-               a.country,
-               a.is_primary,
-               a.listeners,
-               a.image_url,
-               ts_rank(a.search_doc, websearch_to_tsquery('simple', %(q)s)) AS fts_rank,
-               similarity(lower(immutable_unaccent(a.name)),
-                          lower(immutable_unaccent(%(q)s)))                  AS trgm_sim
-        FROM artists a
-        WHERE a.search_doc @@ websearch_to_tsquery('simple', %(q)s)
-           OR lower(immutable_unaccent(a.name)) %% lower(immutable_unaccent(%(q)s))
-        ORDER BY a.is_primary DESC,
-                 fts_rank DESC,
-                 a.listeners DESC NULLS LAST,
-                 trgm_sim DESC
+        WITH params AS MATERIALIZED (
+            SELECT immutable_unaccent(%(q)s)        AS uq,
+                   lower(immutable_unaccent(%(q)s)) AS nq
+        ),
+        cand AS MATERIALIZED (
+            SELECT a.id, a.name, a.name_clean, a.kind, a.disambiguation, a.country,
+                   a.is_primary, a.listeners, a.image_url,
+                   ts_rank(a.search_doc, plainto_tsquery('simple', p.uq)) AS fts_rank
+            FROM artists a, params p
+            WHERE a.search_doc @@ plainto_tsquery('simple', p.uq)
+               OR lower(immutable_unaccent(a.name)) %% p.nq
+            ORDER BY CASE WHEN a.name_clean = p.nq THEN 0 ELSE 1 END,
+                     a.is_primary DESC,
+                     ts_rank(a.search_doc, plainto_tsquery('simple', p.uq)) DESC,
+                     a.listeners DESC NULLS LAST
+            LIMIT %(cand_limit)s
+        ),
+        show_counts AS MATERIALIZED (
+            -- nº de works MOSTRABLES por artista candidato. CRÍTICO: se conduce por
+            -- `primary_artist_id = ANY(cand_ids)` (índice de works) y la portada se
+            -- comprueba por `work_id` — NO al revés. Un EXISTS/count conducido por
+            -- `cover_images WHERE source='discogs'` hace que el planner barra las
+            -- ~205K filas discogs por cada candidato (medido: ~100s). Solo aparecen
+            -- artistas con ≥1 work mostrable (los homónimos-basura sin discos caen).
+            SELECT w.primary_artist_id AS aid, count(*) AS n_works
+            FROM works w
+            WHERE w.primary_artist_id = ANY(ARRAY(SELECT id FROM cand))
+              AND w.has_vinyl = true
+              AND w.work_type = ANY(%(work_types)s::work_type[])
+              AND {album_track_ok_w}
+              AND {has_cover_w}
+            GROUP BY w.primary_artist_id
+        ),
+        deduped AS (
+            -- Dedup de homónimos por nombre normalizado: canónico = is_primary,
+            -- luego nº de works mostrables, luego listeners (no salen dos "Geese").
+            SELECT DISTINCT ON (c.name_clean) c.*, sc.n_works
+            FROM cand c JOIN show_counts sc ON sc.aid = c.id
+            ORDER BY c.name_clean, c.is_primary DESC, sc.n_works DESC,
+                     c.listeners DESC NULLS LAST
+        )
+        SELECT d.id,
+               {clean_name}   AS name,
+               d.kind,
+               {clean_disamb} AS disambiguation,
+               d.country, d.is_primary, d.listeners, d.image_url
+        FROM deduped d, params p
+        ORDER BY CASE WHEN d.name_clean = p.nq THEN 0 ELSE 1 END,
+                 d.is_primary DESC,
+                 d.fts_rank DESC,
+                 d.listeners DESC NULLS LAST
         LIMIT %(limit)s
-    """
+    """.format(album_track_ok_w=_album_track_ok_sql("w"),
+               has_cover_w=_has_discogs_cover_sql("w"),
+               clean_name=_clean_artist_name_sql("d.name"),
+               clean_disamb=_clean_disambiguation_sql("d.disambiguation"))
     with _cursor() as cur:
-        cur.execute(sql, {"q": q, "limit": limit})
+        cur.execute(sql, {
+            "q": q,
+            "work_types": list(_DISCOGRAPHY_WORK_TYPES),
+            "cand_limit": _SEARCH_CAND_LIMIT,
+            "limit": limit,
+        })
         return cur.fetchall()
 
 
@@ -251,8 +450,8 @@ def get_work(work_id):
                w.releases_count,
                w.has_vinyl,
                a.id   AS artist_id,
-               a.name AS artist_name,
-               a.disambiguation AS artist_disambiguation,
+               {clean_artist_name} AS artist_name,
+               {clean_artist_disamb} AS artist_disambiguation,
                vc.preferred_url   AS cover_url,
                vc.preferred_thumb AS cover_thumb,
                COALESCE(g.genres, ARRAY[]::text[]) AS genres,
@@ -271,7 +470,8 @@ def get_work(work_id):
             WHERE ws.work_id = w.id
         ) s ON true
         WHERE w.id = %(work_id)s
-    """
+    """.format(clean_artist_name=_clean_artist_name_sql("a.name"),
+               clean_artist_disamb=_clean_disambiguation_sql("a.disambiguation"))
     with _cursor() as cur:
         cur.execute(sql, {"work_id": work_id})
         return cur.fetchone()
@@ -364,17 +564,23 @@ def get_work_tracklist(work_id):
 # ---------------------------------------------------------------------------
 
 def get_artist(artist_id):
-    """Artista por id. None si no existe."""
-    sql = """
+    """Artista por id. None si no existe.
+
+    El nombre sale SIN la "(N)" de Discogs (`Ace (11)` → `Ace`) y la
+    `disambiguation` NUMÉRICA (la (N) de Discogs) se oculta (NULL) — solo se
+    devuelve si es texto real."""
+    sql = ("""
         SELECT a.id,
-               a.name,
+               {clean_name}   AS name,
                a.kind,
-               a.disambiguation,
+               {clean_disamb} AS disambiguation,
                a.country,
                a.is_primary,
                a.listeners,
                a.bio,
-               a.tags,
+               a.tags,""".format(
+            clean_name=_clean_artist_name_sql("a.name"),
+            clean_disamb=_clean_disambiguation_sql("a.disambiguation")) + """
                -- Last.fm quitó las fotos de artista: la estrella placeholder
                -- (hash 2a96cbd8…) está colada en image_url de ~38K artistas. La
                -- tratamos como SIN foto para que el front muestre el monograma.
@@ -382,45 +588,263 @@ def get_artist(artist_id):
                     THEN NULL ELSE a.image_url END AS image_url
         FROM artists a
         WHERE a.id = %(artist_id)s
-    """
+    """)
     with _cursor() as cur:
         cur.execute(sql, {"artist_id": artist_id})
         return cur.fetchone()
 
 
 def get_artist_discography(artist_id, limit=40):
-    """Discografía en vinilo del artista.
+    """Discografía en vinilo del artista, cumpliendo la regla TRANSVERSAL (vinilo +
+    álbum/EP + anti-single + PORTADA de Discogs). Devuelve un dict:
+        {"works": [filas a mostrar, con portada],
+         "missing_cover_ids": [ids de candidatos SIN portada, para encolar]}
 
-    SOLO has_vinyl. Filtro anti-morralla: work_type IN ('studio_album','ep').
     Orden por escuchas: lastfm_playcount DESC NULLS LAST, releases_count DESC
-    NULLS LAST (NUNCA cronológico — contrato del proyecto).
-    El playcount crudo NO se devuelve al render (regla de números).
+    NULLS LAST (NUNCA cronológico — contrato del proyecto). El playcount crudo NO
+    se devuelve al render (regla de números).
+
+    CONVERGENCIA: se calculan los candidatos (vinilo+álbum+anti-single) SIN el
+    filtro de portada; los que aún no tienen portada de Discogs van en
+    `missing_cover_ids` (el router los encola) y los que sí, en `works`.
     """
     sql = """
-        SELECT w.id,
-               w.title,
-               w.work_type,
-               w.year,
-               w.releases_count,
+        WITH cand AS MATERIALIZED (
+            SELECT w.id, w.title, w.work_type, w.year, w.releases_count,
+                   w.lastfm_playcount
+            FROM works w
+            WHERE w.primary_artist_id = %(artist_id)s
+              AND w.has_vinyl = true
+              AND w.work_type = ANY(%(work_types)s::work_type[])
+              AND {album_track_ok}
+            ORDER BY w.lastfm_playcount DESC NULLS LAST,
+                     w.releases_count DESC NULLS LAST
+            LIMIT %(cand_limit)s
+        ),
+        with_cover AS MATERIALIZED (
+            SELECT DISTINCT work_id FROM cover_images
+            WHERE source = 'discogs'
+              AND work_id = ANY(ARRAY(SELECT id FROM cand))
+        )
+        SELECT c.id, c.title, c.work_type, c.year, c.releases_count,
+               (c.id IN (SELECT work_id FROM with_cover)) AS has_cover,
                vc.preferred_thumb AS cover_thumb,
                vc.preferred_url   AS cover_url
-        FROM works w
-        LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = w.id
-        WHERE w.primary_artist_id = %(artist_id)s
-          AND w.has_vinyl = true
-          AND w.work_type = ANY(%(work_types)s::work_type[])
-          AND {album_track_ok}
-        ORDER BY w.lastfm_playcount DESC NULLS LAST,
-                 w.releases_count DESC NULLS LAST
-        LIMIT %(limit)s
+        FROM cand c
+        LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb
+                   FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = c.id
+        ORDER BY c.lastfm_playcount DESC NULLS LAST,
+                 c.releases_count DESC NULLS LAST
     """.format(album_track_ok=_album_track_ok_sql("w"))
     with _cursor() as cur:
         cur.execute(sql, {
             "artist_id": artist_id,
             "work_types": list(_DISCOGRAPHY_WORK_TYPES),
-            "limit": limit,
+            "cand_limit": max(limit * 3, _SEARCH_CAND_LIMIT),
         })
-        return cur.fetchall()
+        rows = cur.fetchall()
+    works, missing = [], []
+    for r in rows:
+        r = dict(r)
+        has_cover = r.pop("has_cover", False)
+        if has_cover:
+            r["has_discogs"] = True
+            if len(works) < limit:
+                works.append(r)
+        else:
+            missing.append(r["id"])
+    return {"works": works, "missing_cover_ids": missing}
+
+
+# ---------------------------------------------------------------------------
+# BÚSQUEDA POR SELECCIÓN (multi-select) — §6 del spec
+# ---------------------------------------------------------------------------
+#
+# El buscador nuevo deja seleccionar artistas y discos como CHIPS y produce:
+#   (1) por cada ARTISTA seleccionado, sus 3 mejores álbumes en vinilo NO poseídos;
+#   (2) recomendaciones COMBINADAS de co-escucha desde las semillas (artistas + los
+#       artistas de los works seleccionados), agregadas como recommend_for_user.
+# Todo con la regla transversal (vinilo + álbum/EP + anti-single + portada +
+# enqueue). La resolución de posesión solo aplica si el usuario tiene colección.
+
+
+def top_works_for_artists(artist_ids, per_artist=3, exclude_user_id=None):
+    """Los `per_artist` mejores álbumes en vinilo de cada artista seleccionado, NO
+    poseídos (si `exclude_user_id`). Regla transversal + convergencia.
+
+    Devuelve {"blocks": [{artist_id, artist_name, works:[...]}],
+              "missing_cover_ids": [...]}. Orden de works por escuchas/ediciones.
+    Los artistas se devuelven en el ORDEN de `artist_ids` recibido.
+    """
+    ids = [int(a) for a in (artist_ids or []) if a is not None]
+    if not ids:
+        return {"blocks": [], "missing_cover_ids": []}
+    with _cursor() as cur:
+        owned = _owned_work_ids(cur, exclude_user_id) if exclude_user_id else []
+        cur.execute("""
+            WITH sel AS (
+                SELECT unnest(%(ids)s::bigint[]) AS artist_id
+            ),
+            ranked AS MATERIALIZED (
+                SELECT w.id, w.title, w.work_type, w.year, w.releases_count,
+                       w.primary_artist_id AS artist_id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY w.primary_artist_id
+                           ORDER BY w.lastfm_playcount DESC NULLS LAST,
+                                    w.releases_count DESC NULLS LAST) AS rn
+                FROM works w
+                JOIN sel ON sel.artist_id = w.primary_artist_id
+                WHERE w.has_vinyl = true
+                  AND w.work_type = ANY(%(work_types)s::work_type[])
+                  AND NOT (w.id = ANY(%(owned)s::bigint[]))
+                  AND {album_track_ok_w}
+            ),
+            picked AS MATERIALIZED (
+                SELECT * FROM ranked WHERE rn <= %(pool)s
+            ),
+            with_cover AS MATERIALIZED (
+                SELECT DISTINCT work_id FROM cover_images
+                WHERE source = 'discogs'
+                  AND work_id = ANY(ARRAY(SELECT id FROM picked))
+            )
+            SELECT p.id, p.title, p.work_type, p.year, p.releases_count,
+                   p.artist_id, a.name AS artist_name, p.rn,
+                   (p.id IN (SELECT work_id FROM with_cover)) AS has_cover,
+                   vc.preferred_thumb AS cover_thumb, vc.preferred_url AS cover_url
+            FROM picked p
+            JOIN artists a ON a.id = p.artist_id
+            LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb
+                       FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = p.id
+            ORDER BY p.artist_id, p.rn
+        """.format(album_track_ok_w=_album_track_ok_sql("w")),
+            {"ids": ids, "work_types": list(_DISCOGRAPHY_WORK_TYPES),
+             "owned": owned or [0],
+             "pool": max(per_artist * _COVER_POOL_FACTOR, 12)})
+        rows = cur.fetchall()
+
+    by_artist, missing = {}, []
+    for r in rows:
+        r = dict(r)
+        aid = r["artist_id"]
+        if r.pop("has_cover", False):
+            slot = by_artist.setdefault(aid, {
+                "artist_id": aid, "artist_name": r["artist_name"], "works": []})
+            if len(slot["works"]) < per_artist:
+                r["has_discogs"] = True
+                r.pop("rn", None)
+                slot["works"].append(r)
+        else:
+            missing.append(r["id"])
+    # Preservar el orden de selección; solo bloques con al menos un work mostrable.
+    blocks = [by_artist[a] for a in ids if a in by_artist and by_artist[a]["works"]]
+    return {"blocks": blocks, "missing_cover_ids": missing}
+
+
+def coescucha_from_seed_artists(seed_artist_ids, limit=12, exclude_user_id=None):
+    """Recomendación COMBINADA de co-escucha desde semillas EXPLÍCITAS de artistas.
+
+    Espejo de `recommend_for_user` pero las semillas son los `seed_artist_ids`
+    (artistas seleccionados + los artistas de los works seleccionados) en vez de la
+    colección. Agrega afines del grafo `lastfm_similar_artists` (score = Σ match),
+    excluye los propios seeds y — si `exclude_user_id` — los artistas ya poseídos,
+    y por cada candidato su mejor obra en vinilo no poseída. Regla transversal +
+    convergencia. Devuelve {"works", "missing_cover_ids"}. Funciona sin login.
+    """
+    seeds = [int(a) for a in (seed_artist_ids or []) if a is not None]
+    if not seeds:
+        return {"works": [], "missing_cover_ids": []}
+    with _cursor() as cur:
+        owned_works = _owned_work_ids(cur, exclude_user_id) if exclude_user_id else []
+        owned_artists = _owned_artist_ids(cur, exclude_user_id) if exclude_user_id else []
+        cur.execute("""
+            WITH seeds AS (
+                SELECT unnest(%(seeds)s::bigint[]) AS aid
+            ),
+            excluded_artists AS (
+                SELECT aid FROM seeds
+                UNION SELECT unnest(%(owned_artists)s::bigint[])
+            ),
+            cand AS (
+                SELECT s.similar_artist_id AS aid,
+                       sum(s.match) AS score,
+                       (array_agg(sa.name ORDER BY s.match DESC))[1:2] AS anclas
+                FROM lastfm_similar_artists s
+                JOIN seeds sd ON sd.aid = s.artist_id
+                JOIN artists sa ON sa.id = s.artist_id
+                WHERE s.similar_artist_id IS NOT NULL
+                  AND s.similar_artist_id NOT IN (SELECT aid FROM excluded_artists)
+                GROUP BY s.similar_artist_id
+            ),
+            cand_top AS (
+                SELECT * FROM cand ORDER BY score DESC LIMIT %(cand_lim)s
+            ),
+            best AS (
+                SELECT c.aid, c.score, c.anclas, bw.id AS work_id
+                FROM cand_top c
+                CROSS JOIN LATERAL (
+                    SELECT w.id
+                    FROM works w
+                    JOIN artists a ON a.id = w.primary_artist_id
+                    WHERE w.primary_artist_id = c.aid
+                      AND w.has_vinyl = true
+                      AND w.work_type = ANY(%(work_types)s::work_type[])
+                      AND NOT (w.id = ANY(%(owned_works)s::bigint[]))
+                      AND (coalesce(w.lastfm_playcount, 0) > 0
+                           OR coalesce(w.releases_count, 0) >= %(min_rc)s)
+                      AND {album_track_ok}
+                      AND {artist_ok}
+                    ORDER BY w.lastfm_playcount DESC NULLS LAST, w.releases_count DESC
+                    LIMIT 1
+                ) bw
+            )
+            SELECT b.aid AS artist_id, a.name AS artist_name, b.score, b.anclas,
+                   w.id, w.title, w.work_type, w.year, w.releases_count,
+                   EXISTS (SELECT 1 FROM cover_images ci
+                            WHERE ci.work_id = w.id AND ci.source='discogs') AS has_cover,
+                   vc.preferred_thumb AS cover_thumb, vc.preferred_url AS cover_url
+            FROM best b
+            JOIN artists a ON a.id = b.aid
+            JOIN works w ON w.id = b.work_id
+            LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb
+                       FROM cover_images WHERE source='discogs') vc ON vc.work_id = w.id
+            ORDER BY b.score DESC
+            LIMIT %(pool_limit)s
+        """.format(album_track_ok=_album_track_ok_sql("w"),
+                   artist_ok=_ARTIST_NOT_MORRALLA_SQL),
+            {"seeds": seeds, "owned_works": owned_works or [0],
+             "owned_artists": owned_artists or [0],
+             "work_types": list(_RECO_WORK_TYPES),
+             "cand_lim": _COESCUCHA_CAND_LIMIT, "min_rc": _COESCUCHA_MIN_RELEASES,
+             "pool_limit": max(limit * _COVER_POOL_FACTOR, _COESCUCHA_CAND_LIMIT)})
+        rows = cur.fetchall()
+
+    works, missing = [], []
+    for r in rows:
+        item = dict(r)
+        anclas = item.pop("anclas", None)
+        item.pop("score", None)
+        item["porque"] = _coescucha_porque(anclas) or "en la onda de tu selección"
+        if item.pop("has_cover", False):
+            if len(works) < limit:
+                item["has_discogs"] = True
+                works.append(item)
+        else:
+            missing.append(item["id"])
+    return {"works": works, "missing_cover_ids": missing}
+
+
+def works_primary_artists(work_ids):
+    """Para works seleccionados, su primary_artist_id (para sembrar co-escucha).
+    Devuelve lista de artist_ids (dedup, orden estable). Lista vacía → []."""
+    ids = [int(w) for w in (work_ids or []) if w is not None]
+    if not ids:
+        return []
+    with _cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT primary_artist_id AS aid FROM works "
+            "WHERE id = ANY(%(ids)s) AND primary_artist_id IS NOT NULL",
+            {"ids": ids})
+        return [r["aid"] for r in cur.fetchall()]
 
 
 # ---------------------------------------------------------------------------
@@ -716,6 +1140,38 @@ def _rerank_candidates(rows, limit):
     return capped[:limit]
 
 
+def _split_by_discogs_cover(cur, ranked, limit):
+    """Aplica la regla TRANSVERSAL de PORTADA a filas YA rankeadas (reco/afines).
+
+    Entrada: `ranked` = filas de obra ya ordenadas por relevancia (una lista más
+    LARGA que `limit`, para que tras el filtro de portada queden suficientes).
+    Consulta EN BATCH (una query) qué ids tienen portada de Discogs y devuelve:
+        (works, missing_cover_ids)
+    donde `works` son las primeras `limit` filas CON portada (marcadas
+    `has_discogs=True` para el front) y `missing_cover_ids` los ids de las que aún
+    NO la tienen (el router los encola → convergencia).
+    """
+    if not ranked:
+        return [], []
+    ids = [r["id"] for r in ranked]
+    cur.execute(
+        "SELECT DISTINCT work_id FROM cover_images "
+        "WHERE source = 'discogs' AND work_id = ANY(%(ids)s)",
+        {"ids": ids},
+    )
+    with_cover = {row["work_id"] for row in cur.fetchall()}
+    works, missing = [], []
+    for r in ranked:
+        if r["id"] in with_cover:
+            if len(works) < limit:
+                r = dict(r)
+                r["has_discogs"] = True
+                works.append(r)
+        else:
+            missing.append(r["id"])
+    return works, missing
+
+
 def _seed_embedding_for_work(cur, work_id, column="embedding"):
     """Devuelve (embedding_literal, primary_artist_id, title) de la obra.
 
@@ -779,7 +1235,10 @@ def recommend_similar_to_work(work_id, limit=12, exclude_user_id=None):
     (cara) y `artists` solo se juntan DESPUÉS, sobre el puñado de candidatos ya
     capados por artista. Semántica idéntica a la versión de un solo pase.
 
-    Cada fila lleva `porque` explicable. Si el seed no tiene embedding → [] honesto.
+    Regla TRANSVERSAL de PORTADA + CONVERGENCIA: se rerankea un pool MÁS AMPLIO que
+    `limit`, se parte por portada de Discogs (`_split_by_discogs_cover`) → `works`
+    (con portada) + `missing_cover_ids` (sin, para encolar). Devuelve un dict
+    {"works", "missing_cover_ids"}. Seed sin embedding → dict vacío honesto.
     """
     # Fase 1: KNN puro sobre works (sin cover). El seed embedding va como literal
     # ::vector. El WHERE aplica todos los filtros duros post-índice y el
@@ -811,7 +1270,7 @@ def recommend_similar_to_work(work_id, limit=12, exclude_user_id=None):
     with _cursor() as cur:
         seed_emb, seed_artist, seed_title = _seed_embedding_for_work(cur, work_id)
         if seed_emb is None:
-            return []
+            return {"works": [], "missing_cover_ids": []}
         seed_title = seed_title or "esta obra"
         owned = _owned_work_ids(cur, exclude_user_id) if exclude_user_id else []
 
@@ -826,10 +1285,11 @@ def recommend_similar_to_work(work_id, limit=12, exclude_user_id=None):
         })
         rows = cur.fetchall()
 
-    ranked = _rerank_candidates(rows, limit)
-    for r in ranked:
+        ranked = _rerank_candidates(rows, limit * _COVER_POOL_FACTOR)
+        works, missing = _split_by_discogs_cover(cur, ranked, limit)
+    for r in works:
         r["porque"] = "afín en género y estilo a {}".format(seed_title)
-    return ranked
+    return {"works": works, "missing_cover_ids": missing}
 
 
 def recommend_similar_to_artist(artist_id, limit=12, exclude_user_id=None):
@@ -850,7 +1310,7 @@ def recommend_similar_to_artist(artist_id, limit=12, exclude_user_id=None):
         cur.execute("SELECT name FROM artists WHERE id = %(id)s", {"id": artist_id})
         arow = cur.fetchone()
         if not arow:
-            return []
+            return {"works": [], "missing_cover_ids": []}
         artist_name = arow["name"]
 
         # Centroide sobre sus works con vinilo/obra de verdad → literal de texto.
@@ -876,7 +1336,7 @@ def recommend_similar_to_artist(artist_id, limit=12, exclude_user_id=None):
             """, {"id": artist_id})
             frow = cur.fetchone()
             if not (frow and frow["emb"] is not None):
-                return []
+                return {"works": [], "missing_cover_ids": []}
             seed_emb = frow["emb"]
 
         cand_sql = """
@@ -910,10 +1370,11 @@ def recommend_similar_to_artist(artist_id, limit=12, exclude_user_id=None):
         })
         rows = cur.fetchall()
 
-    ranked = _rerank_candidates(rows, limit)
-    for r in ranked:
+        ranked = _rerank_candidates(rows, limit * _COVER_POOL_FACTOR)
+        works, missing = _split_by_discogs_cover(cur, ranked, limit)
+    for r in works:
         r["porque"] = "en la onda de {}".format(artist_name)
-    return ranked
+    return {"works": works, "missing_cover_ids": missing}
 
 
 # ---------------------------------------------------------------------------
@@ -961,7 +1422,7 @@ def similar_by_press(work_id, limit=8):
         seed_emb, seed_artist, _title = _seed_embedding_for_work(
             cur, work_id, column="embedding_press")
         if seed_emb is None:
-            return []
+            return {"works": [], "missing_cover_ids": []}
         cur.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
         cur.execute(sql, {
             "work_id": work_id,
@@ -972,10 +1433,11 @@ def similar_by_press(work_id, limit=8):
         })
         rows = cur.fetchall()
 
-    ranked = _rerank_candidates(rows, limit)
-    for r in ranked:
+        ranked = _rerank_candidates(rows, limit * _COVER_POOL_FACTOR)
+        works, missing = _split_by_discogs_cover(cur, ranked, limit)
+    for r in works:
         r["porque"] = "la crítica lo sitúa en una vibra afín"
-    return ranked
+    return {"works": works, "missing_cover_ids": missing}
 
 
 # ---------------------------------------------------------------------------
@@ -995,12 +1457,15 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
     `exclude_user_id` (M3a): excluye los works de la colección de ese usuario (mood
     para el logueado no repite lo que ya tiene).
 
-    Sin styles → [] (el caller degrada honesto).
+    Regla TRANSVERSAL de PORTADA + CONVERGENCIA: los candidatos se calculan SIN el
+    filtro de portada; se parten por portada de Discogs → `works` (con) +
+    `missing_cover_ids` (sin, para encolar). Devuelve un dict {"works",
+    "missing_cover_ids"}. Sin styles → dict vacío (el caller degrada honesto).
     """
     style_names = [s for s in (style_names or []) if s]
     tag_whitelist = [t.lower() for t in (tag_whitelist or []) if t]
     if not style_names:
-        return []
+        return {"works": [], "missing_cover_ids": []}
 
     # Dos fases (patrón de rendimiento): todo el ranking/cap/LIMIT se resuelve SIN
     # tocar la portada (v_work_cover, cara); `artists` entra en `scored` solo porque
@@ -1062,20 +1527,33 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
                      releases_count DESC NULLS LAST,
                      lastfm_playcount DESC NULLS LAST
             LIMIT %(cand_limit)s
+        ),
+        albumok AS MATERIALIZED (
+            -- Candidatos disco-de-verdad (anti-single), aún SIN filtro de portada.
+            SELECT p.id, p.title, p.work_type, p.year, p.releases_count,
+                   p.lastfm_playcount, p.artist_id, p.artist_name,
+                   p.style_hits, p.tag_hits, p.matched_styles
+            FROM picked p
+            JOIN works w ON w.id = p.id
+            WHERE {album_track_ok}
+        ),
+        with_cover AS MATERIALIZED (
+            SELECT DISTINCT work_id FROM cover_images
+            WHERE source = 'discogs'
+              AND work_id = ANY(ARRAY(SELECT id FROM albumok))
         )
-        SELECT p.id, p.title, p.work_type, p.year, p.releases_count,
-               p.artist_id, p.artist_name,
+        SELECT ao.id, ao.title, ao.work_type, ao.year, ao.releases_count,
+               ao.artist_id, ao.artist_name,
+               (ao.id IN (SELECT work_id FROM with_cover)) AS has_cover,
                vc.preferred_thumb AS cover_thumb,
                vc.preferred_url   AS cover_url,
-               p.style_hits, p.tag_hits, p.matched_styles
-        FROM picked p
-        LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = p.id
-        JOIN works w ON w.id = p.id
-        WHERE {album_track_ok}
-        ORDER BY (p.style_hits + p.tag_hits) DESC,
-                 p.releases_count DESC NULLS LAST,
-                 p.lastfm_playcount DESC NULLS LAST
-        LIMIT %(limit)s
+               ao.style_hits, ao.tag_hits, ao.matched_styles
+        FROM albumok ao
+        LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb
+                   FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = ao.id
+        ORDER BY (ao.style_hits + ao.tag_hits) DESC,
+                 ao.releases_count DESC NULLS LAST,
+                 ao.lastfm_playcount DESC NULLS LAST
     """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL,
                album_track_ok=_album_track_ok_sql("w"))
     with _cursor() as cur:
@@ -1086,10 +1564,21 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
             "work_types": list(_RECO_WORK_TYPES),
             "cap": per_artist_cap,
             "limit": limit,
-            "cand_limit": limit * 3,
+            "cand_limit": max(limit * _COVER_POOL_FACTOR, _SEARCH_CAND_LIMIT),
             "owned": owned or [0],
         })
-        return cur.fetchall()
+        rows = cur.fetchall()
+    works, missing = [], []
+    for r in rows:
+        r = dict(r)
+        has_cover = r.pop("has_cover", False)
+        if has_cover:
+            r["has_discogs"] = True
+            if len(works) < limit:
+                works.append(r)
+        else:
+            missing.append(r["id"])
+    return {"works": works, "missing_cover_ids": missing}
 
 
 # ---------------------------------------------------------------------------
@@ -1488,6 +1977,8 @@ _COESCUCHA_CAND_SQL = """
            w.work_type,
            w.year,
            w.releases_count,
+           EXISTS (SELECT 1 FROM cover_images ci
+                    WHERE ci.work_id = w.id AND ci.source = 'discogs') AS has_cover,
            vc.preferred_thumb AS cover_thumb,
            vc.preferred_url   AS cover_url
     FROM best b
@@ -1496,7 +1987,7 @@ _COESCUCHA_CAND_SQL = """
     LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb
                FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = w.id
     ORDER BY b.score DESC
-    LIMIT %(limit)s
+    LIMIT %(pool_limit)s
 """.format(album_track_ok=_album_track_ok_sql("w"), artist_ok=_ARTIST_NOT_MORRALLA_SQL)
 
 
@@ -1515,25 +2006,34 @@ def recommend_for_user(user_id, limit=12):
     fetchado) → [] honesto: el caller explica "conecta/espera"; NO cae al centroide
     viejo (retirado). Anónimo → []."""
     if not user_id:
-        return []
+        return {"works": [], "missing_cover_ids": []}
     with _cursor() as cur:
         cur.execute(_COESCUCHA_CAND_SQL, {
             "u": user_id,
             "work_types": list(_RECO_WORK_TYPES),
             "cand_lim": _COESCUCHA_CAND_LIMIT,
             "min_rc": _COESCUCHA_MIN_RELEASES,
-            "limit": limit,
+            "pool_limit": max(limit * _COVER_POOL_FACTOR, _COESCUCHA_CAND_LIMIT),
         })
         rows = cur.fetchall()
 
-    out = []
+    # Regla TRANSVERSAL de PORTADA + CONVERGENCIA: el grafo de co-escucha NO se toca
+    # (spec §4); solo partimos su resultado por portada de Discogs — works con
+    # portada se muestran (hasta limit), los sin portada van a encolar.
+    works, missing = [], []
     for r in rows:
         item = dict(r)
         item["porque"] = _coescucha_porque(item.get("anclas"))
         item.pop("anclas", None)
         item.pop("score", None)
-        out.append(item)
-    return out
+        has_cover = item.pop("has_cover", False)
+        if has_cover:
+            item["has_discogs"] = True
+            if len(works) < limit:
+                works.append(item)
+        else:
+            missing.append(item["id"])
+    return {"works": works, "missing_cover_ids": missing}
 
 
 def _owned_artist_ids(cur, user_id):
@@ -1673,68 +2173,178 @@ def listening_top_artist_names(cur, user_id, limit=2, period=_LISTEN_PERIOD):
     return [r["artist_name"] for r in cur.fetchall()]
 
 
+# Cap de obras por artista en el TIER 3 (otros discos de artistas que escuchas):
+# variedad — no llenar la sección con la discografía de un solo artista.
+_LISTEN_TIER3_ARTIST_CAP = 2
+
+
 def recommend_from_listening(user_id, limit=12):
-    """Recomendación PERSONAL por centroide de ESCUCHA (Last.fm, embeddings core).
+    """"Basado en lo que escuchas": la ESCUCHA REAL del usuario (Last.fm), en tres
+    tiers por prioridad. NO centroide, NO co-escucha — discos concretos que escucha.
 
-    KNN dos fases sobre `works.embedding <=> (centroide de escucha)`, filtrando a
-    vinilo + obra de verdad + sin morralla de artista, EXCLUYENDO todo work y todo
-    artista de su colección (para DESCUBRIR, como recommend_for_user) y capando 1
-    obra por artista. Cada fila lleva `porque` que refleja la escucha, con 1-2 de
-    sus top artistas Last.fm. Sin datos de escucha resueltos con embedding →
-    [] honesto (la sección no aparece). Anónimo/user inexistente → [].
+    Devuelve un dict {"works", "missing_cover_ids"} (regla TRANSVERSAL de portada +
+    convergencia). Cada work lleva `porque` y un `tier`. Anónimo → dict vacío.
 
-    Rendimiento: el centroide viaja como literal ::vector → el KNN usa el índice
-    HNSW; portada/artista solo se juntan sobre el puñado ya capado (patrón M2).
+    Tiers (en orden; se rellena `limit` sin repetir work):
+      1. Discos que ESCUCHAS y NO tienes en absoluto: works de `user_lastfm_albums`
+         (work_id resuelto), sin NINGUNA release en su colección, `has_vinyl` →
+         comprar el vinilo. Orden por su playcount de Last.fm.
+      2. UPGRADE: works de `user_lastfm_albums` que posee en formato≠vinyl y SIN
+         vinilo poseído, con `has_vinyl`. Orden por playcount.
+      3. Otros discos de los ARTISTAS que escuchas (`user_lastfm_artists`), no
+         poseídos: sus mejores works en vinilo (playcount/releases_count), cap
+         `_LISTEN_TIER3_ARTIST_CAP` por artista.
+
+    TODO con filtros transversales (vinilo + álbum/EP + anti-single + portada +
+    enqueue de los sin). SIN Discogs conectado (usuario sin colección): tier 1 SIN
+    el filtro de posesión (muestra todo lo escuchado), por playcount. Subtítulo
+    honesto lo pone el caller según `tier`.
     """
     if not user_id:
-        return []
+        return {"works": [], "missing_cover_ids": []}
+    period = _LISTEN_PERIOD
     with _cursor() as cur:
-        seed = listening_centroid_literal(cur, user_id)
-        if seed is None:
-            return []
-        owned = _owned_work_ids(cur, user_id)
-        owned_artists = _owned_artist_ids(cur, user_id)
-        top_artists = listening_top_artist_names(cur, user_id, limit=2)
+        # ¿Tiene colección resuelta? (define si aplicamos filtro de posesión).
+        cur.execute(
+            "SELECT count(*) AS n FROM user_collection "
+            "WHERE user_id = %(u)s AND release_id IS NOT NULL", {"u": user_id})
+        has_collection = (cur.fetchone()["n"] or 0) > 0
 
-        cand_sql = """
-            WITH cand AS (
-                SELECT DISTINCT ON (w.primary_artist_id)
-                       w.id,
-                       w.primary_artist_id AS artist_id,
-                       (w.embedding <=> %(seed)s::vector) AS dist
-                FROM works w
-                JOIN artists a ON a.id = w.primary_artist_id
-                WHERE w.embedding IS NOT NULL
-                  AND w.has_vinyl = true
+        # TIER 1 + 2: works escuchados (user_lastfm_albums, work_id resuelto). Se
+        # clasifica cada uno por su relación con la colección: 'buy' (no poseído) o
+        # 'upgrade' (poseído en no-vinilo, sin vinilo). Con filtros transversales +
+        # portada (has_cover) y anti-single. Sin colección → todo es 'buy'.
+        cur.execute("""
+            WITH listened AS MATERIALIZED (
+                SELECT DISTINCT ON (ula.work_id)
+                       ula.work_id, ula.playcount
+                FROM user_lastfm_albums ula
+                WHERE ula.user_id = %(u)s AND ula.period = %(p)s
+                  AND ula.work_id IS NOT NULL
+                ORDER BY ula.work_id, ula.playcount DESC
+            ),
+            owned AS MATERIALIZED (
+                SELECT r.work_id,
+                       bool_or(r.format = 'vinyl')  AS owns_vinyl,
+                       bool_or(r.format <> 'vinyl') AS owns_nonvinyl
+                FROM user_collection uc
+                JOIN releases r ON r.id = uc.release_id
+                WHERE uc.user_id = %(u)s AND uc.release_id IS NOT NULL
+                GROUP BY r.work_id
+            ),
+            cand AS MATERIALIZED (
+                SELECT w.id, w.title, w.work_type, w.year, w.releases_count,
+                       w.primary_artist_id, l.playcount,
+                       ow.owns_vinyl, ow.owns_nonvinyl
+                FROM listened l
+                JOIN works w ON w.id = l.work_id
+                LEFT JOIN owned ow ON ow.work_id = w.id
+                WHERE w.has_vinyl = true
                   AND w.work_type = ANY(%(work_types)s::work_type[])
-                  AND NOT (w.id = ANY(%(owned)s::bigint[]))
-                  AND NOT (w.primary_artist_id = ANY(%(owned_artists)s::bigint[]))
-                  AND {artist_ok}
-                ORDER BY w.primary_artist_id, w.embedding <=> %(seed)s::vector
-                LIMIT %(cand)s
+                  AND {album_track_ok_w}
+                  -- descartar lo que YA tiene en vinilo (nada que comprar/subir)
+                  AND COALESCE(ow.owns_vinyl, false) = false
+            ),
+            with_cover AS MATERIALIZED (
+                SELECT DISTINCT work_id FROM cover_images
+                WHERE source = 'discogs'
+                  AND work_id = ANY(ARRAY(SELECT id FROM cand))
             )
-        """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL)
-        sql = cand_sql + _PERSONAL_PHASE2_SQL
+            SELECT c.id, c.title, c.work_type, c.year, c.releases_count,
+                   c.primary_artist_id AS artist_id, a.name AS artist_name,
+                   c.playcount, c.owns_nonvinyl,
+                   (c.id IN (SELECT work_id FROM with_cover)) AS has_cover,
+                   vc.preferred_thumb AS cover_thumb, vc.preferred_url AS cover_url
+            FROM cand c
+            JOIN artists a ON a.id = c.primary_artist_id
+            LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb
+                       FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = c.id
+            ORDER BY c.playcount DESC NULLS LAST, c.releases_count DESC NULLS LAST
+        """.format(album_track_ok_w=_album_track_ok_sql("w")),
+            {"u": user_id, "p": period, "work_types": list(_RECO_WORK_TYPES)})
+        album_rows = cur.fetchall()
 
-        cur.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
-        cur.execute(sql, {
-            "seed": seed,
-            "work_types": list(_RECO_WORK_TYPES),
-            "owned": owned or [0],
-            "owned_artists": owned_artists or [0],
-            "cand": _ANN_CANDIDATE_LIMIT,
-        })
-        rows = cur.fetchall()
+        works, missing, seen = [], [], set()
 
-    ranked = _rerank_candidates(rows, limit)
-    if top_artists:
-        who = ", ".join(top_artists)
-        porque = "en la onda de lo que escuchas ({}…)".format(who)
-    else:
-        porque = "en la onda de lo que escuchas en Last.fm"
-    for r in ranked:
-        r["porque"] = porque
-    return ranked
+        def _take(row, tier, porque):
+            wid = row["id"]
+            if wid in seen:
+                return
+            if row.get("has_cover"):
+                if len(works) < limit:
+                    seen.add(wid)
+                    item = {k: row[k] for k in (
+                        "id", "title", "work_type", "year", "releases_count",
+                        "artist_id", "artist_name", "cover_thumb", "cover_url")}
+                    item["has_discogs"] = True
+                    item["tier"] = tier
+                    item["porque"] = porque
+                    works.append(item)
+            else:
+                if wid not in missing:
+                    missing.append(wid)
+
+        # Tier 1 (buy): no poseído en absoluto (owns_nonvinyl falso/NULL). Sin
+        # colección, has_collection=False → TODOS caen aquí (owns_nonvinyl NULL).
+        for r in album_rows:
+            if not r.get("owns_nonvinyl"):
+                _take(r, "buy", "lo escuchas y aún no lo tienes — pásalo a vinilo")
+        # Tier 2 (upgrade): poseído en no-vinilo, sin vinilo.
+        for r in album_rows:
+            if r.get("owns_nonvinyl"):
+                _take(r, "upgrade", "lo tienes en otro formato — súbelo a vinilo")
+
+        # TIER 3: otros discos de los ARTISTAS que escuchas, no poseídos. Solo si
+        # aún no hemos llenado `limit`. Cap por artista para variedad.
+        if len(works) < limit:
+            owned_work_ids = _owned_work_ids(cur, user_id) if has_collection else []
+            cur.execute("""
+                WITH listened_artists AS MATERIALIZED (
+                    SELECT DISTINCT ON (ula.artist_id)
+                           ula.artist_id, ula.artist_name, ula.playcount, ula.rank
+                    FROM user_lastfm_artists ula
+                    WHERE ula.user_id = %(u)s AND ula.period = %(p)s
+                      AND ula.artist_id IS NOT NULL
+                    ORDER BY ula.artist_id, ula.playcount DESC
+                ),
+                best AS MATERIALIZED (
+                    SELECT la.artist_id, la.artist_name, la.rank,
+                           w.id, w.title, w.work_type, w.year, w.releases_count,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY la.artist_id
+                               ORDER BY w.lastfm_playcount DESC NULLS LAST,
+                                        w.releases_count DESC NULLS LAST) AS rn
+                    FROM listened_artists la
+                    JOIN works w ON w.primary_artist_id = la.artist_id
+                    WHERE w.has_vinyl = true
+                      AND w.work_type = ANY(%(work_types)s::work_type[])
+                      AND NOT (w.id = ANY(%(owned)s::bigint[]))
+                      AND {album_track_ok_w}
+                ),
+                picked AS MATERIALIZED (
+                    SELECT * FROM best WHERE rn <= %(cap)s
+                ),
+                with_cover AS MATERIALIZED (
+                    SELECT DISTINCT work_id FROM cover_images
+                    WHERE source = 'discogs'
+                      AND work_id = ANY(ARRAY(SELECT id FROM picked))
+                )
+                SELECT p.id, p.title, p.work_type, p.year, p.releases_count,
+                       p.artist_id, p.artist_name,
+                       (p.id IN (SELECT work_id FROM with_cover)) AS has_cover,
+                       vc.preferred_thumb AS cover_thumb, vc.preferred_url AS cover_url
+                FROM picked p
+                LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb
+                           FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = p.id
+                ORDER BY p.rank ASC NULLS LAST, p.releases_count DESC NULLS LAST
+            """.format(album_track_ok_w=_album_track_ok_sql("w")),
+                {"u": user_id, "p": period, "work_types": list(_RECO_WORK_TYPES),
+                 "owned": owned_work_ids or [0], "cap": _LISTEN_TIER3_ARTIST_CAP})
+            for r in cur.fetchall():
+                _take(r, "artist",
+                      "de {}, que escuchas".format(r["artist_name"]))
+
+    return {"works": works, "missing_cover_ids": missing}
 
 
 # ---------------------------------------------------------------------------
@@ -1827,16 +2437,22 @@ def vinyl_gap(user_id, limit=24, per_artist_cap=2):
                   AND ow.owns_vinyl = false
                   AND """ + _album_track_ok_sql("w") + """
             ),
-            picked AS (
+            picked AS MATERIALIZED (
                 SELECT id, title, work_type, year, releases_count,
                        primary_artist_id, owned_formats
                 FROM gap
                 WHERE rn_artist <= %(cap)s
                 ORDER BY releases_count DESC NULLS LAST
-                LIMIT %(limit)s
+                LIMIT %(pool_limit)s
+            ),
+            with_cover AS MATERIALIZED (
+                SELECT DISTINCT work_id FROM cover_images
+                WHERE source = 'discogs'
+                  AND work_id = ANY(ARRAY(SELECT id FROM picked))
             )
             SELECT p.id, p.title, p.work_type, p.year, p.releases_count,
                    p.owned_formats,
+                   (p.id IN (SELECT work_id FROM with_cover)) AS has_cover,
                    a.id   AS artist_id,
                    a.name AS artist_name,
                    vc.preferred_thumb AS cover_thumb,
@@ -1845,11 +2461,24 @@ def vinyl_gap(user_id, limit=24, per_artist_cap=2):
             JOIN artists a ON a.id = p.primary_artist_id
             LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = p.id
             ORDER BY p.releases_count DESC NULLS LAST
-        """, {"u": user_id, "cap": per_artist_cap, "limit": limit})
-        rows = cur.fetchall()
+        """, {"u": user_id, "cap": per_artist_cap,
+              "pool_limit": max(limit * _COVER_POOL_FACTOR, _SEARCH_CAND_LIMIT)})
+        cand_rows = cur.fetchall()
+
+        # CONVERGENCIA: partir por portada de Discogs. Los sin-portada se encolan
+        # (missing_cover_ids); los con-portada se muestran hasta `limit`.
+        rows, missing = [], []
+        for r in cand_rows:
+            r = dict(r)
+            if r.pop("has_cover", False):
+                if len(rows) < limit:
+                    r["has_discogs"] = True
+                    rows.append(r)
+            else:
+                missing.append(r["id"])
 
         if not rows:
-            return []
+            return {"works": [], "missing_cover_ids": missing}
 
         # Fase 2: ediciones de vinilo de las obras elegidas, en UNA query (sin N+1).
         work_ids = [r["id"] for r in rows]
@@ -1883,7 +2512,7 @@ def vinyl_gap(user_id, limit=24, per_artist_cap=2):
         r["editions"] = eds_by_work.get(r["id"], [])
         r["porque"] = "lo tienes en {}, existe en vinilo".format(owned_label)
         out.append(r)
-    return out
+    return {"works": out, "missing_cover_ids": missing}
 
 
 # ---------------------------------------------------------------------------
@@ -1973,3 +2602,41 @@ def store_cover_image(work_id, source, url, url_thumb):
                   url_thumb = EXCLUDED.url_thumb,
                   fetched_at = now()
         """, {"w": int(work_id), "s": source, "u": url, "t": url_thumb})
+
+
+def artist_discogs_ids(artist_ids):
+    """Para recuperar foto de artista de Discogs: por artist_id, su
+    `discogs_artist_id`.
+
+    Devuelve dict artist_id -> discogs_artist_id (int). Solo aparecen los
+    artistas que tengan `discogs_artist_id` (sin él no se puede pedir a Discogs →
+    el worker se salta y sigue el monograma). UNA query. Lista vacía → {}.
+    """
+    ids = [int(a) for a in (artist_ids or []) if a is not None]
+    if not ids:
+        return {}
+    with _cursor() as cur:
+        cur.execute("""
+            SELECT id AS artist_id, discogs_artist_id
+            FROM artists
+            WHERE id = ANY(%(ids)s)
+              AND discogs_artist_id IS NOT NULL
+        """, {"ids": ids})
+        return {r["artist_id"]: r["discogs_artist_id"] for r in cur.fetchall()}
+
+
+def store_artist_image(artist_id, url):
+    """Guarda la foto de artista recuperada de Discogs en `artists.image_url`
+    (enriquecimiento, no DDL). Solo esa columna + metadatos de fuente.
+
+    Parametrizado. La BD es compartida (core); escribir en image_url es OK.
+    """
+    with _cursor() as cur:
+        cur.execute("""
+            UPDATE artists
+               SET image_url = %(u)s,
+                   image_source = 'discogs',
+                   image_fetched_at = now(),
+                   updated_at = now()
+             WHERE id = %(a)s
+        """, {"u": url, "a": int(artist_id)})

@@ -59,12 +59,18 @@
   </section>
 
   {# ---- Basado en lo que escuchas (centroide de ESCUCHA, Last.fm) ---- #}
-  {# Solo aparece si hay señal de escucha resuelta con embedding. #}
+  {# Solo aparece si hay señal de escucha REAL resuelta (Last.fm). Los items
+     llevan `tier`: buy (escuchas y no tienes) / upgrade (tienes en otro formato) /
+     artist (otros discos de tus artistas). Subtítulo honesto según lo que salga. #}
   {% if listening %}
+  {% set tiers = listening | map(attribute='tier') | list %}
   <section class="block reco-block">
     <h2>Basado en lo que escuchas</h2>
-    <p class="hint">Según tus artistas más escuchados en Last.fm, en vinilo.
-       Nada que ya tengas.</p>
+    <p class="hint">
+      {% if 'buy' in tiers %}Discos que escuchas y aún no tienes{% endif %}
+      {%- if 'upgrade' in tiers %}{% if 'buy' in tiers %}, y{% else %}Discos que escuchas para{% endif %} subir de formato a vinilo{% endif %}
+      {%- if 'artist' in tiers %}{% if 'buy' in tiers or 'upgrade' in tiers %}, más{% else %}Más{% endif %} discos de los artistas que escuchas{% endif %}. En vinilo, nada que ya tengas.
+    </p>
     <div class="grid">
       {% for w in listening %}{% include "_reco_card.html" %}{% endfor %}
     </div>

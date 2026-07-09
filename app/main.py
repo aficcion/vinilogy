@@ -18,7 +18,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -101,29 +101,90 @@ def home(request: Request):
     return _render(request, "home.html", user=user)
 
 
+def _parse_id_csv(raw):
+    """"1,2,3" (o repetido) → [1,2,3] (ints, dedup, orden estable). Robusto a
+    basura (ignora lo no numérico)."""
+    out, seen = [], set()
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part.isdigit():
+            continue
+        v = int(part)
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
 @app.get("/buscar", response_class=HTMLResponse)
-def buscar(request: Request, q: str = ""):
+def buscar(request: Request, q: str = "", artists: str = "", works: str = ""):
+    """Buscador §6: con SELECCIÓN (`artists=1,2&works=3,4`) → bloques "mejores de
+    {artista}" + "en la onda de tu selección"; con solo TEXTO (`q`) → búsqueda
+    normal §1 (artistas + works en bloques). Sin nada → invitación a buscar."""
     user = users.current_user(request)
     uid = user["id"] if user else None
     q = (q or "").strip()
-    results = catalog.search(q) if q else {"works": [], "artists": []}
-    affines = (
-        reco.affine_for_search(results["works"], results["artists"],
-                               exclude_user_id=uid)
-        if q else None
-    )
-    # Backfill de portadas sin bloquear: los works listados + los afines.
-    covers.request_missing(results["works"])
+    sel_artist_ids = _parse_id_csv(artists)
+    sel_work_ids = _parse_id_csv(works)
+
+    # --- Modo SELECCIÓN (chips): tiene prioridad sobre el texto libre ---
+    if sel_artist_ids or sel_work_ids:
+        sel = reco.search_by_selection(
+            sel_artist_ids, sel_work_ids, exclude_user_id=uid)
+        # Backfill de portadas de los works mostrados en ambos bloques.
+        for blk in sel["artist_blocks"]:
+            covers.request_missing(blk["works"])
+        covers.request_missing(sel["combined"]["results"])
+        return _render(
+            request, "search.html",
+            q="", mode="selection",
+            artist_blocks=sel["artist_blocks"],
+            combined=sel["combined"],
+            user=user,
+        )
+
+    # --- Modo TEXTO (§1) ---
+    if not q:
+        return _render(request, "search.html", q="", mode="text",
+                       works=[], artists=[], affines=None, user=user)
+
+    # LATENCIA: la búsqueda de works (~1s) y la de afines (KNN ~2,5s) se solapan.
+    # La búsqueda de works corre primero (los afines necesitan el primer work como
+    # semilla); DESPUÉS, la búsqueda de ARTISTAS y los AFINES corren en PARALELO
+    # (cada hilo saca su conexión del pool) → el turno paga max(artistas, afines)
+    # en vez de la suma → /buscar baja de ~5,5s a ~3s.
+    works_res = catalog.search_works_only(q)
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_artists = ex.submit(catalog.search_artists_only, q)
+        f_affines = ex.submit(reco.affine_for_search,
+                              works_res["works"], [], exclude_user_id=uid)
+        artists = f_artists.result()
+        affines = f_affines.result()
+    # affine_for_search prefiere la primera OBRA; si no hay obras pero sí artistas,
+    # rehacemos el afín desde el primer artista (barato, solo cuando works=[]).
+    if not works_res["works"] and artists:
+        affines = reco.affine_for_search([], artists, exclude_user_id=uid)
+
+    covers.request_missing(works_res["works"])
+    covers.request_missing_ids(works_res.get("missing_cover_ids"))
     if affines:
         covers.request_missing(affines.get("results"))
     return _render(
         request, "search.html",
-        q=q,
-        works=results["works"],
-        artists=results["artists"],
+        q=q, mode="text",
+        works=works_res["works"],
+        artists=artists,
         affines=affines,
         user=user,
     )
+
+
+@app.get("/api/suggest")
+def api_suggest(q: str = ""):
+    """Type-ahead JSON: {artists:[{id,name}], works:[{id,title,artist_name,year}]}.
+    Mismo ranking/filtros que §1/§2 (portada-obligatoria en works). Min 3 chars →
+    listas vacías (lo controla la capa de BD)."""
+    return JSONResponse(catalog.suggest((q or "").strip()))
 
 
 @app.get("/obra/{work_id}", response_class=HTMLResponse)
@@ -168,11 +229,18 @@ def artista(request: Request, artist_id: int):
     if not artist:
         return _render(request, "404.html", what="artista", ident=artist_id,
                        status_code=404, user=user)
-    discography = catalog.get_artist_discography(artist_id)
+    disc = catalog.get_artist_discography(artist_id)
+    discography = disc["works"]
     similar = reco.similar_to_artist(artist_id, exclude_user_id=uid)
-    # Backfill de portadas sin bloquear: discografía + afines.
+    # Backfill de portadas sin bloquear: discografía (los que faltan, por
+    # convergencia) + afines (ya encolados en la fachada).
     covers.request_missing(discography)
+    covers.request_missing_ids(disc.get("missing_cover_ids"))
     covers.request_missing(similar)
+    # Backfill de FOTO DE ARTISTA sin bloquear: si la ficha mostraría el
+    # monograma (image_url NULL), pide la foto a Discogs (mismo worker/throttle
+    # que las portadas). Esta carga muestra monograma; la siguiente ya trae foto.
+    covers.request_missing_artists(artist)
     return _render(
         request, "artist.html",
         artist=artist,

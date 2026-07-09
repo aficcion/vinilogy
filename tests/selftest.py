@@ -62,6 +62,26 @@ def _q(sql, params=None):
         return cur.fetchall()
 
 
+def _sw(q, limit=20):
+    """search_works que devuelve SOLO la lista de works a mostrar (desempaqueta el
+    dict {"works", "missing_cover_ids"} de la nueva búsqueda con portada-obligatoria).
+    """
+    return db.search_works(q, limit=limit)["works"]
+
+
+def _disco(artist_id, limit=40):
+    """get_artist_discography → lista de works a mostrar (desempaqueta el dict)."""
+    return db.get_artist_discography(artist_id, limit=limit)["works"]
+
+
+def _works_of(res):
+    """Desempaqueta el dict {"works", "missing_cover_ids"} de los caminos de reco a
+    la lista de works. Acepta también una lista (compat) o None."""
+    if isinstance(res, dict):
+        return res.get("works", [])
+    return res or []
+
+
 def _max_vinyl_tracks(work_id):
     """Máximo nº de pistas entre los prensados de VINILO de la obra (o None). Es la
     MISMA señal que usa el filtro de single disfrazado en db._album_track_ok_sql."""
@@ -129,12 +149,15 @@ def derive_fixtures():
     """)
     fx["work_no_prices"] = rows[0]["id"] if rows else None
 
-    # Artista primary con >=3 works de estudio/EP en vinilo (para discografía).
+    # Artista primary con >=3 works de estudio/EP en vinilo Y CON PORTADA de Discogs
+    # (para discografía — ahora exige portada, regla transversal).
     rows = _q("""
         SELECT w.primary_artist_id AS artist_id
         FROM works w
         WHERE w.has_vinyl = true
           AND w.work_type IN ('studio_album','ep')
+          AND EXISTS (SELECT 1 FROM cover_images ci
+                      WHERE ci.work_id = w.id AND ci.source = 'discogs')
         GROUP BY w.primary_artist_id
         HAVING count(*) >= 3
         ORDER BY max(w.releases_count) DESC NULLS LAST
@@ -253,12 +276,16 @@ def derive_fixtures():
     # (a) Un studio_album con vinilo de 4-5 pistas en su prensado de VINILO = EP
     #     legítimo mal tipado → DEBE MANTENERSE (umbral >=4). Fixture derivado por
     #     SQL (sin id hardcodeado): título distintivo para poder buscarlo.
+    # OJO: para que este fixture SIGA apareciendo en search_works (que ahora exige
+    # portada de Discogs, regla transversal), se le pide portada discogs también.
     rows = _q("""
         WITH top AS (
             SELECT w.id, w.title
             FROM works w
             WHERE w.has_vinyl = true AND w.work_type = 'studio_album'
               AND length(w.title) > 6
+              AND EXISTS (SELECT 1 FROM cover_images ci
+                          WHERE ci.work_id = w.id AND ci.source = 'discogs')
             ORDER BY w.releases_count DESC NULLS LAST
             LIMIT 3000
         )
@@ -299,7 +326,7 @@ def run_checks(fx):
         LIMIT 1
     """)
     term = seed[0]["term"] if seed else "love"
-    results = db.search_works(term, limit=20)
+    results = _sw(term, limit=20)
     check(
         "search_works devuelve resultados",
         len(results) > 0,
@@ -323,7 +350,7 @@ def run_checks(fx):
     #        Caso canónico: Interpol – "Evil" (work 11253669, 2 pistas en vinilo)
     #        NO debe salir en search_works('interpol').
     if _q("SELECT id FROM works WHERE id = 11253669"):
-        hits = db.search_works("interpol", limit=40)
+        hits = _sw("interpol", limit=40)
         check("search_works('interpol') NO devuelve el single disfrazado 'Evil'",
               all(r["id"] != 11253669 for r in hits),
               "'Evil' (11253669) se coló en la búsqueda")
@@ -331,7 +358,7 @@ def run_checks(fx):
     # amplias es un single disfrazado (<=3 pistas en vinilo).
     disguised = []
     for t in ["interpol", "radiohead", "the strokes"]:
-        for r in db.search_works(t, limit=30):
+        for r in _sw(t, limit=30):
             if r["work_type"] == "studio_album":
                 mx = _max_vinyl_tracks(r["id"])
                 if mx is not None and mx <= 3:
@@ -340,7 +367,7 @@ def run_checks(fx):
           "pistas en vinilo)", not disguised, "colaron: {}".format(disguised[:5]))
 
     # 1-ter. Un ÁLBUM real conocido (Dark Side ~10 pistas) SÍ aparece.
-    dark = db.search_works("dark side of the moon", limit=20)
+    dark = _sw("dark side of the moon", limit=20)
     check("search_works: un álbum real (Dark Side of the Moon) SÍ aparece",
           any("dark side" in (r["title"] or "").lower() for r in dark),
           "no encontró un álbum real conocido")
@@ -350,9 +377,9 @@ def run_checks(fx):
     if fx.get("ep_studioalbum_id") and fx.get("ep_studioalbum_title"):
         term_ep = fx["ep_studioalbum_title"].split(" ")[0]
         kept = any(r["id"] == fx["ep_studioalbum_id"]
-                   for r in db.search_works(fx["ep_studioalbum_title"], limit=40)) \
+                   for r in _sw(fx["ep_studioalbum_title"], limit=40)) \
             or any(r["id"] == fx["ep_studioalbum_id"]
-                   for r in db.search_works(term_ep, limit=40))
+                   for r in _sw(term_ep, limit=40))
         check("search_works: studio_album de 4-5 pistas en vinilo SÍ se mantiene "
               "(umbral >=4)", kept,
               "cayó el fixture EP-legítimo '{}' (id {})".format(
@@ -422,7 +449,7 @@ def run_checks(fx):
 
     # 5. Discografía: sin morralla + ordenada por playcount desc.
     if fx["artist_with_discog"]:
-        discog = db.get_artist_discography(fx["artist_with_discog"], limit=40)
+        discog = _disco(fx["artist_with_discog"], limit=40)
         check(
             "discografía devuelve resultados",
             len(discog) > 0,
@@ -488,7 +515,7 @@ def run_checks(fx):
         seed_id = fx["work_with_embedding"]
         seed_w = db.get_work(seed_id)
         seed_artist = seed_w["artist_id"] if seed_w else None
-        sims = db.recommend_similar_to_work(seed_id, limit=12)
+        sims = _works_of(db.recommend_similar_to_work(seed_id, limit=12))
         check(
             "similar_to_work devuelve resultados",
             len(sims) > 0,
@@ -529,7 +556,7 @@ def run_checks(fx):
     # 8. similar_to_work con seed SIN embedding → [] honesto.
     if fx["work_without_embedding"]:
         try:
-            sims = db.recommend_similar_to_work(fx["work_without_embedding"])
+            sims = _works_of(db.recommend_similar_to_work(fx["work_without_embedding"]))
             check(
                 "similar_to_work sin embedding → [] honesto",
                 sims == [],
@@ -543,7 +570,7 @@ def run_checks(fx):
     # 9. similar_to_artist: excluye al propio artista, cap, vinilo/sin morralla.
     if fx["artist_with_embedding"]:
         aid = fx["artist_with_embedding"]
-        sims = db.recommend_similar_to_artist(aid, limit=12)
+        sims = _works_of(db.recommend_similar_to_artist(aid, limit=12))
         check(
             "similar_to_artist devuelve resultados",
             len(sims) > 0,
@@ -596,7 +623,7 @@ def run_checks(fx):
     """)
     if rows:
         try:
-            sims = db.recommend_similar_to_artist(rows[0]["aid"], limit=6)
+            sims = _works_of(db.recommend_similar_to_artist(rows[0]["aid"], limit=6))
             check(
                 "similar_to_artist (artista de 1 work, ruta fallback) no peta y da resultados",
                 len(sims) > 0 and all(s["artist_id"] != rows[0]["aid"] for s in sims),
@@ -800,7 +827,7 @@ def run_checks(fx):
         seed_id = fx["work_with_embedding_press"]
         seed_w = db.get_work(seed_id)
         seed_artist = seed_w["artist_id"] if seed_w else None
-        sims = db.similar_by_press(seed_id, limit=8)
+        sims = _works_of(db.similar_by_press(seed_id, limit=8))
         check("similar_by_press devuelve resultados para seed con embedding_press",
               len(sims) > 0, "seed {} sin afines por prensa".format(seed_id))
         check("similar_by_press excluye el propio artista",
@@ -826,7 +853,7 @@ def run_checks(fx):
 
     # 19. similar_by_press: seed SIN embedding_press → [] honesto.
     if fx["work_without_embedding_press"]:
-        sims = db.similar_by_press(fx["work_without_embedding_press"])
+        sims = _works_of(db.similar_by_press(fx["work_without_embedding_press"]))
         check("similar_by_press sin embedding_press → [] honesto", sims == [],
               "esperado [], obtenido {}".format(len(sims)))
     else:
@@ -889,6 +916,12 @@ def run_checks(fx):
     run_m3b_checks(fx)
 
     # -----------------------------------------------------------------------
+    # Búsqueda + recomendación v2 (§1-§6 del spec): calidad de ranking, regla
+    # transversal de portada, (N)/homónimos, tiers de escucha, suggest, selección.
+    # -----------------------------------------------------------------------
+    run_search_reco_v2_checks(fx)
+
+    # -----------------------------------------------------------------------
     # cover-backfill — recuperación de portadas desde Discogs (SIN red real)
     # -----------------------------------------------------------------------
     run_covers_checks(fx)
@@ -945,7 +978,7 @@ def run_m3a_checks(fx):
     #     >=8 vinilos, NINGUNA obra poseída, NINGÚN artista poseído, con `porque`
     #     que NOMBRA anclas REALES de su colección, cap 1/artista, sin singles
     #     disfrazados, y calidad = co-escucha agregada (n_anclas alto en el top).
-    recs = db.recommend_for_user(U, limit=12)
+    recs = _works_of(db.recommend_for_user(U, limit=12))
     check("recommend_for_user(1) [co-escucha] devuelve >=8 resultados",
           len(recs) >= 8, "solo {} recos".format(len(recs)))
     with db._cursor() as cur:
@@ -1029,53 +1062,75 @@ def run_m3a_checks(fx):
     try:
         gtmp = db.create_guest_user()
         check("recommend_for_user(user sin semillas en el grafo) → [] (degradación)",
-              db.recommend_for_user(gtmp) == [],
+              _works_of(db.recommend_for_user(gtmp)) == [],
               "no degradó a [] sin semillas de co-escucha")
         check("recommend_for_user(0 / anónimo) → []",
-              db.recommend_for_user(0) == [], "anónimo no dio []")
+              _works_of(db.recommend_for_user(0)) == [], "anónimo no dio []")
     finally:
         if gtmp is not None:
             db.delete_user_and_sessions(gtmp)
             check("limpieza: user de test sin semillas borrado",
                   db.get_app_user(gtmp) is None, "no se borró el user de test")
 
-    # 22-bis. recommend_from_listening(1) (M3b): >=N vinilos por ESCUCHA Last.fm,
-    #     NINGUNO en la colección, cap 1/artista, todos vinilo+obra, `porque` que
-    #     menciona la escucha. + degradación honesta con un user SIN datos lastfm.
-    lrecs = db.recommend_from_listening(U, limit=12)
-    check("recommend_from_listening(1) devuelve >=6 resultados",
+    # 22-bis. recommend_from_listening(1) — ESCUCHA REAL en 3 tiers (§3 reescrito):
+    #     tier 'buy' (escuchas y no tienes) / 'upgrade' (tienes en no-vinilo, sin
+    #     vinilo) / 'artist' (otros discos de tus artistas). Todos vinilo+álbum/EP+
+    #     portada, cap 1/work, `porque` y `tier` presentes. Un tier 'buy' NO está en
+    #     la colección; un tier 'upgrade' SÍ (en no-vinilo) y NO en vinilo.
+    lres = db.recommend_from_listening(U, limit=12)
+    lrecs = _works_of(lres)
+    check("recommend_from_listening(1) [escucha real] devuelve >=6 resultados",
           len(lrecs) >= 6, "solo {} recos".format(len(lrecs)))
-    check("recommend_from_listening(1): NINGUNA reco está en la colección del user",
-          all(r["id"] not in owned for r in lrecs),
-          "coló un disco de la colección")
-    laids = [r["artist_id"] for r in lrecs]
-    check("recommend_from_listening(1): cap 1/artista (sin artistas repetidos)",
-          len(set(laids)) == len(laids), "artistas repetidos")
+    # Tier presente y coherente en cada item.
+    tier_ok = all(r.get("tier") in ("buy", "upgrade", "artist") for r in lrecs)
+    check("recommend_from_listening(1): cada reco lleva `tier` válido", tier_ok,
+          "tiers: {}".format([r.get("tier") for r in lrecs[:5]]))
+    # NUNCA una obra que YA se posee en vinilo (nada que comprar/subir).
+    owned_vinyl = {row["work_id"] for row in _q(
+        "SELECT DISTINCT r.work_id FROM user_collection uc "
+        "JOIN releases r ON r.id = uc.release_id "
+        "WHERE uc.user_id = %(u)s AND r.format = 'vinyl'", {"u": U})}
+    check("recommend_from_listening(1): NINGUNA reco es una obra ya en VINILO",
+          all(r["id"] not in owned_vinyl for r in lrecs),
+          "coló una obra que ya tienes en vinilo")
+    # Coherencia de tier vs colección: 'buy' NO poseído en absoluto; 'upgrade' SÍ
+    # en no-vinilo.
+    tier_consistent = True
+    for r in lrecs:
+        in_coll = r["id"] in owned
+        if r.get("tier") == "buy" and in_coll:
+            tier_consistent = False; break
+        if r.get("tier") == "upgrade" and not in_coll:
+            tier_consistent = False; break
+    check("recommend_from_listening(1): tier 'buy' no poseído / 'upgrade' poseído "
+          "en no-vinilo", tier_consistent, "tier incoherente con la colección")
     lall_ok = all(
         (lambda w: w and w["has_vinyl"] is True
                    and w["work_type"] in ("studio_album", "ep"))(db.get_work(r["id"]))
         for r in lrecs)
     check("recommend_from_listening(1): todos vinilo + studio_album/ep", lall_ok,
           "alguna reco sin vinilo o con morralla")
-    check("recommend_from_listening(1): `porque` no vacío que menciona la escucha",
-          all((r.get("porque") or "").strip() for r in lrecs)
-          and all("escuchas" in (r.get("porque") or "") for r in lrecs),
-          "porque vacío o sin atribución a la escucha")
+    check("recommend_from_listening(1): cada reco con `porque` no vacío",
+          all((r.get("porque") or "").strip() for r in lrecs),
+          "porque vacío")
     ok_l, bad_l = _no_disguised_singles(lrecs)
     check("recommend_from_listening(1): ninguna reco es single disfrazado (<=3 "
           "pistas en vinilo)", ok_l, "coló: {}".format(bad_l))
     check("recommend_from_listening(1): NO devuelve 'Evil' (single disfrazado)",
           all(r["id"] != 11253669 for r in lrecs), "coló 'Evil'")
-    # Degradación: user de test SIN filas user_lastfm_* → [] (con LIMPIEZA).
+    # Todos con portada de Discogs (regla transversal) — vienen marcados has_discogs.
+    check("recommend_from_listening(1): todos marcados con portada de Discogs",
+          all(r.get("has_discogs") for r in lrecs), "alguna reco sin portada discogs")
+    # Degradación: user de test SIN filas user_lastfm_* → dict vacío (con LIMPIEZA).
     #     NUNCA se toca al user 1: se crea un invitado efímero sin datos lastfm.
     ltmp = None
     try:
         ltmp = db.create_guest_user()
         check("recommend_from_listening(user sin lastfm) → [] (degradación honesta)",
-              db.recommend_from_listening(ltmp) == [],
+              _works_of(db.recommend_from_listening(ltmp)) == [],
               "no degradó a [] sin datos de escucha")
         check("recommend_from_listening(0 / anónimo) → []",
-              db.recommend_from_listening(0) == [], "anónimo no dio []")
+              _works_of(db.recommend_from_listening(0)) == [], "anónimo no dio []")
     finally:
         if ltmp is not None:
             db.delete_user_and_sessions(ltmp)
@@ -1089,9 +1144,11 @@ def run_m3a_checks(fx):
           gap_total > 0, "gap = {}".format(gap_total))
     check("vinyl_gap_count(1) en rango esperado (>200 para Carlos)",
           gap_total > 200, "gap = {} (esperado ~287)".format(gap_total))
-    gap = db.vinyl_gap(U, limit=24)
+    gap = _works_of(db.vinyl_gap(U, limit=24))
     check("vinyl_gap(1) devuelve página de resultados",
           len(gap) > 0, "página vacía")
+    check("vinyl_gap(1): cada obra del gap trae portada de Discogs (regla transversal)",
+          all(g.get("has_discogs") for g in gap), "alguna obra del gap sin portada discogs")
     # cada obra del gap tiene has_vinyl y trae >=1 edición de vinilo.
     gap_ok = all(
         (lambda w: w and w["has_vinyl"] is True)(db.get_work(g["id"]))
@@ -1128,8 +1185,8 @@ def run_m3a_checks(fx):
 
     # 24. Exclusión cruzada: afines con exclude_user_id=1 NO incluyen la colección.
     if fx.get("work_with_embedding"):
-        sims = db.recommend_similar_to_work(
-            fx["work_with_embedding"], limit=12, exclude_user_id=U)
+        sims = _works_of(db.recommend_similar_to_work(
+            fx["work_with_embedding"], limit=12, exclude_user_id=U))
         check("afines (obra) con exclude_user_id=1 excluyen la colección del user",
               all(s["id"] not in owned for s in sims),
               "coló un disco de la colección en afines")
@@ -1300,6 +1357,186 @@ def run_m3b_checks(fx):
           fs_exp.pop(st2) is None, "caducado no dio None")
 
 
+def run_search_reco_v2_checks(fx):
+    """Búsqueda + reco v2 (§1-§6 del spec).
+
+    §1 búsqueda de calidad: nunca compilation/live_album/single ni works sin
+        portada discogs; ranking pone el exacto/popular primero; US→UK; min 3 chars.
+    §2 artistas: sin "(N)", disambiguation numérica oculta, homónimos dedup, solo
+        con works mostrables.
+    §3 recommend_from_listening 3 tiers (cubierto en run_m3a; aquí el shape).
+    §6 suggest artists+works; buscar-por-selección top-3 por artista + combinadas.
+    """
+    from app.domains import catalog, reco
+
+    # -- §1 REGLA TRANSVERSAL: search_works nunca devuelve tipo prohibido ni
+    #    work sin portada de Discogs. Barremos varios términos populares. La
+    #    verificación de tipo/portada es EN BATCH (una query por término, no N+1). --
+    bad_type, no_cover = [], []
+    for term in ("love", "live", "greatest", "radiohead", "the beatles"):
+        ids = [w["id"] for w in _sw(term, limit=30)]
+        if not ids:
+            continue
+        rows = _q("""
+            SELECT w.id, w.work_type,
+                   EXISTS(SELECT 1 FROM cover_images ci WHERE ci.work_id=w.id
+                          AND ci.source='discogs') AS has_cov
+            FROM works w WHERE w.id = ANY(%(ids)s)
+        """, {"ids": ids})
+        for r in rows:
+            if r["work_type"] not in ("studio_album", "ep"):
+                bad_type.append((term, r["id"], r["work_type"]))
+            if not r["has_cov"]:
+                no_cover.append((term, r["id"]))
+    check("§1 search_works NUNCA devuelve compilation/live_album/single",
+          not bad_type, "colaron tipos: {}".format(bad_type[:5]))
+    check("§1 search_works SOLO works con portada de Discogs",
+          not no_cover, "sin portada: {}".format(no_cover[:5]))
+    # marca has_discogs en cada work devuelto (para el backfill/no re-pedir).
+    check("§1 search_works marca has_discogs=True en cada work mostrado",
+          all(w.get("has_discogs") for w in _sw("radiohead", limit=20)),
+          "algún work sin marca has_discogs")
+
+    # -- §1 RANKING: el término = nombre de artista pone su obra arriba; y el
+    #    exacto de título gana. "interpol" → artista Interpol primero (no "Inter"). --
+    arts = catalog.search("interpol")["artists"]
+    check("§2 search_artists('interpol'): Interpol es el PRIMER artista (no 'Inter')",
+          bool(arts) and arts[0]["name"].lower() == "interpol",
+          "primero: {}".format(arts[0]["name"] if arts else None))
+
+    # -- §1 US→UK: "favorite worst nightmare" encuentra el álbum británico. --
+    fwn = _sw("favorite worst nightmare", limit=20)
+    check("§1 US→UK: 'favorite worst nightmare' encuentra 'Favourite Worst Nightmare'",
+          any("favourite worst nightmare" in (w["title"] or "").lower() for w in fwn),
+          "no encontró el álbum tras normalizar US→UK")
+
+    # -- §1 MIN 3 CHARS: query corta → sin resultados. --
+    check("§1 search_works('ab') (<3 chars) → sin works",
+          _sw("ab") == [], "query <3 devolvió works")
+    check("§2 search_artists('ab') (<3 chars) → sin artistas",
+          db.search_artists("ab") == [], "query <3 devolvió artistas")
+
+    # -- §2 (N) DE DISCOGS: nombre sin "(N)", disambiguation numérica oculta. --
+    leak = _q("SELECT id FROM artists WHERE name ~ '\\(\\d+\\)$' "
+              "AND is_primary LIMIT 1")
+    if leak:
+        a = db.get_artist(leak[0]["id"])
+        check("§2 get_artist: el nombre NO lleva la '(N)' de Discogs",
+              a and "(" not in a["name"].rsplit(" ", 1)[-1].rstrip(")") or
+              (a and not a["name"].rstrip().endswith(")")),
+              "nombre con (N): {}".format(a["name"] if a else None))
+    num_dis = _q("SELECT id FROM artists WHERE disambiguation ~ '^[0-9]+$' LIMIT 1")
+    if num_dis:
+        a = db.get_artist(num_dis[0]["id"])
+        check("§2 get_artist: la disambiguation NUMÉRICA se oculta (NULL)",
+              a and a["disambiguation"] is None,
+              "disamb numérica visible: {}".format(a["disambiguation"] if a else None))
+
+    # -- §2 HOMÓNIMOS: search_artists no devuelve dos con el mismo name_clean. --
+    for term in ("geese", "interpol", "the beatles"):
+        got = db.search_artists(term, limit=20)
+        norms = [_q("SELECT name_clean FROM artists WHERE id=%(i)s",
+                    {"i": g["id"]})[0]["name_clean"] for g in got]
+        check("§2 search_artists('{}') sin homónimos duplicados (dedup name_clean)"
+              .format(term), len(norms) == len(set(norms)),
+              "duplicados: {}".format(norms))
+        # Todos con >=1 work mostrable (los homónimos-basura sin discos caen).
+        all_showable = all(
+            _q("SELECT 1 FROM works w WHERE w.primary_artist_id=%(a)s "
+               "AND w.has_vinyl=true AND w.work_type IN ('studio_album','ep') "
+               "AND EXISTS(SELECT 1 FROM cover_images ci WHERE ci.work_id=w.id "
+               "AND ci.source='discogs') LIMIT 1", {"a": g["id"]})
+            for g in got)
+        check("§2 search_artists('{}'): todo artista tiene >=1 work mostrable"
+              .format(term), all_showable, "algún artista sin works mostrables")
+
+    # -- §6 SUGGEST: artists + works, portada-obligatoria en works, min 3 chars. --
+    sg = catalog.suggest("radio")
+    check("§6 suggest('radio') devuelve artists Y works",
+          len(sg["artists"]) > 0 and len(sg["works"]) > 0,
+          "artists={} works={}".format(len(sg["artists"]), len(sg["works"])))
+    check("§6 suggest works: forma {id,title,artist_name,year}",
+          all(set(w.keys()) >= {"id", "title", "artist_name", "year"}
+              for w in sg["works"]), "forma inesperada")
+    sg_cover_ok = all(
+        _q("SELECT 1 FROM cover_images WHERE work_id=%(w)s AND source='discogs' "
+           "LIMIT 1", {"w": w["id"]}) for w in sg["works"])
+    check("§6 suggest works: todos con portada de Discogs", sg_cover_ok,
+          "algún work sugerido sin portada")
+    check("§6 suggest('ra') (<3 chars) → vacío",
+          catalog.suggest("ra") == {"artists": [], "works": []},
+          "sugerencia con <3 chars")
+
+    # -- §6 BUSCAR POR SELECCIÓN: top-3 por artista + combinadas (anónimo). --
+    # Se acota por `listeners` alto (índice) — un `count(*)` correlacionado sobre
+    # TODOS los artistas primary barrería el catálogo entero (medido: >17 min).
+    two_artists = [r["id"] for r in _q("""
+        SELECT a.id FROM artists a
+        WHERE a.is_primary AND a.listeners > 500000
+          AND EXISTS(SELECT 1 FROM lastfm_similar_artists s WHERE s.artist_id=a.id)
+          AND EXISTS(SELECT 1 FROM works w WHERE w.primary_artist_id=a.id
+              AND w.has_vinyl=true AND w.work_type IN ('studio_album','ep')
+              AND EXISTS(SELECT 1 FROM cover_images ci WHERE ci.work_id=w.id
+                         AND ci.source='discogs'))
+        ORDER BY a.listeners DESC NULLS LAST LIMIT 2
+    """)]
+    if len(two_artists) >= 1:
+        sel = reco.search_by_selection(two_artists, [], exclude_user_id=None)
+        blocks = sel["artist_blocks"]
+        check("§6 selección: un bloque por artista seleccionado (con works)",
+              len(blocks) >= 1 and all(b["works"] for b in blocks),
+              "bloques vacíos: {}".format(len(blocks)))
+        check("§6 selección: máx 3 álbumes por artista (top-3)",
+              all(len(b["works"]) <= 3 for b in blocks),
+              "algún bloque con >3 works")
+        check("§6 selección: works de artista con portada de Discogs",
+              all(w.get("has_discogs") for b in blocks for w in b["works"]),
+              "algún work de bloque sin portada")
+        check("§6 selección: 'en la onda de tu selección' devuelve combinadas",
+              len(sel["combined"]["results"]) > 0, "combinadas vacías")
+        # las combinadas NO son ninguno de los artistas semilla.
+        comb_aids = {w["artist_id"] for w in sel["combined"]["results"]}
+        check("§6 selección: las combinadas excluyen los artistas semilla",
+              not (comb_aids & set(two_artists)), "coló un artista semilla")
+    else:
+        print("SKIP  §6 selección (no hay artistas fixture con >=3 works + grafo)")
+
+    # -- §3 shape de recommend_from_listening SIN Discogs: usuario sin colección →
+    #    tier 1 sin filtro de posesión (si tiene escucha). Usamos un invitado con
+    #    escucha inyectada + LIMPIEZA. --
+    gtmp = None
+    try:
+        gtmp = db.create_guest_user()
+        # inyecta 3 works escuchados (con vinilo+álbum+portada) SIN colección.
+        seeds = _q("""
+            SELECT w.id FROM works w
+            WHERE w.has_vinyl=true AND w.work_type IN ('studio_album','ep')
+              AND EXISTS(SELECT 1 FROM cover_images ci WHERE ci.work_id=w.id
+                         AND ci.source='discogs')
+              AND (w.work_type<>'studio_album' OR EXISTS(SELECT 1 FROM releases r
+                   WHERE r.work_id=w.id AND r.format='vinyl'
+                     AND jsonb_array_length(r.tracklist_cache)>=4))
+            ORDER BY w.lastfm_playcount DESC NULLS LAST LIMIT 3
+        """)
+        with db._cursor() as cur:
+            for i, s in enumerate(seeds):
+                cur.execute(
+                    "INSERT INTO user_lastfm_albums (user_id, period, rank, "
+                    "playcount, album_title, artist_name, work_id) VALUES "
+                    "(%(u)s,'overall',%(r)s,%(pc)s,'t','a',%(w)s)",
+                    {"u": gtmp, "r": i + 1, "pc": 100 - i, "w": s["id"]})
+        res = db.recommend_from_listening(gtmp, limit=12)
+        got = _works_of(res)
+        check("§3 sin Discogs (sin colección): escucha resuelta → tier 'buy' sin "
+              "filtro de posesión", len(got) >= 1 and all(g["tier"] == "buy" for g in got),
+              "esperaba tier buy, got {}".format([g.get("tier") for g in got]))
+    finally:
+        if gtmp is not None:
+            db.delete_user_and_sessions(gtmp)
+            check("§3 limpieza: invitado de escucha borrado",
+                  db.get_app_user(gtmp) is None, "no se borró el invitado")
+
+
 def run_covers_checks(fx):
     """cover-backfill: parser, upsert, needs_reliable_cover, enqueue dedup.
 
@@ -1437,19 +1674,29 @@ def run_covers_checks(fx):
                   not leftover.get("has_discogs"),
                   "quedó basura: {}".format(leftover))
 
-    # -- Enqueue: no bloquea y es dedup (mismo id 2x → 1 sola vez) --
+    # -- Enqueue: no bloquea y es dedup TIPADO (mismo (kind,id) 2x → 1 vez) --
+    # Inspeccionamos la cola SIN arrancar el hilo daemon (que la drenaría con
+    # llamadas reales): replicamos la lógica de dedup tipado en memoria.
     from app.domains.covers import _CoverWorker
+
+    def _enqueue_no_drain(worker, kind, ids):
+        with worker._cv:
+            for i in ids:
+                key = (kind, int(i))
+                if key in worker._queued or key in worker._tried:
+                    continue
+                worker._queue[key] = True
+                worker._queued.add(key)
+
     w = _CoverWorker()
-    # Encolar sin arrancar red: inspeccionamos la cola interna directamente.
-    w._queue.clear(); w._queued.clear()
-    with w._cv:
-        for wid in (777, 777, 778):
-            if wid not in w._queued and wid not in w._tried:
-                w._queue[wid] = True
-                w._queued.add(wid)
+    _enqueue_no_drain(w, "cover", (777, 777, 778))
     check("covers: enqueue dedup (777 dos veces → una sola en cola)",
-          list(w._queue.keys()) == [777, 778],
+          list(w._queue.keys()) == [("cover", 777), ("cover", 778)],
           "cola={}".format(list(w._queue.keys())))
+
+    # -- FOTO DE ARTISTA: parser, fetch, dedup tipado, throttle único, store --
+    run_artist_photo_checks(fx)
+
     # request_missing NO bloquea y filtra por needs (mide O(1), sin red).
     # Flag OFF durante la medición → no arranca el worker ni toca Discogs (el
     # selftest NUNCA hace llamadas de red reales).
@@ -1461,6 +1708,151 @@ def run_covers_checks(fx):
         dt = _t.perf_counter() - t0
     check("covers: request_missing(50 works) es no-bloqueante (<50ms)",
           dt < 0.05, "tardó {:.3f}s".format(dt))
+
+
+def run_artist_photo_checks(fx):
+    """artista-fotos: backfill on-demand de foto de artista (Discogs).
+
+    SIN red real (mock del cliente). Verifica: parser de /artists/{id},
+    needs_artist_photo, dedup TIPADO (cover vs artist no se pisan), throttle
+    ÚNICO compartido, store_artist_image real con LIMPIEZA (crea y borra un
+    artista de test; nunca toca artistas reales de forma permanente).
+    """
+    from app.domains import covers
+    from app.domains.covers import _CoverWorker
+
+    def _enqueue_no_drain(worker, kind, ids):
+        # Encola SIN arrancar el hilo daemon (que drenaría con llamadas reales).
+        with worker._cv:
+            for i in ids:
+                key = (kind, int(i))
+                if key in worker._queued or key in worker._tried:
+                    continue
+                worker._queue[key] = True
+                worker._queued.add(key)
+
+    # -- fetch_artist_image con cliente mockeado (sin red): images con primary --
+    _orig_get_json = covers._get_json
+    try:
+        covers._get_json = lambda path: (
+            {"images": [
+                {"type": "primary", "uri": "https://i.discogs.com/A.jpg",
+                 "uri150": "https://i.discogs.com/A150.jpg"}]}
+            if path.startswith("/artists/") else None)
+        img = covers.fetch_artist_image(42)
+        check("artista-fotos: fetch_artist_image devuelve la uri150 (mock, sin red)",
+              img == "https://i.discogs.com/A150.jpg", "img={}".format(img))
+        # Sin uri150 → cae a uri.
+        covers._get_json = lambda path: (
+            {"images": [{"type": "primary", "uri": "https://i.discogs.com/B.jpg"}]}
+            if path.startswith("/artists/") else None)
+        img2 = covers.fetch_artist_image(42)
+        check("artista-fotos: fetch_artist_image sin uri150 cae a uri",
+              img2 == "https://i.discogs.com/B.jpg", "img2={}".format(img2))
+        # Sin images → None.
+        covers._get_json = lambda path: {"images": []}
+        check("artista-fotos: fetch_artist_image sin imagen → None",
+              covers.fetch_artist_image(42) is None, "no dio None")
+        check("artista-fotos: fetch_artist_image sin discogs_artist_id → None",
+              covers.fetch_artist_image(None) is None, "no dio None sin id")
+    finally:
+        covers._get_json = _orig_get_json
+
+    # -- needs_artist_photo: sin url → True; i.discogs.com → False; estrella → True --
+    check("artista-fotos: needs_artist_photo(sin image_url) → True",
+          covers.needs_artist_photo({"id": 1, "image_url": None}),
+          "sin url no marcó needs")
+    check("artista-fotos: needs_artist_photo(url i.discogs.com) → False",
+          not covers.needs_artist_photo(
+              {"id": 1, "image_url": "https://i.discogs.com/x.jpg"}),
+          "url discogs marcó needs")
+    star = ("https://lastfm.freetls.fastly.net/i/u/300x300/"
+            "2a96cbd8b46e442fc41c2b86b821562f.png")
+    check("artista-fotos: needs_artist_photo(placeholder-estrella) → True",
+          covers.needs_artist_photo({"id": 1, "image_url": star}),
+          "estrella no marcó needs")
+
+    # -- dedup TIPADO: ('artist',X) 2x → 1; ('cover',X) y ('artist',X) coexisten --
+    w2 = _CoverWorker()
+    _enqueue_no_drain(w2, "artist", (55, 55, 66))
+    check("artista-fotos: enqueue_artists dedup (55 dos veces → una)",
+          list(w2._queue.keys()) == [("artist", 55), ("artist", 66)],
+          "cola={}".format(list(w2._queue.keys())))
+    w3 = _CoverWorker()
+    _enqueue_no_drain(w3, "cover", (100,))    # ('cover', 100)
+    _enqueue_no_drain(w3, "artist", (100,))   # ('artist', 100) — mismo nº, distinto kind
+    check("artista-fotos: cover y artist con mismo id COEXISTEN (tipo separa)",
+          list(w3._queue.keys()) == [("cover", 100), ("artist", 100)],
+          "cola={}".format(list(w3._queue.keys())))
+
+    # -- THROTTLE ÚNICO: un solo _last_req compartido por ambos kinds --
+    w4 = _CoverWorker()
+    check("artista-fotos: worker tiene UN solo throttle (_last_req compartido)",
+          hasattr(w4, "_last_req") and not hasattr(w4, "_last_req_artist"),
+          "hay más de un rate-limiter")
+    # Procesar un item de cada kind con el cliente/DB mockeados y comprobar que
+    # AMBOS avanzan el MISMO _last_req (mismo throttle) — sin red real.
+    _g = covers._get_json
+    _wdi = db.work_discogs_ids
+    _adi = db.artist_discogs_ids
+    _sc = covers.store_cover
+    _sa = covers.store_artist_image
+    try:
+        covers._get_json = lambda path: {"images": [
+            {"type": "primary", "uri": "https://i.discogs.com/z.jpg",
+             "uri150": "https://i.discogs.com/z150.jpg"}]}
+        db.work_discogs_ids = lambda ids: {ids[0]: {"master_id": 1, "release_id": 2}}
+        db.artist_discogs_ids = lambda ids: {ids[0]: 999}
+        covers.store_cover = lambda *a, **k: None
+        covers.store_artist_image = lambda *a, **k: None
+        w4._last_req = 0.0
+        w4._process_one(("cover", 100))
+        t_after_cover = w4._last_req
+        w4._process_one(("artist", 200))
+        t_after_artist = w4._last_req
+        check("artista-fotos: ambos kinds usan el MISMO _last_req (throttle único)",
+              t_after_cover > 0 and t_after_artist >= t_after_cover,
+              "cover={} artist={}".format(t_after_cover, t_after_artist))
+    finally:
+        covers._get_json = _g
+        db.work_discogs_ids = _wdi
+        db.artist_discogs_ids = _adi
+        covers.store_cover = _sc
+        covers.store_artist_image = _sa
+
+    # -- store_artist_image REAL + LIMPIEZA (artista de test creado y borrado) --
+    test_aid = None
+    try:
+        with db._cursor() as cur:
+            cur.execute(
+                "INSERT INTO artists (name, kind, is_primary) "
+                "VALUES ('__selftest_artista_foto__', 'band', false) RETURNING id")
+            test_aid = cur.fetchone()["id"]
+        before = db.get_artist(test_aid)
+        check("artista-fotos: artista de test arranca SIN foto (monograma)",
+              covers.needs_artist_photo(before),
+              "arrancó con foto: {}".format(before))
+        covers.store_artist_image(test_aid, "https://i.discogs.com/ARTTEST.jpg")
+        after = db.get_artist(test_aid)
+        check("artista-fotos: store_artist_image escribe image_url en artists",
+              after.get("image_url") == "https://i.discogs.com/ARTTEST.jpg",
+              "after={}".format(after))
+        src = _q("SELECT image_source FROM artists WHERE id=%(a)s",
+                 {"a": test_aid})
+        check("artista-fotos: store_artist_image marca image_source='discogs'",
+              src and src[0]["image_source"] == "discogs",
+              "src={}".format(src))
+        check("artista-fotos: tras store, needs_artist_photo → False",
+              not covers.needs_artist_photo(after),
+              "seguía sin foto tras store")
+    finally:
+        # LIMPIEZA: borrar el artista de test (nunca dejar basura en core).
+        if test_aid is not None:
+            with db._cursor() as cur:
+                cur.execute("DELETE FROM artists WHERE id=%(a)s", {"a": test_aid})
+            gone = db.get_artist(test_aid)
+            check("artista-fotos: limpieza — artista de test borrado",
+                  gone is None, "quedó basura: {}".format(gone))
 
 
 def secrets_token():
@@ -1512,6 +1904,19 @@ def run_http_smoke(fx):
     r = client.get("/buscar", params={"q": "radiohead"})
     check("GET /buscar?q=radiohead → 200", r.status_code == 200,
           "status {}".format(r.status_code))
+
+    # §6 type-ahead: /api/suggest devuelve JSON con artists+works.
+    r = client.get("/api/suggest", params={"q": "radiohead"})
+    check("GET /api/suggest?q=radiohead → 200 JSON con artists+works",
+          r.status_code == 200 and "artists" in r.json() and "works" in r.json(),
+          "status {} / body {}".format(r.status_code, r.text[:120]))
+
+    # §6 buscar por SELECCIÓN: /buscar?artists=… → bloque 'mejores de'.
+    if fx.get("artist_with_discog"):
+        r = client.get("/buscar", params={"artists": str(fx["artist_with_discog"])})
+        check("GET /buscar?artists={id} → 200 (bloque 'mejores de')",
+              r.status_code == 200 and "mejores de" in r.text.lower(),
+              "status {} / sin bloque".format(r.status_code))
 
     # M2: ficha de obra CON prensa muestra el bloque "crítica" + tracklist.
     if fx["work_with_press"]:
@@ -1587,8 +1992,12 @@ def run_http_smoke(fx):
         check("GET /mi con sesión dev → contiene 'Basado en lo que escuchas'",
               "Basado en lo que escuchas" in r.text,
               "falta la sección de escucha Last.fm")
+        # §3 reescrito: la escucha real da porque por tier ("lo escuchas y aún no
+        # lo tienes" / "súbelo a vinilo" / "…, que escuchas") — todos citan la escucha.
         check("GET /mi con sesión dev → la sección de escucha trae cards con porque",
-              "card-porque" in r.text and "en la onda de lo que escuchas" in r.text,
+              "card-porque" in r.text
+              and ("lo escuchas" in r.text or "que escuchas" in r.text
+                   or "súbelo a vinilo" in r.text),
               "la sección de escucha no muestra cards con porque de escucha")
         # logout limpia la sesión.
         client.post("/auth/logout")

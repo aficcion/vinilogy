@@ -190,36 +190,90 @@ def store_cover(work_id, url, url_thumb):
     db.store_cover_image(work_id, "discogs", url, url_thumb)
 
 
+# --- Cliente/almacenaje de FOTO DE ARTISTA -----------------------------------
+#
+# Mismo patrón que las portadas y — crítico — el MISMO worker/throttle (ver
+# `_BackfillWorker`): portadas y fotos de artista pegan a la MISMA API de Discogs
+# con el MISMO token (~55 req/min, compartido con Florent/nightly), así que NO
+# puede haber un segundo hilo con su propio rate-limiter. La cola procesa items
+# TIPADOS `(kind, id)` con kind ∈ {'cover','artist'}.
+
+# Last.fm quitó las fotos de artista: la estrella placeholder (hash 2a96cbd8…)
+# quedó colada en image_url de ~38K artistas. get_artist ya la mapea a NULL, pero
+# needs_artist_photo la trata también aquí como "sin foto" (defensivo).
+_STAR_PLACEHOLDER_HASH = "2a96cbd8b46e442fc41c2b86b821562f"
+
+
+def fetch_artist_image(discogs_artist_id):
+    """Foto de artista de Discogs. url|None.
+
+    `GET /artists/{id}` (reusa `_get_json`), imagen primaria (reusa
+    `_pick_primary_image`). Devuelve la `uri150` (150px, encaja en el avatar de
+    140px); si no hay `uri150`, la `uri`. None si Discogs no tiene imagen/429/error.
+    """
+    if not discogs_artist_id:
+        return None
+    data = _get_json("/artists/{}".format(int(discogs_artist_id)))
+    picked = _pick_primary_image((data or {}).get("images"))
+    if not picked:
+        return None
+    url, thumb = picked  # (uri, uri150|uri|url)
+    return thumb or url
+
+
+def store_artist_image(artist_id, url):
+    """Guarda la foto de artista recuperada en core `artists.image_url`."""
+    db.store_artist_image(artist_id, url)
+
+
+def needs_artist_photo(artist_row):
+    """True si la ficha de artista mostraría el MONOGRAMA (sin foto real).
+
+    `get_artist` ya devuelve `image_url` NULL para el placeholder-estrella; aquí,
+    defensivo, tratamos también una URL con el hash de la estrella como sin-foto.
+    """
+    if not artist_row:
+        return False
+    url = artist_row.get("image_url")
+    if not url:
+        return True
+    if _STAR_PLACEHOLDER_HASH in url:
+        return True
+    return False
+
+
 # --- Set "ya intentado" con TTL (evita re-pedir en cada render) --------------
 
 class _TriedSet:
-    """Set de work_ids ya intentados (con o sin éxito) con TTL, thread-safe.
+    """Set de items ya intentados (con o sin éxito) con TTL, thread-safe.
 
-    `add`/`__contains__` purgan expirados de forma perezosa. Cap por tamaño
-    (descarta los más antiguos) para no crecer sin límite en un proceso largo.
+    Las claves son items TIPADOS `(kind, id)` (kind ∈ {'cover','artist'}) — el
+    tipo separa un artist_id que coincida numéricamente con un work_id. `add`/
+    `__contains__` purgan expirados de forma perezosa. Cap por tamaño (descarta
+    los más antiguos) para no crecer sin límite en un proceso largo.
     """
 
     def __init__(self, ttl, cap):
         self._ttl = ttl
         self._cap = cap
-        self._d = OrderedDict()  # work_id -> expiry_ts
+        self._d = OrderedDict()  # (kind, id) -> expiry_ts
         self._lock = threading.Lock()
 
-    def add(self, work_id):
+    def add(self, key):
         now = time.time()
         with self._lock:
-            self._d.pop(work_id, None)
-            self._d[work_id] = now + self._ttl
+            self._d.pop(key, None)
+            self._d[key] = now + self._ttl
             self._purge(now)
 
-    def __contains__(self, work_id):
+    def __contains__(self, key):
         now = time.time()
         with self._lock:
-            exp = self._d.get(work_id)
+            exp = self._d.get(key)
             if exp is None:
                 return False
             if exp <= now:
-                self._d.pop(work_id, None)
+                self._d.pop(key, None)
                 return False
             return True
 
@@ -239,38 +293,46 @@ class _TriedSet:
 # --- Worker en segundo plano (cola dedup + rate limit) -----------------------
 
 class _CoverWorker:
-    """Cola dedup + hilo daemon que recupera portadas de Discogs sin bloquear la
-    request HTTP. `enqueue` es O(1) y no bloquea; el hilo arranca perezosamente en
-    el primer enqueue."""
+    """Cola dedup + hilo daemon ÚNICO que recupera de Discogs, sin bloquear la
+    request HTTP, items TIPADOS `(kind, id)` con kind ∈ {'cover','artist'}.
+
+    CRÍTICO: portadas y fotos de artista comparten esta MISMA cola, este MISMO
+    hilo y — sobre todo — el MISMO throttle (`_last_req`/`_RATE_MIN_INTERVAL`),
+    para no exceder el rate limit de Discogs (~55/min, compartido con otros
+    sistemas de la máquina). NO hay un segundo rate-limiter.
+
+    `enqueue`/`enqueue_artists` son O(1) y no bloquean; el hilo arranca
+    perezosamente en el primer enqueue. El tipo separa un artist_id que coincida
+    numéricamente con un work_id."""
 
     def __init__(self):
         self._lock = threading.Lock()
         self._cv = threading.Condition(self._lock)
-        self._queue = OrderedDict()   # work_id -> True (dedup, orden FIFO)
+        self._queue = OrderedDict()   # (kind, id) -> True (dedup, orden FIFO)
         self._queued = set()          # espejo para dedup O(1)
         self._tried = _TriedSet(_TRIED_TTL, _TRIED_MAX)
         self._thread = None
-        self._last_req = 0.0
+        self._last_req = 0.0          # ÚNICO throttle, compartido por kinds
         self._dropped = 0
 
     def _ensure_thread(self):
         if self._thread is None or not self._thread.is_alive():
-            t = threading.Thread(target=self._run, name="cover-backfill",
+            t = threading.Thread(target=self._run, name="discogs-backfill",
                                  daemon=True)
             self._thread = t
             t.start()
 
-    def enqueue(self, work_ids):
-        """Encola work_ids que necesiten portada. Dedup (mismo id 2x → 1 sola vez),
-        salta los ya-intentados (TTL) y respeta el cap de cola. NO bloquea."""
-        if not work_ids:
+    def _enqueue_keys(self, kind, ids):
+        """Encola items `(kind, id)`. Dedup (mismo item 2x → 1 sola vez), salta
+        ya-intentados (TTL) y respeta el cap de cola. NO bloquea."""
+        if not ids:
             return
         with self._cv:
-            for w in work_ids:
-                if w is None:
+            for i in ids:
+                if i is None:
                     continue
-                w = int(w)
-                if w in self._queued or w in self._tried:
+                key = (kind, int(i))
+                if key in self._queued or key in self._tried:
                     continue
                 if len(self._queue) >= _QUEUE_CAP:
                     self._dropped += 1
@@ -279,10 +341,18 @@ class _CoverWorker:
                                  "(total descartados=%d)", _QUEUE_CAP,
                                  self._dropped)
                     continue
-                self._queue[w] = True
-                self._queued.add(w)
+                self._queue[key] = True
+                self._queued.add(key)
             self._cv.notify()
         self._ensure_thread()
+
+    def enqueue(self, work_ids):
+        """Encola work_ids para backfill de PORTADA (kind='cover')."""
+        self._enqueue_keys("cover", work_ids)
+
+    def enqueue_artists(self, artist_ids):
+        """Encola artist_ids para backfill de FOTO DE ARTISTA (kind='artist')."""
+        self._enqueue_keys("artist", artist_ids)
 
     def _next(self, timeout=30.0):
         with self._cv:
@@ -290,9 +360,9 @@ class _CoverWorker:
                 self._cv.wait(timeout)
             if not self._queue:
                 return None
-            w, _ = self._queue.popitem(last=False)
-            self._queued.discard(w)
-            return w
+            key, _ = self._queue.popitem(last=False)
+            self._queued.discard(key)
+            return key
 
     def _throttle(self):
         now = time.time()
@@ -301,10 +371,18 @@ class _CoverWorker:
             time.sleep(_RATE_MIN_INTERVAL - delta)
         self._last_req = time.time()
 
-    def _process_one(self, work_id):
+    def _process_one(self, key):
         # Marcar como intentado ANTES de pedir: con o sin éxito no se re-pide en el
-        # TTL (ni se martillea Discogs por los que no tiene).
-        self._tried.add(work_id)
+        # TTL (ni se martillea Discogs por los que no tiene). El throttle es ÚNICO
+        # (mismo `_last_req`) para ambos kinds → nunca dos rate-limiters.
+        kind, item_id = key
+        self._tried.add(key)
+        if kind == "artist":
+            self._process_artist(item_id)
+        else:
+            self._process_cover(item_id)
+
+    def _process_cover(self, work_id):
         ids = db.work_discogs_ids([work_id]).get(work_id)
         if not ids:
             return  # sin discogs_master_id ni release → placeholder, nada que hacer
@@ -319,13 +397,27 @@ class _CoverWorker:
         except Exception as e:  # noqa: BLE001 — el worker no debe morir por una fila
             log.warning("covers: fallo al guardar work=%s (%s)", work_id, e)
 
+    def _process_artist(self, artist_id):
+        dg_id = db.artist_discogs_ids([artist_id]).get(artist_id)
+        if not dg_id:
+            return  # sin discogs_artist_id → sigue el monograma, nada que hacer
+        self._throttle()
+        url = fetch_artist_image(dg_id)
+        if not url:
+            return  # Discogs no tiene foto o 429/error → sigue el monograma
+        try:
+            store_artist_image(artist_id, url)
+            log.debug("covers: guardada foto de artista discogs artist=%s", artist_id)
+        except Exception as e:  # noqa: BLE001 — el worker no debe morir por una fila
+            log.warning("covers: fallo al guardar foto artist=%s (%s)", artist_id, e)
+
     def _run(self):
         while True:
             try:
-                work_id = self._next()
-                if work_id is None:
+                key = self._next()
+                if key is None:
                     continue
-                self._process_one(work_id)
+                self._process_one(key)
             except Exception as e:  # noqa: BLE001 — nunca dejar morir el daemon
                 log.warning("covers: error en worker (%s)", e)
                 time.sleep(1.0)
@@ -345,6 +437,14 @@ def enqueue(work_ids):
     if not _enabled():
         return
     _WORKER.enqueue(work_ids)
+
+
+def enqueue_artists(artist_ids):
+    """Encola artist_ids para backfill de foto de artista (no bloquea). No-op si el
+    flag/credenciales están off. MISMO worker/throttle que las portadas."""
+    if not _enabled():
+        return
+    _WORKER.enqueue_artists(artist_ids)
 
 
 # --- Enganche de las vistas --------------------------------------------------
@@ -374,3 +474,41 @@ def request_missing(works):
             ids.append(wid)
     if ids:
         enqueue(ids)
+
+
+def request_missing_ids(work_ids):
+    """Encola una lista de work_ids que YA se sabe que NO tienen portada de Discogs.
+
+    Es el enganche de CONVERGENCIA de la regla transversal: los caminos de
+    búsqueda/reco calculan sus candidatos SIN el filtro de portada, devuelven en
+    `missing_cover_ids` los que aún no la tienen, y el router los pasa aquí para que
+    el worker las pida a Discogs. La PRÓXIMA carga ya las trae. No bloquea; no-op si
+    el flag/credenciales están off.
+    """
+    if not _enabled() or not work_ids:
+        return
+    enqueue([w for w in work_ids if w is not None])
+
+
+def request_missing_artists(artists):
+    """Desde una vista: encola los artistas que mostrarían MONOGRAMA (sin foto).
+
+    Acepta un dict de artista o una lista de ellos (los que maneja la vista, con
+    `id` + `image_url`). NO bloquea (encolar es O(1)). No-op si el flag/
+    credenciales están off. MISMO worker/throttle que las portadas.
+    """
+    if not _enabled() or not artists:
+        return
+    if isinstance(artists, dict):
+        artists = [artists]
+    ids = []
+    for a in artists:
+        if not isinstance(a, dict):
+            continue
+        aid = a.get("id")
+        if aid is None:
+            continue
+        if needs_artist_photo(a):
+            ids.append(aid)
+    if ids:
+        enqueue_artists(ids)

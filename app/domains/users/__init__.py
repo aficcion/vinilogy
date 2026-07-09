@@ -14,7 +14,7 @@ identidad vinculada).
 Límite one-way: users depende de db/pricing; nada del catálogo depende de users.
 """
 from app import db
-from app.domains import pricing
+from app.domains import pricing, covers
 from app.domains.users import oauth  # noqa: F401 (fachada M3b)
 
 # Nombre de la cookie de sesión (httponly, server-side).
@@ -128,26 +128,33 @@ def recommend_for_user(user_id, limit=12):
     esta sección ES la atribución a la co-escucha ("porque tienes A y B", con
     anclas REALES de su colección) y ese es precisamente el valor de la sección —
     la vibra de crítica sería otra sección, no esta (mismo criterio que
-    recommend_from_listening)."""
-    return db.recommend_for_user(user_id, limit=limit)
+    recommend_from_listening).
+
+    Encola las portadas que falten (convergencia) y devuelve la lista con portada."""
+    res = db.recommend_for_user(user_id, limit=limit)
+    covers.request_missing_ids(res.get("missing_cover_ids"))
+    return res.get("works", [])
 
 
 def recommend_from_listening(user_id, limit=12):
-    """Recomendación por ESCUCHA de Last.fm (centroide de escucha, embeddings de
-    core). [] honesto si el usuario no tiene datos Last.fm resueltos con embedding
-    (la sección de /mi simplemente no aparece). Anónimo → [].
+    """"Basado en lo que escuchas": la ESCUCHA REAL del usuario (Last.fm), en tres
+    tiers (no poseído → upgrade → otros discos de sus artistas). [] honesto si el
+    usuario no tiene escucha resuelta. Anónimo → [].
 
-    A diferencia de recommend_for_user, NO se pasa por press.enrich_porque_batch:
-    el `porque` de esta sección ES la atribución a la escucha ("en la onda de lo
-    que escuchas (…)") y el valor de la sección es precisamente esa atribución —
-    la vibra de crítica sería otra sección, no esta."""
-    return db.recommend_from_listening(user_id, limit=limit)
+    Encola las portadas que falten (convergencia) y devuelve la lista con portada.
+    Cada work lleva `tier` ('buy'|'upgrade'|'artist') y `porque`."""
+    res = db.recommend_from_listening(user_id, limit=limit)
+    covers.request_missing_ids(res.get("missing_cover_ids"))
+    return res.get("works", [])
 
 
 def vinyl_gap(user_id, limit=24):
     """Gap de vinilo con PRECIO por obra (reutiliza pricing). Cada ítem lleva sus
-    ediciones de vinilo y su bloque de precios (o vacío honesto)."""
-    items = db.vinyl_gap(user_id, limit=limit)
+    ediciones de vinilo y su bloque de precios (o vacío honesto). Encola las
+    portadas que falten (convergencia) y devuelve la lista con portada."""
+    res = db.vinyl_gap(user_id, limit=limit)
+    covers.request_missing_ids(res.get("missing_cover_ids"))
+    items = res.get("works", [])
     for it in items:
         it["prices"] = pricing.get_prices_for_work(it["id"])
     return items

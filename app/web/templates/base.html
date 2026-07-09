@@ -9,9 +9,9 @@
 <body>
   <header class="topbar">
     <a class="brand" href="/">Vinylbe<span class="brand-v2">v2</span></a>
-    <form class="search" action="/buscar" method="get" role="search">
+    <form class="search" action="/buscar" method="get" role="search" data-typeahead>
       <input type="search" name="q" value="{{ q|default('') }}"
-             placeholder="Busca un disco o un artista…" autocomplete="off" autofocus>
+             placeholder="Busca un disco o un artista…" autocomplete="off">
       <button type="submit">Buscar</button>
     </form>
     <a class="nav-vibra" href="/vibra">Por vibra ✦</a>
@@ -45,5 +45,6 @@
   <footer class="footer">
     <span>Vinylbe v2 · M3a · datos de <code>vinology_core</code></span>
   </footer>
+  <script src="/static/search.js" defer></script>
 </body>
 </html>
