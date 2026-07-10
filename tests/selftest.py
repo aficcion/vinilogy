@@ -82,25 +82,14 @@ def _works_of(res):
     return res or []
 
 
-def _max_vinyl_tracks(work_id):
-    """Máximo nº de pistas entre los prensados de VINILO de la obra (o None). Es la
-    MISMA señal que usa el filtro de single disfrazado en db._album_track_ok_sql."""
-    rows = _q(
-        "SELECT max(jsonb_array_length(r.tracklist_cache)) AS m "
-        "FROM releases r WHERE r.work_id = %(w)s AND r.format = 'vinyl'",
-        {"w": work_id})
-    return rows[0]["m"] if rows else None
-
-
 def _no_disguised_singles(items):
-    """True si NINGÚN item studio_album es un single disfrazado (max pistas en
-    vinilo <=3 → single; >=4 es álbum/EP legítimo). ep/compilation/live_album
-    exentos (no son el problema del single mal tipado)."""
+    """True si NINGÚN item mostrado es un `single`. Tras la migración core 049
+    (re-tipado de singles/EPs mal etiquetados), el work_type es fiable y las
+    queries filtran a studio_album+ep; un `single` colándose sería el fallo.
+    (Antes esto se medía por nº de pistas de vinilo; ese parche se retiró.)"""
     for it in items:
-        if it.get("work_type") == "studio_album":
-            mx = _max_vinyl_tracks(it["id"])
-            if mx is not None and mx <= 3:
-                return False, (it["id"], it.get("title"), mx)
+        if it.get("work_type") == "single":
+            return False, (it["id"], it.get("title"), it.get("work_type"))
     return True, None
 
 
@@ -368,26 +357,18 @@ def run_checks(fx):
         "algún resultado no tenía has_vinyl",
     )
 
-    # 1-bis. SINGLE DISFRAZADO de studio_album: un studio_album cuyo prensado de
-    #        vinilo tiene <=3 pistas es un single mal tipado y NO debe aparecer.
-    #        Caso canónico: Interpol – "Evil" (work 11253669, 2 pistas en vinilo)
-    #        NO debe salir en search_works('interpol').
-    if _q("SELECT id FROM works WHERE id = 11253669"):
-        hits = _sw("interpol", limit=40)
-        check("search_works('interpol') NO devuelve el single disfrazado 'Evil'",
-              all(r["id"] != 11253669 for r in hits),
-              "'Evil' (11253669) se coló en la búsqueda")
-    # Genérico (no depende de un id): ningún studio_album devuelto por búsquedas
-    # amplias es un single disfrazado (<=3 pistas en vinilo).
-    disguised = []
+    # 1-bis. SINGLES mal tipados: tras la migración core 049 (re-tipado de raíz),
+    #        el work_type es fiable y las búsquedas filtran a studio_album+ep, así
+    #        que NINGÚN resultado debe ser `single`. (El parche por nº de pistas de
+    #        vinilo se retiró; el caso "Evil" ahora es `ep` — 049 mide sobre todas
+    #        las ediciones, no solo vinilo — y ya no se excluye.)
+    singles = []
     for t in ["interpol", "radiohead", "the strokes"]:
         for r in _sw(t, limit=30):
-            if r["work_type"] == "studio_album":
-                mx = _max_vinyl_tracks(r["id"])
-                if mx is not None and mx <= 3:
-                    disguised.append((t, r["title"], mx))
-    check("search_works: ningún studio_album devuelto es single disfrazado (<=3 "
-          "pistas en vinilo)", not disguised, "colaron: {}".format(disguised[:5]))
+            if r["work_type"] == "single":
+                singles.append((t, r["title"], r["id"]))
+    check("search_works: ningún resultado es work_type='single' (core 049)",
+          not singles, "colaron singles: {}".format(singles[:5]))
 
     # 1-ter. Un ÁLBUM real conocido (Dark Side ~10 pistas) SÍ aparece.
     dark = _sw("dark side of the moon", limit=20)

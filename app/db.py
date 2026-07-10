@@ -31,41 +31,21 @@ _DISCOGRAPHY_WORK_TYPES = ("studio_album", "ep")
 # Filtro anti-morralla para RECOMENDACIÓN por contenido (solo obras de verdad).
 _RECO_WORK_TYPES = ("studio_album", "ep")
 
-# Desenmascarar SINGLES DISFRAZADOS de studio_album (core los tipa mal; el fix de
-# raíz en core —re-tipado sobre HNSW— se hará en otra ventana, así que este parche
-# vive en la app, permanente). Mapa de la decisión de core: ≤3 pistas = single,
-# 4-5 = ep, ≥6 = álbum → un `studio_album` cuenta como ÁLBUM solo si tiene ≥1
-# release con `jsonb_array_length(tracklist_cache) >= _MIN_ALBUM_TRACKS`. Los 4-5
-# (EPs legítimos) y ≥6 se MANTIENEN. Los `work_type='ep'` reales quedan EXENTOS del
-# umbral (cortos legítimamente).
-_MIN_ALBUM_TRACKS = 4
-
-# OJO — la cuenta de pistas se mide sobre los prensados de VINILO, NO sobre TODOS
-# los releases. Motivo (ratificado por el ejemplo del coordinador): el caso canónico
-# es Interpol – "Evil" (work 11253669), un single de Antics tipado studio_album cuyo
-# VINILO trae 2 pistas → debe EXCLUIRSE. Pero ese work tiene ediciones en CD/digital
-# de 4-5 pistas (recopilan caras B / sesiones BBC), así que `max sobre TODOS los
-# releases` daría 5 y lo dejaría pasar — contradiría el criterio de aceptación "Evil
-# NO aparece" + "Evil = 2 pistas". Como además recomendamos/vendemos VINILO, el nº de
-# pistas del PRENSADO DE VINILO es la señal correcta y la ÚNICA lectura que satisface
-# ambos requisitos. Cobertura del tracklist de vinilo: ~100% en el top del catálogo
-# (medido) → sin falsos-drop por dato ausente.
-
-
+# SINGLES DISFRAZADOS — PARCHE RETIRADO (migración core 049, 10-jul-2026).
+# Antes core insertaba los works de origen Discogs como `studio_album` por defecto
+# y los singles/EPs quedaban mal tipados; este predicado los excluía midiendo el
+# nº de pistas del prensado de vinilo. La migración 049 re-tipó de raíz en core
+# (≤3 pistas → single, 4-5 → ep, ≥6 → álbum, señal = max pistas entre ediciones),
+# así que el work_type ya es fiable y el filtro transversal por work_type
+# (`_RECO_WORK_TYPES`/`_DISCOGRAPHY_WORK_TYPES` = studio_album+ep) hace el trabajo.
+# El predicado se neutraliza a TRUE (no-op) para no tocar los ~14 sitios donde se
+# interpola; el scaffolding {album_track_ok} queda inerte y se puede limpiar.
+# NOTA: 049 mide sobre TODAS las ediciones (no solo vinilo), así que algún work con
+# vinilo ≤3 pistas pero CD/digital ≥4 (p.ej. Interpol "Evil") ahora es `ep` y SÍ
+# aparece — es el criterio core-consistente, aceptado al retirar el parche.
 def _album_track_ok_sql(work_alias="w"):
-    """Predicado SQL: `<alias>` es un disco de verdad (no un single disfrazado).
-
-    Verdadero si el work NO es `studio_album`, o si siéndolo tiene ≥1 release de
-    VINILO con al menos `_MIN_ALBUM_TRACKS` pistas. EXISTS acotado por work_id
-    (índice `idx_releases_work`) — barato SOLO sobre el conjunto YA REDUCIDO de
-    fase-2 / candidatos capados; NUNCA meter en la fase-1 del KNN sobre 1,6M filas.
-    """
-    return (
-        "({w}.work_type <> 'studio_album' OR EXISTS ("
-        " SELECT 1 FROM releases r_atc"
-        " WHERE r_atc.work_id = {w}.id AND r_atc.format = 'vinyl'"
-        " AND jsonb_array_length(r_atc.tracklist_cache) >= {n}))"
-    ).format(w=work_alias, n=_MIN_ALBUM_TRACKS)
+    """No-op (TRUE) — parche retirado tras la migración core 049. Ver comentario."""
+    return "TRUE"
 
 
 # Regla TRANSVERSAL de PORTADA OBLIGATORIA: un work solo se MUESTRA si tiene una
