@@ -514,32 +514,69 @@ def get_work_vinyl_editions(work_id):
 
 
 def get_work_tracklist(work_id):
-    """Tracklist normalizada de una edición de vinilo representativa de la work.
+    """Tracklist normalizada de la edición REPRESENTATIVA de la work.
 
-    Estrategia: de las releases de vinilo con `tracklist_cache` (JSONB, 100%
-    cubierto en vinilo en core), toma la MÁS COMPLETA (mayor nº de pistas) — la
-    edición representativa que enseña la obra entera. Sin release de vinilo con
-    tracklist → [].
+    Estrategia en dos pasos:
+
+    1) EDICIÓN DE REFERENCIA (main_release del master Discogs). `work_main_release`
+       (migración 052 de core) mapea work → discogs_release_id de la edición que
+       Discogs marca como representativa del disco. Es el tracklist canónico: el
+       álbum tal cual, no una caja de tomas alternativas. Cubre el 100% de los
+       works con vinilo (todos tienen master). Si esa release está en nuestra BD
+       con tracklist, se usa tal cual (cualquier formato: la lista de canciones
+       es la misma).
+
+    2) FALLBACK POR MODA. Para los raros sin main_release resoluble (master sin
+       <main_release> en el dump, o edición de referencia que no tenemos), se
+       coge la edición de vinilo cuyo nº de pistas es el MÁS FRECUENTE entre
+       todas las ediciones de vinilo — el consenso de cientos de prensados es el
+       álbum; las cajas/rarezas son ediciones sueltas con nº de pistas atípico.
+       (NO el MÁXIMO: eso cogía la caja de lujo.) Empate → la mejor rellenada
+       (más duraciones presentes). Sin vinilo con tracklist → [].
 
     Forma real de `tracklist_cache` (verificada core): array de
     `{title, position, duration, extraartists?}`. Se normaliza a
     `[{position, title, duration}]` (se descartan extraartists y entradas sin
     título; posición/duración pueden faltar → None).
     """
-    sql = """
+    sql_main = """
         SELECT r.tracklist_cache
-        FROM releases r
-        WHERE r.work_id = %(work_id)s
-          AND r.format = 'vinyl'
-          AND r.tracklist_cache IS NOT NULL
+        FROM work_main_release wmr
+        JOIN releases r ON r.discogs_release_id = wmr.main_release_id
+        WHERE wmr.work_id = %(work_id)s
           AND jsonb_typeof(r.tracklist_cache) = 'array'
           AND jsonb_array_length(r.tracklist_cache) > 0
-        ORDER BY jsonb_array_length(r.tracklist_cache) DESC
+        LIMIT 1
+    """
+    sql_mode = """
+        SELECT r.tracklist_cache
+        FROM releases r
+        JOIN (
+            SELECT jsonb_array_length(tracklist_cache) AS n
+            FROM releases
+            WHERE work_id = %(work_id)s
+              AND format = 'vinyl'
+              AND jsonb_typeof(tracklist_cache) = 'array'
+              AND jsonb_array_length(tracklist_cache) > 0
+            GROUP BY 1
+            ORDER BY count(*) DESC, n ASC
+            LIMIT 1
+        ) m ON jsonb_array_length(r.tracklist_cache) = m.n
+        WHERE r.work_id = %(work_id)s
+          AND r.format = 'vinyl'
+          AND jsonb_typeof(r.tracklist_cache) = 'array'
+        ORDER BY (
+            SELECT count(*) FROM jsonb_array_elements(r.tracklist_cache) e
+            WHERE COALESCE(e->>'duration', '') <> ''
+        ) DESC
         LIMIT 1
     """
     with _cursor() as cur:
-        cur.execute(sql, {"work_id": work_id})
+        cur.execute(sql_main, {"work_id": work_id})
         row = cur.fetchone()
+        if not row or not row["tracklist_cache"]:
+            cur.execute(sql_mode, {"work_id": work_id})
+            row = cur.fetchone()
     if not row or not row["tracklist_cache"]:
         return []
     out = []

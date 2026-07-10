@@ -215,6 +215,29 @@ def derive_fixtures():
     """)
     fx["work_with_tracklist"] = rows[0]["id"] if rows else None
 
+    # Work con CAJA DE LUJO: su edición de referencia (main_release) tiene
+    # tracklist, y existe una edición de vinilo con MUCHAS más pistas (una caja
+    # de tomas/sessions). Regresión: get_work_tracklist debe devolver la de
+    # referencia, no la caja (bug histórico del MAX → Abbey Road Super Deluxe).
+    rows = _q("""
+        SELECT wmr.work_id AS id,
+               jsonb_array_length(mr.tracklist_cache) AS ref_n
+        FROM work_main_release wmr
+        JOIN releases mr ON mr.discogs_release_id = wmr.main_release_id
+             AND jsonb_typeof(mr.tracklist_cache) = 'array'
+        JOIN LATERAL (
+            SELECT max(jsonb_array_length(r.tracklist_cache)) AS max_n
+            FROM releases r
+            WHERE r.work_id = wmr.work_id AND r.format = 'vinyl'
+              AND jsonb_typeof(r.tracklist_cache) = 'array'
+        ) mx ON true
+        WHERE jsonb_array_length(mr.tracklist_cache) BETWEEN 4 AND 30
+          AND mx.max_n > jsonb_array_length(mr.tracklist_cache) + 8
+        ORDER BY mx.max_n DESC
+        LIMIT 1
+    """)
+    fx["work_with_boxset"] = (rows[0] if rows else None)
+
     # Work con vinilo que SÍ tiene señales de prensa con frase_vibra (para press).
     rows = _q("""
         SELECT p.work_id AS id
@@ -724,6 +747,19 @@ def run_checks(fx):
                   "ninguna pista con posición")
     else:
         check("fixture work_with_tracklist existe", False, "no derivada")
+
+    # 14b. get_work_tracklist elige la EDICIÓN DE REFERENCIA (main_release), no
+    # la caja de lujo. Regresión del bug del MAX (Abbey Road → 3LP Super Deluxe).
+    if fx["work_with_boxset"]:
+        wid = fx["work_with_boxset"]["id"]
+        ref_n = fx["work_with_boxset"]["ref_n"]
+        tl = db.get_work_tracklist(wid)
+        check("tracklist elige la edición de referencia, no la caja de lujo",
+              len(tl) == ref_n,
+              "work {}: esperado {} pistas (main_release), got {}".format(
+                  wid, ref_n, len(tl)))
+    else:
+        check("fixture work_with_boxset existe", False, "no derivada")
 
     # 15. get_press_signals: frase/vibra/suena_a para obra CON prensa.
     if fx["work_with_press"]:
