@@ -396,17 +396,18 @@ th { color: var(--ink-3); font-family: var(--mono-font); font-weight: 500; font-
 
 /* ── Type-ahead (dropdown de sugerencias) ─────────────────── */
 .ta-box { position: relative; flex: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.ta-box input[type="search"] { flex: 1; min-width: 140px; }
-.ta-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ta-box input[type="search"] { flex: 1; min-width: 90px; }
+.ta-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .ta-chip {
-  display: inline-flex; align-items: center; gap: 6px;
+  display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 190px;
   background: var(--panel-2); border: .5px solid var(--line);
-  border-radius: 999px; padding: 3px 6px 3px 11px; font-size: 13px; color: var(--ink);
+  border-radius: 999px; padding: 2px 4px 2px 9px; font-size: 12px; color: var(--ink);
 }
 .ta-chip-artists { border-color: color-mix(in srgb, var(--accent-2) 60%, var(--line)); }
 .ta-chip-works { border-color: color-mix(in srgb, var(--accent) 60%, var(--line)); }
-.ta-chip-kind { color: var(--ink-3); font-family: var(--mono-font); font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
-.ta-chip-x { background: none; border: none; color: var(--ink-3); cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; }
+.ta-chip-kind { flex-shrink: 0; color: var(--ink-3); font-family: var(--mono-font); font-size: 8.5px; text-transform: uppercase; letter-spacing: .06em; }
+.ta-chip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ta-chip-x { flex-shrink: 0; background: none; border: none; color: var(--ink-3); cursor: pointer; font-size: 15px; line-height: 1; padding: 0 1px; }
 .ta-chip-x:hover { color: var(--ink); }
 .ta-menu {
   position: absolute; top: 100%; left: 0; right: 0; z-index: 50; margin-top: 8px;
