@@ -1711,6 +1711,12 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
                           AND st.name = ANY(%(styles)s)
             WHERE w.has_vinyl = true
               AND w.work_type = ANY(%(work_types)s::work_type[])
+              -- RENDIMIENTO: solo works con playcount de Last.fm. Estilos comunes
+              -- (garage/indie/punk…) casan ~87K works y se rankean TODOS para elegir
+              -- ~20; como el ranking pesa por popularidad, los que no tienen
+              -- playcount NUNCA llegan arriba. Prefiltrar aquí recorta el candidato
+              -- ~20× (medido: top-12 IDÉNTICO en los 14 moods; query 0,9s→0,4s).
+              AND w.lastfm_playcount IS NOT NULL
               AND NOT (w.id = ANY(%(owned)s::bigint[]))
             GROUP BY w.id, w.title, w.work_type, w.year, w.releases_count,
                      w.lastfm_playcount, w.primary_artist_id
