@@ -138,6 +138,17 @@ def _spotify_search_link(query):
             "app": "spotify:search:" + quoted}
 
 
+def _discogs_market_url(work):
+    """Link al MARKETPLACE de Discogs de la obra (mismo patrón que v1): listado de
+    venta filtrado por el master de Discogs, en EUR y formato Vinyl. Core tiene
+    `discogs_master_id` al 100% en works con vinilo. None si falta."""
+    master = work.get("discogs_master_id")
+    if not master:
+        return None
+    return ("https://www.discogs.com/sell/list?master_id={}"
+            "&currency=EUR&format=Vinyl").format(master)
+
+
 def _spotify_work_query(work):
     """Query de Spotify que clava un ÁLBUM: `album:"título" artist:"artista"`."""
     title = (work.get("title") or "").strip()
@@ -288,6 +299,7 @@ def obra(request: Request, work_id: int):
         press=press_signals,
         artist_bio=artist_bio,
         spotify_url=_spotify_search_link(_spotify_work_query(work)),
+        discogs_url=_discogs_market_url(work),
         user=user,
     )
 

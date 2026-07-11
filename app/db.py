@@ -577,6 +577,7 @@ def get_work(work_id):
                w.notes,
                w.releases_count,
                w.has_vinyl,
+               w.discogs_master_id,
                a.id   AS artist_id,
                {clean_artist_name} AS artist_name,
                {clean_artist_disamb} AS artist_disambiguation,
