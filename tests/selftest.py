@@ -100,14 +100,15 @@ def _no_disguised_singles(items):
 def derive_fixtures():
     fx = {}
 
-    # Work popular con vinilo cuyo artista TIENE listings con precio.
+    # Work popular con vinilo con listings ENLAZADOS por work_id (match precio
+    # M4: marketplace_listings.work_id, resuelto en el port de core).
     rows = _q("""
         SELECT w.id
         FROM works w
         WHERE w.has_vinyl = true
           AND EXISTS (
               SELECT 1 FROM marketplace_listings ml
-              WHERE ml.artist_id = w.primary_artist_id AND ml.price_cents > 0
+              WHERE ml.work_id = w.id AND ml.price_cents > 0
           )
         ORDER BY w.releases_count DESC NULLS LAST
         LIMIT 1
@@ -124,14 +125,14 @@ def derive_fixtures():
     """)
     fx["work_top_vinyl"] = rows[0]["id"] if rows else None
 
-    # Work cuyo artista NO tiene ningún listing (camino honesto → precios []).
+    # Work SIN listing enlazado por work_id (camino honesto → precios []).
     rows = _q("""
         SELECT w.id
         FROM works w
         WHERE w.has_vinyl = true
           AND NOT EXISTS (
               SELECT 1 FROM marketplace_listings ml
-              WHERE ml.artist_id = w.primary_artist_id
+              WHERE ml.work_id = w.id
           )
         ORDER BY w.releases_count DESC NULLS LAST
         LIMIT 1
@@ -400,7 +401,7 @@ def run_checks(fx):
     else:
         check("fixture work_top_vinyl existe", False, "no derivada")
 
-    # 3. Work cuyo artista tiene listings → >=1 precio, EUR, price>0, asc.
+    # 3. Work con listings enlazados por work_id → >=1 precio, EUR, price>0, asc.
     if fx["work_with_prices"]:
         prices = db.get_prices_for_work(fx["work_with_prices"])
         check(
@@ -435,7 +436,7 @@ def run_checks(fx):
     else:
         check("fixture work_with_prices existe", False, "no derivada")
 
-    # 4. Work cuyo artista NO tiene listings → precios [] sin petar.
+    # 4. Work sin listing enlazado por work_id → precios [] sin petar.
     if fx["work_no_prices"]:
         try:
             prices = db.get_prices_for_work(fx["work_no_prices"])
