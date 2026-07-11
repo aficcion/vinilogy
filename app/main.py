@@ -414,6 +414,9 @@ def mi(request: Request):
     covers.request_missing(for_you)
     covers.request_missing(listening)
     covers.request_missing(gap)
+    # Precio ES más barato en las recos (el gap ya trae su propio precio).
+    pricing.attach_cheapest(for_you)
+    pricing.attach_cheapest(listening)
     return _render(
         request, "mi.html",
         user=user,
@@ -424,6 +427,86 @@ def mi(request: Request):
         gap=gap,
         gap_total=gap_total,
     )
+
+
+# ---------------------------------------------------------------------------
+# Wishlist (M3c · Fase 1) — anónimo en localStorage; con sesión, en BD
+# ---------------------------------------------------------------------------
+# El usuario ANÓNIMO guarda en el navegador (localStorage) sin cuenta: el JS es la
+# fuente de verdad y pide /wishlist/cards para pintar portada+precio (server). El
+# usuario con SESIÓN guarda en `user_wishlist` (POST/DELETE) y se sirve server-side.
+# Al iniciar sesión, el JS sube lo que hubiera en el navegador vía /wishlist/import.
+
+
+def _hydrate_works(ids):
+    """[work_id,...] → [work,...] en el MISMO orden, con portada+precio. Descarta
+    ids que ya no existen en el catálogo. Mismo patrón que el modo selección."""
+    works = [w for w in (catalog.get_work(i) for i in ids) if w]
+    covers.request_missing(works)
+    pricing.attach_cheapest(works)
+    return works
+
+
+@app.get("/wishlist", response_class=HTMLResponse)
+def wishlist(request: Request):
+    """Página de la wishlist. Con sesión: se sirve desde BD. Anónima: shell que el
+    JS hidrata desde localStorage vía /wishlist/cards."""
+    user = users.current_user(request)
+    if user:
+        works = _hydrate_works(users.wishlist_ids(user))
+        return _render(request, "wishlist.html", user=user, mode="user", works=works)
+    return _render(request, "wishlist.html", user=None, mode="anon", works=[])
+
+
+@app.get("/wishlist/cards", response_class=HTMLResponse)
+def wishlist_cards(request: Request, works: str = ""):
+    """Fragmento HTML: ids (CSV) → grid de tarjetas hidratadas. Lo pide el JS de la
+    wishlist ANÓNIMA con los ids del localStorage (clon de /buscar/afines)."""
+    user = users.current_user(request)
+    hydrated = _hydrate_works(_parse_id_csv(works))
+    return _render(request, "_wishlist_cards.html", user=user, works=hydrated)
+
+
+@app.get("/wishlist/ids")
+def wishlist_ids_json(request: Request):
+    """IDs guardados por el usuario con sesión (JSON). Anónimo → [] (el JS usa
+    localStorage). Lo pide wishlist.js para marcar los ♥ de la página."""
+    user = users.current_user(request)
+    return JSONResponse({"ids": users.wishlist_ids(user)})
+
+
+@app.post("/wishlist/import")
+def wishlist_import(request: Request, works: str = ""):
+    """Fusiona los ids del navegador (localStorage) en la BD tras iniciar sesión.
+    Devuelve cuántos se guardaron. Anónimo → 401.
+
+    NOTA: se declara ANTES de /wishlist/{work_id} — si no, la ruta con parámetro
+    int captura 'import' y devuelve 422 (FastAPI casa por orden de declaración)."""
+    user = users.current_user(request)
+    if not user:
+        return JSONResponse({"ok": False, "anon": True}, status_code=401)
+    added = users.wishlist_import(user, _parse_id_csv(works))
+    return JSONResponse({"ok": True, "added": added})
+
+
+@app.post("/wishlist/{work_id}")
+def wishlist_add(request: Request, work_id: int):
+    """Guarda un disco (usuario con sesión). Anónimo → 401 (el JS usa localStorage)."""
+    user = users.current_user(request)
+    if not user:
+        return JSONResponse({"ok": False, "anon": True}, status_code=401)
+    users.wishlist_add(user, work_id)
+    return JSONResponse({"ok": True, "wished": True})
+
+
+@app.delete("/wishlist/{work_id}")
+def wishlist_del(request: Request, work_id: int):
+    """Quita un disco (usuario con sesión). Anónimo → 401."""
+    user = users.current_user(request)
+    if not user:
+        return JSONResponse({"ok": False, "anon": True}, status_code=401)
+    users.wishlist_remove(user, work_id)
+    return JSONResponse({"ok": True, "wished": False})
 
 
 # ---------------------------------------------------------------------------
