@@ -209,21 +209,27 @@ def derive_fixtures():
     # tracklist, y existe una edición de vinilo con MUCHAS más pistas (una caja
     # de tomas/sessions). Regresión: get_work_tracklist debe devolver la de
     # referencia, no la caja (bug histórico del MAX → Abbey Road Super Deluxe).
+    # PERF: se proyecta ref_n en un subquery (hash estrecho, no arrastra el jsonb
+    # tracklist_cache de 7,58M releases → antes 5GB de hash y >10min) y se toma
+    # CUALQUIER work que cumpla el patrón con LIMIT 1 sin ORDER BY (corta al
+    # primer match; el check 14b vale para cualquier caja, no hace falta la MAX).
     rows = _q("""
-        SELECT wmr.work_id AS id,
-               jsonb_array_length(mr.tracklist_cache) AS ref_n
-        FROM work_main_release wmr
-        JOIN releases mr ON mr.discogs_release_id = wmr.main_release_id
-             AND jsonb_typeof(mr.tracklist_cache) = 'array'
+        SELECT m.work_id AS id, m.ref_n
+        FROM (
+            SELECT wmr.work_id,
+                   jsonb_array_length(mr.tracklist_cache) AS ref_n
+            FROM work_main_release wmr
+            JOIN releases mr ON mr.discogs_release_id = wmr.main_release_id
+            WHERE jsonb_typeof(mr.tracklist_cache) = 'array'
+              AND jsonb_array_length(mr.tracklist_cache) BETWEEN 4 AND 30
+        ) m
         JOIN LATERAL (
             SELECT max(jsonb_array_length(r.tracklist_cache)) AS max_n
             FROM releases r
-            WHERE r.work_id = wmr.work_id AND r.format = 'vinyl'
+            WHERE r.work_id = m.work_id AND r.format = 'vinyl'
               AND jsonb_typeof(r.tracklist_cache) = 'array'
         ) mx ON true
-        WHERE jsonb_array_length(mr.tracklist_cache) BETWEEN 4 AND 30
-          AND mx.max_n > jsonb_array_length(mr.tracklist_cache) + 8
-        ORDER BY mx.max_n DESC
+        WHERE mx.max_n > m.ref_n + 8
         LIMIT 1
     """)
     fx["work_with_boxset"] = (rows[0] if rows else None)
