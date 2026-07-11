@@ -1,40 +1,43 @@
-"""Dominio users — M3a: sesión + cuenta invitado + capa personal.
+"""Dominio users — M3c: sesión + identidad + wishlist + cuenta + capa personal.
 
 Fachada fina sobre db.py para la capa de USUARIO (la única que escribe en core, y
-solo en `app_users`/`user_sessions` — es su función, no es DDL). Aquí viven:
-  - auth ligera: crear invitado, abrir/validar/cerrar sesión (server-side).
-  - dependencia FastAPI `current_user` (lee la cookie `vb_session` → user o None).
+solo en sus tablas — `app_users`/`user_sessions`/`user_oauth_credentials`/
+`user_wishlist` —; es su función, no es DDL). Aquí viven:
+  - sesión server-side (cookie `vb_session`): abrir/validar/cerrar + la dependencia
+    FastAPI `current_user` (cookie → user o None). El "invitado" se retiró (Fase 3):
+    la identidad la da OAuth y la wishlist anónima vive en el navegador.
+  - wishlist del usuario con sesión (la anónima NO pasa por aquí).
+  - cuenta: estado de conexiones, desvincular proveedor (con salvaguarda de última
+    identidad) y borrar cuenta.
   - resumen de colección + recomendación PERSONAL ("Para ti" por grafo de
     co-escucha de Last.fm) + gap de vinilo, delegando en db.py + pricing.
 
-OAuth de Discogs/Last.fm es M3b (necesita credenciales + navegador): NO se cablea
-aquí. `providers` de un usuario se LEE (para saber si es invitado puro o ya tiene
-identidad vinculada).
+El OAuth real (Google/Discogs/Last.fm) vive en el submódulo `oauth`. `providers` de
+un usuario se LEE para saber qué identidades tiene vinculadas.
 
 Límite one-way: users depende de db/pricing; nada del catálogo depende de users.
 """
 from app import db
 from app.domains import pricing, covers
-from app.domains.users import oauth  # noqa: F401 (fachada M3b)
+from app.domains.users import oauth  # noqa: F401 (identidad OAuth)
 
 # Nombre de la cookie de sesión (httponly, server-side).
 SESSION_COOKIE = "vb_session"
 
 # Login-dev: solo existe si VINYLBE_DEV_LOGIN=1. Es el gancho de prueba de la capa
-# personal SIN OAuth real (M3b). En prod NO se monta el endpoint.
+# personal SIN pasar por OAuth real. En prod NO se monta el endpoint.
 import os
 DEV_LOGIN_ENABLED = os.environ.get("VINYLBE_DEV_LOGIN") == "1"
 
 
 # ---------------------------------------------------------------------------
-# Sesión + invitado (escritura acotada a app_users/user_sessions)
+# Sesión (escritura acotada a app_users/user_sessions)
 # ---------------------------------------------------------------------------
-
-def start_guest():
-    """Crea invitado + sesión. Devuelve (user_id, session_token)."""
-    user_id = db.create_guest_user()
-    token = db.create_session(user_id)
-    return user_id, token
+# El "invitado" se retiró en M3c · Fase 3: la wishlist anónima vive en el navegador
+# (localStorage), así que una cuenta sin identidad ya no aporta. La identidad la da
+# OAuth (Google/Discogs/Last.fm) y el linking vincula un 2º proveedor a la cuenta
+# actual (ver oauth.map_identity). `db.create_guest_user` sobrevive como fábrica de
+# usuarios mínima para el selftest, no como feature de producto.
 
 
 def open_session(user_id):
@@ -55,19 +58,13 @@ def get_user(user_id):
     return db.get_app_user(user_id)
 
 
-def is_guest(user):
-    """True si el user es una cuenta LIGERA sin identidad OAuth (display_name NULL
-    y sin proveedores vinculados)."""
-    if not user:
-        return False
-    return not (user.get("providers") or []) and not user.get("display_name")
-
-
 def display_label(user):
-    """Etiqueta para la cabecera: display_name si lo hay, si no 'Invitado'."""
+    """Etiqueta para la cabecera: display_name (nombre del proveedor OAuth) si lo
+    hay. Fallback neutro para el caso límite sin nombre (no debería darse: toda
+    identidad OAuth rellena display_name)."""
     if not user:
         return None
-    return user.get("display_name") or "Invitado"
+    return user.get("display_name") or "Tu cuenta"
 
 
 # ---------------------------------------------------------------------------
@@ -163,3 +160,94 @@ def vinyl_gap(user_id, limit=24):
 def vinyl_gap_count(user_id):
     """Conteo interno del gap (para el resumen honesto de /mi)."""
     return db.vinyl_gap_count(user_id)
+
+
+# ---------------------------------------------------------------------------
+# Wishlist (M3c · Fase 1)
+# ---------------------------------------------------------------------------
+# Escritura acotada a `user_wishlist`. La wishlist ANÓNIMA vive en el navegador
+# (localStorage) y NO pasa por aquí; estas funciones son para usuarios con sesión.
+# La hidratación de ids → tarjetas (portada/precio) la hace el router reutilizando
+# catalog/covers/pricing, igual que el modo selección del buscador.
+
+
+def wishlist_ids(user):
+    """IDs guardados por el usuario, lo más reciente primero. [] si anónimo/vacía."""
+    if not user:
+        return []
+    return db.wishlist_work_ids(user["id"])
+
+
+def wishlist_add(user, work_id):
+    """Guarda un disco. Idempotente. No-op si no hay usuario."""
+    if user:
+        db.wishlist_add(user["id"], work_id)
+
+
+def wishlist_remove(user, work_id):
+    """Quita un disco. No-op si no hay usuario."""
+    if user:
+        db.wishlist_remove(user["id"], work_id)
+
+
+def wishlist_import(user, work_ids):
+    """Fusiona los ids que traía el navegador (localStorage) tras iniciar sesión.
+    Devuelve cuántos se guardaron de verdad. 0 si anónimo."""
+    if not user:
+        return 0
+    return db.wishlist_add_many(user["id"], work_ids)
+
+
+# ---------------------------------------------------------------------------
+# Cuenta (M3c · Fase 2): conexiones + desvincular + borrar
+# ---------------------------------------------------------------------------
+# Roles de cada proveedor (por qué conectar cada uno) — el hilo del rediseño: cada
+# conexión tiene un propósito distinto y explicable, no tres botones iguales.
+_PROVIDER_DEFS = [
+    {"key": "google", "label": "Google",
+     "purpose": "Tu cuenta: guarda tu wishlist y llévala a todos tus dispositivos."},
+    {"key": "discogs", "label": "Discogs",
+     "purpose": "Importa tu colección real y calcula tu gap de vinilo."},
+    {"key": "lastfm", "label": "Last.fm",
+     "purpose": "Afina las recomendaciones con lo que de verdad escuchas."},
+]
+
+
+def connection_status(providers):
+    """Estado de las 3 conexiones para /cuenta. Cada una: conectada, configurada en
+    el entorno (si no, el botón avisa 'no disponible'), y su propósito. Marca
+    `is_only` en la única identidad conectada (no se puede desvincular esa)."""
+    connected = set(providers or [])
+    configured = {
+        "google": oauth.google_configured(),
+        "discogs": oauth.discogs_configured(),
+        "lastfm": oauth.lastfm_configured(),
+    }
+    n_connected = len(connected)
+    out = []
+    for d in _PROVIDER_DEFS:
+        is_conn = d["key"] in connected
+        out.append({
+            **d,
+            "connected": is_conn,
+            "configured": configured.get(d["key"], False),
+            "is_only": is_conn and n_connected <= 1,
+        })
+    return out
+
+
+def disconnect_provider(user, provider):
+    """Desvincula un proveedor. Se NIEGA si es la única identidad del usuario (si
+    no, la cuenta quedaría sin forma de volver a entrar). Devuelve True si desvinculó.
+    """
+    providers = user.get("providers") or []
+    if provider not in providers or len(providers) <= 1:
+        return False
+    db.delete_oauth_credential(user["id"], provider)
+    return True
+
+
+def delete_account(user):
+    """Borra la cuenta y todo lo suyo (CASCADE). No-op si no hay usuario."""
+    if user:
+        db.delete_user_and_sessions(user["id"])

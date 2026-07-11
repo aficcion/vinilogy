@@ -3,19 +3,19 @@
 {% block content %}
 
 {% if anon %}
-  <section class="hero mi-anon">
+  <header class="mi-head">
     <h1>Tu Vinylbe personal</h1>
-    <p class="lead">Aquí verás recomendaciones a tu medida y tu gap de vinilo.
-       Entra sin cuentas para empezar.</p>
+    <p class="mi-summary">Recomendaciones a tu medida y tu gap de vinilo.
+       Necesitas una cuenta para verlas.</p>
+  </header>
+  <section class="block">
     <p class="mi-connect-cta">
-      <a class="btn-primary" href="/auth/discogs/login">Conectar Discogs</a>
-      <a class="btn-primary" href="/auth/lastfm/login">Conectar Last.fm</a>
+      <a class="btn-primary" href="/auth/google/login">Entrar con Google</a>
     </p>
-    <form class="inline-form" action="/auth/guest" method="post">
-      <button class="btn-ghost" type="submit">Entrar como invitado (sin cuentas)</button>
-    </form>
-    <p class="hint">Conecta Discogs para importar tu colección real (tu gap de
-       vinilo) o Last.fm para afinar por tu escucha. Ambas son opcionales.</p>
+    <p class="hint">Conecta <a href="/auth/discogs/login">Discogs</a> para importar
+       tu colección real (y tu <strong>gap de vinilo</strong>) o
+       <a href="/auth/lastfm/login">Last.fm</a> para afinar por tu escucha.
+       Mientras, tu <a href="/wishlist">wishlist</a> ya funciona sin cuenta.</p>
   </section>
 {% else %}
 
@@ -35,11 +35,14 @@
       {% endif %}
     </p>
     {% endif %}
-    {% if user and (user.providers|length == 0) %}
-    <p class="hint mi-connect-note">Eres invitado. Vincula
-       <a href="/auth/discogs/login">Discogs</a> para importar tu colección real
-       (y ver tu gap de vinilo) o <a href="/auth/lastfm/login">Last.fm</a> para
-       afinar por tu escucha. Tu sesión de invitado se conservará.</p>
+    {% set missing = [] %}
+    {% if 'discogs' not in (user.providers or []) %}{% set _ = missing.append(('discogs','Discogs')) %}{% endif %}
+    {% if 'lastfm' not in (user.providers or []) %}{% set _ = missing.append(('lastfm','Last.fm')) %}{% endif %}
+    {% if missing %}
+    <p class="hint mi-connect-note">Conecta
+       {% for key, label in missing %}<a href="/auth/{{ key }}/login">{{ label }}</a>{% if not loop.last %} o {% endif %}{% endfor %}
+       en <a href="/cuenta">tu cuenta</a> para
+       {% if missing|length == 2 %}importar tu colección y afinar por tu escucha{% elif missing[0][0] == 'discogs' %}importar tu colección y ver tu gap de vinilo{% else %}afinar por tu escucha{% endif %}.</p>
     {% endif %}
   </header>
 

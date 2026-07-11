@@ -947,10 +947,13 @@ def run_checks(fx):
 def run_m3a_checks(fx):
     from app.domains import users
 
-    # 21. Round-trip invitado: crear + sesión + resolver (con LIMPIEZA garantizada).
+    # 21. Round-trip usuario mínimo: crear + sesión + resolver (con LIMPIEZA
+    # garantizada). `start_guest` se retiró (Fase 3); el primitivo db.create_guest_user
+    # + create_session sigue siendo la fábrica de usuarios de test.
     guest_id = None
     try:
-        guest_id, token = users.start_guest()
+        guest_id = db.create_guest_user()
+        token = db.create_session(guest_id)
         check("create_guest_user devuelve un id nuevo",
               isinstance(guest_id, int) and guest_id > 0,
               "id inválido: {}".format(guest_id))
@@ -1878,8 +1881,9 @@ def secrets_token():
 
 
 def _guest():
-    from app.domains import users
-    return users.start_guest()
+    # Fábrica de usuario de test (antes users.start_guest, retirado en Fase 3).
+    uid = db.create_guest_user()
+    return uid, db.create_session(uid)
 
 
 from contextlib import contextmanager as _cm
@@ -2016,33 +2020,21 @@ def run_http_smoke(fx):
               and ("lo escuchas" in r.text or "que escuchas" in r.text
                    or "súbelo a vinilo" in r.text),
               "la sección de escucha no muestra cards con porque de escucha")
-        # logout limpia la sesión.
+        # logout limpia la sesión → /mi anónimo invita a entrar (con Google).
         client.post("/auth/logout")
         r = client.get("/mi")
-        check("GET /mi tras logout → vuelve a invitar (sesión cerrada)",
-              "invitado" in r.text.lower(),
+        check("GET /mi tras logout → invita a entrar (sesión cerrada)",
+              "entrar con google" in r.text.lower(),
               "la sesión no se cerró")
     else:
         print("SKIP  smoke login-dev (no existe user 1)")
 
-    # POST /auth/guest crea invitado + cookie; LIMPIEZA del invitado creado.
-    guest_client = TestClient(app)
-    r = guest_client.post("/auth/guest", follow_redirects=False)
-    gcookie = r.headers.get("set-cookie", "")
-    check("POST /auth/guest → 303 + set-cookie vb_session",
-          r.status_code in (302, 303) and "vb_session" in gcookie,
-          "status {} / cookie {}".format(r.status_code, gcookie[:40]))
-    # resolver el user creado para borrarlo (limpieza).
-    tok = None
-    for part in gcookie.split(";"):
-        if part.strip().startswith("vb_session="):
-            tok = part.strip().split("=", 1)[1]
-    if tok:
-        gu = db.get_user_by_session(tok)
-        if gu:
-            db.delete_user_and_sessions(gu["id"])
-            check("limpieza: invitado creado por /auth/guest borrado",
-                  db.get_app_user(gu["id"]) is None, "no se borró")
+    # El invitado se retiró (Fase 3): /auth/guest ya no existe → 404/405.
+    noguest = TestClient(app)
+    r = noguest.post("/auth/guest", follow_redirects=False)
+    check("POST /auth/guest → retirado (404/405)",
+          r.status_code in (404, 405),
+          "esperaba ruta retirada, status {}".format(r.status_code))
 
 
 def main():

@@ -28,8 +28,13 @@
         {% for s in work.styles %}<span class="tag style">{{ s }}</span>{% endfor %}
       </p>
       {% endif %}
-      {% if spotify_url or discogs_url %}
       <p class="work-actions">
+        {# Guardar en wishlist: siempre visible; `hidden` hasta que el JS lo activa. #}
+        <button class="wish-btn wish-btn--wide" type="button" data-work="{{ work.id }}"
+                aria-label="Guardar en tu wishlist" aria-pressed="false" hidden>
+          <span class="wish-ico" aria-hidden="true">♥</span>
+          <span class="wish-label">Guardar</span>
+        </button>
         {% if spotify_url %}
         <a class="btn-spotify" href="{{ spotify_url.web }}" data-spotify-app="{{ spotify_url.app }}" target="_blank" rel="noopener">
           <svg class="btn-ico" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
@@ -47,7 +52,6 @@
         </a>
         {% endif %}
       </p>
-      {% endif %}
       {% if artist_bio %}
       <p class="artist-bio">{{ artist_bio }}
         <a class="bio-more" href="/artista/{{ work.artist_id }}">más sobre {{ work.artist_name }} →</a>

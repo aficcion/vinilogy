@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Tu wishlist{% endblock %}
+{% block content %}
+
+<header class="mi-head">
+  <h1>Tu wishlist</h1>
+  <p class="hint">
+    {% if mode == 'anon' %}
+      Los discos que guardas se conservan en <strong>este navegador</strong>.
+      Conecta una cuenta y los llevas a todos tus dispositivos.
+    {% else %}
+      Los discos que has guardado, con su precio más barato en tiendas ES.
+    {% endif %}
+  </p>
+</header>
+
+<section class="block" id="wishlist-root" data-mode="{{ mode }}">
+  {% if mode == 'user' %}
+    {% include "_wishlist_cards.html" %}
+  {% else %}
+    {# Anónimo: wishlist.js hidrata desde localStorage y decide qué estado pintar. #}
+    <div id="wishlist-cards"></div>
+    <p class="empty" id="wishlist-loading">Cargando tu wishlist…</p>
+    <p class="empty" id="wishlist-empty" hidden>
+      Aún no has guardado ningún disco. Pulsa el ♥ en cualquier disco para empezar
+      tu wishlist.
+    </p>
+  {% endif %}
+</section>
+
+{% endblock %}

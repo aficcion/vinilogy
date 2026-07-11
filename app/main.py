@@ -1,12 +1,19 @@
-"""Vinylbe v2 — M3a: capa personal (sesión + invitado + reco personal + /mi).
+"""Vinylbe v2 — M3c: capa personal completa (identidad OAuth + wishlist + cuenta).
 
 FastAPI + Jinja server-rendered. Sobre M0/M1/M2 (buscar → ficha → reco anónima)
-añade:
-  - auth ligera server-side (cookie `vb_session`): invitado, logout, y un
-    LOGIN-DEV guardado (`VINYLBE_DEV_LOGIN=1`) para probar la capa personal sin
-    OAuth real (eso es M3b).
-  - `/mi`: perfil del usuario — "Para ti" (grafo de co-escucha) + "Sube a vinilo"
-    (gap de vinilo con precio) + resumen de colección.
+añade la capa de usuario:
+  - IDENTIDAD por OAuth (cookie de sesión `vb_session`): Google (OAuth2/OIDC, cuenta
+    persistente cross-device), Discogs (colección → gap) y Last.fm (escucha → reco).
+    Cada conexión tiene un propósito distinto; conectar un 2º proveedor estando
+    dentro lo VINCULA a tu cuenta (ver oauth.map_identity), no crea otra. Más un
+    LOGIN-DEV (`VINYLBE_DEV_LOGIN=1`) para probar la capa personal sin OAuth real.
+  - WISHLIST: anónima en el navegador (localStorage), sin cuenta; con sesión, en
+    `user_wishlist` (BD) y cross-device. El "invitado" se retiró (la wishlist
+    anónima cubre ese hueco).
+  - `/mi`: feed personal — "Para ti" (grafo de co-escucha) + "Sube a vinilo" (gap de
+    vinilo con precio) + resumen de colección.
+  - `/cuenta`: hub de identidad — conexiones (conectar/desconectar con salvaguarda),
+    valor de colección, cerrar sesión, borrar cuenta.
   - la reco anónima (`/buscar`, `/obra`, `/artista`, `/vibra`) EXCLUYE la
     colección cuando hay usuario logueado.
 
@@ -15,6 +22,7 @@ Arranque:
         uvicorn app.main:app --port 7788 --reload
 """
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, Request
@@ -72,11 +80,12 @@ def _clear_oauth_state_cookie(response):
     response.delete_cookie(oauth.OAUTH_STATE_COOKIE)
 
 
-def _login_after_oauth(user_id):
-    """Abre sesión para user_id, redirige a /mi con set-cookie de sesión y limpia
-    la cookie de estado del flow."""
+def _login_after_oauth(user_id, return_to="/mi"):
+    """Abre sesión para user_id, redirige a `return_to` (por defecto /mi; /cuenta
+    cuando se estaba VINCULANDO un proveedor a una cuenta ya dentro) con set-cookie
+    de sesión y limpia la cookie de estado del flow."""
     token = users.open_session(user_id)
-    resp = RedirectResponse(url="/mi", status_code=303)
+    resp = RedirectResponse(url=return_to or "/mi", status_code=303)
     _set_session_cookie(resp, token)
     _clear_oauth_state_cookie(resp)
     return resp
@@ -95,15 +104,39 @@ def _oauth_error(request, provider, detail, status_code=400):
 # Páginas (anónimas; excluyen colección cuando hay user)
 # ---------------------------------------------------------------------------
 
+# Tira de discos reales de la home: obras con portada Y precio ES real. El match
+# obra→precio no es gratis (trigram sobre marketplace_listings), y la tira es la
+# misma para todos → se cachea en proceso unos minutos. Se conserva la última tanda
+# buena si una recarga falla, para no dejar la home sin tira.
+_FEATURED = {"at": 0.0, "works": []}
+_FEATURED_TTL = 600  # 10 min
+
+
+def _featured_priced_works(limit=14):
+    now = time.time()
+    if _FEATURED["works"] and (now - _FEATURED["at"] < _FEATURED_TTL):
+        return _FEATURED["works"]
+    try:
+        cands = db.sample_cover_works(600)
+        pricing.attach_cheapest(cands)
+        priced = [w for w in cands if w.get("cheapest_price")][:limit]
+    except Exception:
+        priced = []
+    if priced:
+        _FEATURED["at"] = now
+        _FEATURED["works"] = priced
+    return priced or _FEATURED["works"]
+
+
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
     user = users.current_user(request)
-    # Mosaico de portadas del fondo del hero (decorativo, best-effort).
+    # Tira de discos reales con precio ES (cacheada; best-effort).
     try:
-        mosaic = db.sample_cover_thumbs(60)
+        featured = _featured_priced_works()
     except Exception:
-        mosaic = []
-    return _render(request, "home.html", user=user, mosaic=mosaic)
+        featured = []
+    return _render(request, "home.html", user=user, featured=featured)
 
 
 def _parse_id_csv(raw):
@@ -510,23 +543,10 @@ def wishlist_del(request: Request, work_id: int):
 
 
 # ---------------------------------------------------------------------------
-# Auth ligera (server-side, sin OAuth — eso es M3b)
+# Sesión (server-side): logout + OAuth. El "invitado" se retiró (M3c · Fase 3):
+# la wishlist anónima vive en el navegador (localStorage), así que una cuenta sin
+# identidad ya no tiene sentido. Identidad = Google / Discogs / Last.fm.
 # ---------------------------------------------------------------------------
-
-@app.post("/auth/guest")
-def auth_guest(request: Request):
-    """Crea una cuenta LIGERA (invitado) + sesión + set-cookie. Redirige a /mi.
-
-    Idempotente con sesión válida: si ya hay cookie válida, no fabrica duplicado.
-    """
-    existing = users.current_user(request)
-    resp = RedirectResponse(url="/mi", status_code=303)
-    if existing:
-        return resp
-    _uid, token = users.start_guest()
-    _set_session_cookie(resp, token)
-    return resp
-
 
 @app.post("/auth/logout")
 def auth_logout(request: Request):
@@ -554,8 +574,12 @@ def discogs_login(request: Request):
         return _oauth_error(
             request, "Discogs",
             "El login con Discogs no está configurado en este entorno.")
-    guest = users.current_user(request)
-    guest_id = guest["id"] if (guest and users.is_guest(guest)) else None
+    # Destino de VINCULACIÓN = el usuario logueado AHORA (sea invitado o una cuenta
+    # ya identificada). Así, conectar un proveedor estando dentro lo AÑADE a tu
+    # cuenta en vez de crear una nueva y expulsarte a ella. Anónimo → None (login
+    # fresco: se reutiliza la identidad si ya existe, o se crea).
+    current = users.current_user(request)
+    guest_id = current["id"] if current else None
     try:
         token, secret = oauth.discogs_request_token()
     except Exception as e:  # noqa: BLE001 — degradación honesta ante rechazo
@@ -567,6 +591,7 @@ def discogs_login(request: Request):
         "oauth_token": token,
         "request_token_secret": secret,
         "guest_user_id": guest_id,
+        "return_to": "/cuenta" if current else "/mi",
     })
     resp = RedirectResponse(url=oauth.discogs_authorize_url(token),
                             status_code=302)
@@ -609,7 +634,7 @@ def discogs_callback(request: Request, oauth_token: str = "",
         provider_username=username, guest_user_id=flow.get("guest_user_id"),
         oauth_token=access_token, oauth_token_secret=access_secret,
     )
-    return _login_after_oauth(user_id)
+    return _login_after_oauth(user_id, flow.get("return_to"))
 
 
 @app.get("/auth/lastfm/login")
@@ -621,11 +646,16 @@ def lastfm_login(request: Request):
         return _oauth_error(
             request, "Last.fm",
             "El login con Last.fm no está configurado en este entorno.")
-    guest = users.current_user(request)
-    guest_id = guest["id"] if (guest and users.is_guest(guest)) else None
+    # Destino de VINCULACIÓN = el usuario logueado AHORA (sea invitado o una cuenta
+    # ya identificada). Así, conectar un proveedor estando dentro lo AÑADE a tu
+    # cuenta en vez de crear una nueva y expulsarte a ella. Anónimo → None (login
+    # fresco: se reutiliza la identidad si ya existe, o se crea).
+    current = users.current_user(request)
+    guest_id = current["id"] if current else None
     state = oauth.FLOW_STORE.put({
         "provider": "lastfm",
         "guest_user_id": guest_id,
+        "return_to": "/cuenta" if current else "/mi",
     })
     resp = RedirectResponse(url=oauth.lastfm_auth_url(), status_code=302)
     _set_oauth_state_cookie(resp, state)
@@ -659,7 +689,124 @@ def lastfm_callback(request: Request, token: str = ""):
         provider_username=username, guest_user_id=flow.get("guest_user_id"),
         session_key=session_key,
     )
-    return _login_after_oauth(user_id)
+    return _login_after_oauth(user_id, flow.get("return_to"))
+
+
+# ---------------------------------------------------------------------------
+# OAuth real — Google (OAuth2 / OpenID Connect) (M3c · Fase 2)
+# ---------------------------------------------------------------------------
+# Google es IDENTIDAD pura: da cuenta persistente (wishlist cross-device) sin pedir
+# datos de música. Mismo molde que Discogs/Last.fm (FlowStore + cookie de estado),
+# con un check CSRF extra: el `state` que devuelve Google debe coincidir con el de
+# la cookie.
+
+@app.get("/auth/google/login")
+def google_login(request: Request):
+    """Inicia el code flow de Google. Sin credenciales → aviso 'no configurado'."""
+    if not oauth.google_configured():
+        return _oauth_error(
+            request, "Google",
+            "El login con Google no está configurado en este entorno.")
+    # Destino de VINCULACIÓN = el usuario logueado AHORA (sea invitado o una cuenta
+    # ya identificada). Así, conectar un proveedor estando dentro lo AÑADE a tu
+    # cuenta en vez de crear una nueva y expulsarte a ella. Anónimo → None (login
+    # fresco: se reutiliza la identidad si ya existe, o se crea).
+    current = users.current_user(request)
+    guest_id = current["id"] if current else None
+    state = oauth.FLOW_STORE.put({
+        "provider": "google", "guest_user_id": guest_id,
+        "return_to": "/cuenta" if current else "/mi",
+    })
+    resp = RedirectResponse(url=oauth.google_authorize_url(state), status_code=302)
+    _set_oauth_state_cookie(resp, state)
+    return resp
+
+
+@app.get("/auth/google/callback")
+def google_callback(request: Request, code: str = "", state: str = "",
+                    error: str = ""):
+    """Callback de Google: valida estado (cookie + `state` devuelto), intercambia el
+    code por tokens, resuelve identidad (sub/email/name) y aplica la regla de mapeo.
+    Llegada directa / state que no casa / error de Google → aviso suave (no 500)."""
+    cookie_state = request.cookies.get(oauth.OAUTH_STATE_COOKIE)
+    flow = oauth.FLOW_STORE.pop(cookie_state)
+    if not flow or flow.get("provider") != "google":
+        return _oauth_error(
+            request, "Google",
+            "No encontramos el estado de tu inicio de sesión (expiró o llegaste "
+            "directo). Vuelve a empezar desde el botón de conexión.")
+    if not state or state != cookie_state:
+        return _oauth_error(
+            request, "Google",
+            "El identificador de tu sesión no coincide (posible reenvío). Reintenta.")
+    if error or not code:
+        return _oauth_error(
+            request, "Google",
+            "Google no devolvió el código de autorización ({}). Reintenta.".format(
+                error or "sin code"))
+    try:
+        tokens = oauth.google_exchange(code)
+        sub, email, name = oauth.google_identity(tokens["access_token"])
+    except Exception as e:  # noqa: BLE001
+        return _oauth_error(
+            request, "Google",
+            "No pudimos completar el intercambio con Google ({}).".format(e))
+    expires_at = None
+    try:
+        exp = int(tokens.get("expires_in") or 0)
+        if exp > 0:
+            from datetime import datetime, timezone, timedelta
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=exp)
+    except (TypeError, ValueError):
+        expires_at = None
+    user_id, _outcome = oauth.persist_identity(
+        provider="google", provider_account_id=sub,
+        provider_username=name or email, guest_user_id=flow.get("guest_user_id"),
+        oauth2_access_token=tokens["access_token"],
+        oauth2_refresh_token=tokens.get("refresh_token"),
+        oauth2_expires_at=expires_at,
+    )
+    return _login_after_oauth(user_id, flow.get("return_to"))
+
+
+# ---------------------------------------------------------------------------
+# Cuenta (M3c · Fase 2) — hub de identidad: conexiones, valor, salir, borrar
+# ---------------------------------------------------------------------------
+
+@app.get("/cuenta", response_class=HTMLResponse)
+def cuenta(request: Request):
+    """Página de cuenta. Anónimo → invitación a entrar. Con sesión → estado de las
+    conexiones (Google/Discogs/Last.fm) + valor de colección + acciones."""
+    user = users.current_user(request)
+    if not user:
+        return _render(request, "cuenta.html", user=None, anon=True,
+                       connections=users.connection_status([]))
+    summary = users.collection_summary(user)
+    connections = users.connection_status(user.get("providers") or [])
+    return _render(request, "cuenta.html", user=user, anon=False,
+                   summary=summary, connections=connections)
+
+
+@app.post("/auth/{provider}/disconnect")
+def auth_disconnect(request: Request, provider: str):
+    """Desvincula un proveedor. Se niega si es la ÚNICA identidad (dejaría la cuenta
+    sin forma de entrar → para eso está 'Borrar cuenta'). Redirige a /cuenta."""
+    user = users.current_user(request)
+    if user and provider in ("google", "discogs", "lastfm"):
+        users.disconnect_provider(user, provider)
+    return RedirectResponse(url="/cuenta", status_code=303)
+
+
+@app.post("/account/delete")
+def account_delete(request: Request):
+    """Borra la cuenta y todo lo suyo (CASCADE: sesiones, credenciales, wishlist).
+    Limpia la cookie y vuelve a la home."""
+    user = users.current_user(request)
+    if user:
+        users.delete_account(user)
+    resp = RedirectResponse(url="/", status_code=303)
+    resp.delete_cookie(users.SESSION_COOKIE)
+    return resp
 
 
 # ---------------------------------------------------------------------------

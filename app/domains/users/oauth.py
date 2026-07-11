@@ -1,21 +1,26 @@
-"""OAuth real — Discogs (OAuth 1.0a) + Last.fm (auth flow con api_sig). M3b.
+"""OAuth real — Google (OAuth2/OIDC) + Discogs (OAuth 1.0a) + Last.fm (api_sig).
 
-Construye ENCIMA de la sesión server-side de M3a (`app.domains.users`): OAuth solo
+Construye ENCIMA de la sesión server-side (`app.domains.users`): OAuth solo
 establece IDENTIDAD y abre sesión; NO sincroniza colección/escucha (eso lo hace el
 pipeline de core; v2 solo lee). Escritura acotada a `user_oauth_credentials` +
 `app_users` (crear/last_login) vía db.py — su función, no DDL.
 
+Cada proveedor cumple un rol distinto: Google = identidad/cuenta persistente,
+Discogs = colección (gap de vinilo), Last.fm = escucha (reco). Conectar un 2º
+proveedor estando logueado VINCULA la identidad a la cuenta actual (ver
+`map_identity`), no crea otra.
+
 Piezas (todas testeables SIN navegador):
-  - `config()`               — lee secretos del entorno; None si el login no está
-    configurado (degradación suave, nunca revienta el arranque).
+  - `config()`               — lee secretos del entorno; los `*_configured()`
+    comprueban por-proveedor (login "no configurado" degrada suave, no revienta).
   - `lastfm_api_sig(params)` — md5 firmado del flujo Last.fm (vector determinista).
-  - `discogs_authorize_url` / `lastfm_auth_url` — URLs de autorización bien formadas.
-  - `map_identity(...)`      — la REGLA DE MAPEO pura (paso 2-4 del mandato): decide
-    el user_id a partir de la credencial existente / invitado / nada. Sin red.
-  - `FlowStore`              — estado server-side del flow (request-token-secret de
-    Discogs) ligado a la sesión del navegador por un `state` opaco, con TTL corto.
-  - clientes de red (`discogs_request_token`, `discogs_access_token`,
-    `discogs_identity`, `lastfm_session`) — SÍ tocan red; se mockean en el selftest.
+  - `*_authorize_url` / `*_auth_url` — URLs de autorización/consentimiento formadas.
+  - `map_identity(...)`      — la REGLA DE MAPEO pura: decide el user_id a partir de
+    la credencial existente / usuario a vincular / nada. Sin red.
+  - `FlowStore`              — estado server-side del flow (secreto de Discogs,
+    `state` CSRF) ligado a la sesión del navegador por un `state` opaco, TTL corto.
+  - clientes de red (`discogs_*`, `lastfm_session`, `google_exchange`,
+    `google_identity`) — SÍ tocan red; se mockean en el selftest.
 
 Límite one-way intacto: oauth depende de db (+ requests/oauthlib); nada del catálogo
 depende de users/oauth.
@@ -41,8 +46,16 @@ DISCOGS_USER_AGENT = "Vinylbe/2.0 +https://vinylbe.local"
 LASTFM_AUTH_URL = "http://www.last.fm/api/auth/"
 LASTFM_API_ROOT = "https://ws.audioscrobbler.com/2.0/"
 
+# Google — OAuth2 / OpenID Connect. Solo IDENTIDAD (openid email profile): a Google
+# no le pedimos datos de música, solo "quién eres" para tener cuenta persistente.
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
+GOOGLE_SCOPE = "openid email profile"
+
 PROVIDER_DISCOGS = "discogs"
 PROVIDER_LASTFM = "lastfm"
+PROVIDER_GOOGLE = "google"
 
 _NET_TIMEOUT = 10  # s — degradación honesta ante red lenta.
 
@@ -63,6 +76,8 @@ def config():
         "discogs_secret": os.environ.get("DISCOGS_SECRET") or "",
         "lastfm_key": os.environ.get("LASTFM_API_KEY") or "",
         "lastfm_secret": os.environ.get("LASTFM_API_SECRET") or "",
+        "google_client_id": os.environ.get("GOOGLE_CLIENT_ID") or "",
+        "google_client_secret": os.environ.get("GOOGLE_CLIENT_SECRET") or "",
         "base_url": base_url(),
     }
 
@@ -75,6 +90,11 @@ def discogs_configured(cfg=None):
 def lastfm_configured(cfg=None):
     cfg = cfg or config()
     return bool(cfg["lastfm_key"] and cfg["lastfm_secret"])
+
+
+def google_configured(cfg=None):
+    cfg = cfg or config()
+    return bool(cfg["google_client_id"] and cfg["google_client_secret"])
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +143,28 @@ def lastfm_auth_url(cfg=None):
     })
 
 
+def google_callback_url(cfg=None):
+    cfg = cfg or config()
+    return cfg["base_url"] + "/auth/google/callback"
+
+
+def google_authorize_url(state, cfg=None):
+    """URL de consentimiento de Google (OAuth2 code flow). `state` es el token
+    opaco del FlowStore (viaja también en cookie httponly → doble check CSRF en el
+    callback). Scope mínimo (identidad); prompt=select_account para poder cambiar de
+    cuenta."""
+    cfg = cfg or config()
+    return GOOGLE_AUTH_URL + "?" + urllib.parse.urlencode({
+        "client_id": cfg["google_client_id"],
+        "redirect_uri": google_callback_url(cfg),
+        "response_type": "code",
+        "scope": GOOGLE_SCOPE,
+        "state": state,
+        "access_type": "online",
+        "prompt": "select_account",
+    })
+
+
 # ---------------------------------------------------------------------------
 # REGLA DE MAPEO DE IDENTIDAD (función PURA — el corazón del callback)
 # ---------------------------------------------------------------------------
@@ -141,10 +183,15 @@ def map_identity(provider, provider_account_id, provider_username=None,
 
     Reglas:
       2. Existe (provider, provider_account_id) → devuelve su user_id (dueño).
-      3. No existe y hay invitado en sesión → VINCULA la identidad a ese invitado.
-      4. No existe y no hay invitado → crea app_users nuevo.
+      3. No existe y hay `guest_user_id` → VINCULA la identidad a ESE usuario. Es el
+         "destino de vinculación": puede ser un invitado O una cuenta ya identificada
+         que está conectando un SEGUNDO proveedor desde /cuenta (así no se crea una
+         cuenta nueva ni se expulsa de la actual).
+      4. No existe y no hay destino → crea app_users nuevo (login fresco anónimo).
 
     Devuelve (user_id, outcome) con outcome ∈ {'existing','linked_guest','new'}.
+    (El nombre 'linked_guest' se conserva por compatibilidad; hoy cubre cualquier
+    vinculación al usuario en sesión, no solo invitados.)
     """
     existing = db.find_oauth_credential(provider, provider_account_id)
     if existing:
@@ -157,13 +204,15 @@ def map_identity(provider, provider_account_id, provider_username=None,
 
 def persist_identity(provider, provider_account_id, provider_username=None,
                      guest_user_id=None, oauth_token=None,
-                     oauth_token_secret=None, session_key=None):
+                     oauth_token_secret=None, session_key=None,
+                     oauth2_access_token=None, oauth2_refresh_token=None,
+                     oauth2_expires_at=None):
     """Aplica la regla de mapeo, UPSERTa los tokens frescos, rellena display_name
     del invitado si estaba vacío y toca last_login. Devuelve (user_id, outcome).
 
     Este es el punto ÚNICO que el callback usa tras completar el OAuth. Separa el
     mapeo puro (`map_identity`) de la escritura de tokens para que el test del
-    mapeo no dependa de tokens reales.
+    mapeo no dependa de tokens reales. Los campos oauth2_* son para Google.
     """
     user_id, outcome = map_identity(
         provider, provider_account_id, provider_username, guest_user_id)
@@ -173,6 +222,9 @@ def persist_identity(provider, provider_account_id, provider_username=None,
         provider_username=provider_username,
         oauth_token=oauth_token, oauth_token_secret=oauth_token_secret,
         session_key=session_key,
+        oauth2_access_token=oauth2_access_token,
+        oauth2_refresh_token=oauth2_refresh_token,
+        oauth2_expires_at=oauth2_expires_at,
     )
     if outcome == "linked_guest" and provider_username:
         db.set_display_name_if_empty(user_id, provider_username)
@@ -342,3 +394,49 @@ def lastfm_session(token, cfg=None):
         raise ValueError("Last.fm getSession sin key/name: {}".format(
             json.dumps(data)[:200]))
     return key, name
+
+
+def google_exchange(code, cfg=None):
+    """Intercambia el `code` del callback por tokens (OAuth2 code flow). Devuelve el
+    dict de token de Google: access_token, expires_in, id_token, (refresh_token)."""
+    cfg = cfg or config()
+    requests = _require_requests()
+    resp = requests.post(
+        GOOGLE_TOKEN_URL,
+        data={
+            "code": code,
+            "client_id": cfg["google_client_id"],
+            "client_secret": cfg["google_client_secret"],
+            "redirect_uri": google_callback_url(cfg),
+            "grant_type": "authorization_code",
+        },
+        timeout=_NET_TIMEOUT,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if not data.get("access_token"):
+        raise ValueError("Google token sin access_token: {}".format(
+            json.dumps(data)[:200]))
+    return data
+
+
+def google_identity(access_token, cfg=None):
+    """Llama al endpoint userinfo (OIDC) con el access token. Devuelve
+    (sub, email, name). `sub` es el id ESTABLE de la cuenta Google (no el email,
+    que puede cambiar) → es el provider_account_id."""
+    cfg = cfg or config()
+    requests = _require_requests()
+    resp = requests.get(
+        GOOGLE_USERINFO_URL,
+        headers={"Authorization": "Bearer " + access_token},
+        timeout=_NET_TIMEOUT,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    sub = data.get("sub")
+    if not sub:
+        raise ValueError("Google userinfo sin sub: {}".format(
+            json.dumps(data)[:200]))
+    email = data.get("email")
+    name = data.get("name") or email
+    return str(sub), email, name

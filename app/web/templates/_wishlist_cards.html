@@ -1,0 +1,11 @@
+{# Grid de tarjetas de la wishlist. Espera `works`. Lo usa el JS de la wishlist
+   anónima (hidrata ids del localStorage vía /wishlist/cards) y también el render
+   server-side del usuario con sesión. Vacío honesto si no hay nada guardado. #}
+{% if works %}
+<div class="grid">
+  {% for w in works %}{% include "_work_card.html" %}{% endfor %}
+</div>
+{% else %}
+<p class="empty">Aún no has guardado ningún disco. Pulsa el ♥ en cualquier disco
+   para empezar tu wishlist.</p>
+{% endif %}

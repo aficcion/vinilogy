@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}Tu cuenta{% endblock %}
+{% block content %}
+
+{% if anon %}
+  <header class="mi-head">
+    <h1>Entra o crea tu cuenta</h1>
+    <p class="mi-summary">Una cuenta conserva tu wishlist en todos tus dispositivos
+       y te da recomendaciones a tu medida. Entra con lo que ya uses: la primera vez
+       crea tu cuenta, las siguientes te identifica. Sin contraseñas.</p>
+  </header>
+  <section class="block">
+    <ul class="conn-list">
+      <li class="conn-row">
+        <div class="conn-main">
+          <div class="conn-label">Google</div>
+          <div class="conn-purpose">Tu cuenta, en un clic. Guarda tu wishlist
+             cross-device.</div>
+        </div>
+        <div class="conn-action"><a class="btn-primary" href="/auth/google/login">Entrar con Google</a></div>
+      </li>
+      <li class="conn-row">
+        <div class="conn-main">
+          <div class="conn-label">Discogs</div>
+          <div class="conn-purpose">Importa tu colección real y calcula tu gap de vinilo.</div>
+        </div>
+        <div class="conn-action"><a class="nav-connect" href="/auth/discogs/login">Entrar con Discogs</a></div>
+      </li>
+      <li class="conn-row">
+        <div class="conn-main">
+          <div class="conn-label">Last.fm</div>
+          <div class="conn-purpose">Afina las recomendaciones con lo que de verdad escuchas.</div>
+        </div>
+        <div class="conn-action"><a class="nav-connect" href="/auth/lastfm/login">Entrar con Last.fm</a></div>
+      </li>
+    </ul>
+    <p class="hint">¿Solo quieres guardar discos? No hace falta cuenta: pulsa el ♥ en
+       cualquier disco y va a tu <a href="/wishlist">wishlist</a> en este navegador.</p>
+  </section>
+
+{% else %}
+
+  <header class="mi-head">
+    <h1>Tu cuenta</h1>
+    <p class="mi-summary">
+      {{ display_label }}{% if user.email %} · {{ user.email }}{% endif %}
+      {% if summary and summary.counts.total %}
+        · <strong>{{ summary.counts.total }}</strong> ítems en tu colección
+        {% if summary.value and summary.value.display %}
+          · valor aprox. <strong>{{ summary.value.display }}</strong>
+        {% endif %}
+      {% endif %}
+    </p>
+  </header>
+
+  {# ---- Conexiones: cada una con su propósito distinto ---- #}
+  <section class="block">
+    <h2>Conexiones</h2>
+    <ul class="conn-list">
+      {% for c in connections %}
+      <li class="conn-row {% if c.connected %}is-connected{% endif %}">
+        <div class="conn-main">
+          <div class="conn-label">
+            {{ c.label }}
+            {% if c.connected %}<span class="conn-badge">Conectada</span>{% endif %}
+          </div>
+          <div class="conn-purpose">{{ c.purpose }}</div>
+        </div>
+        <div class="conn-action">
+          {% if c.connected %}
+            <form class="inline-form" action="/auth/{{ c.key }}/disconnect" method="post">
+              <button class="linkish conn-disconnect" type="submit"
+                      {% if c.is_only %}disabled title="Es tu única forma de entrar. Para eliminarla, borra la cuenta."{% endif %}>
+                Desconectar
+              </button>
+            </form>
+          {% elif c.configured %}
+            <a class="nav-connect" href="/auth/{{ c.key }}/login">Conectar</a>
+          {% else %}
+            <span class="conn-unavailable" title="No configurado en este entorno">No disponible</span>
+          {% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% if connections | selectattr('is_only') | list %}
+    <p class="hint">Tu única conexión no se puede desconectar (perderías el acceso).
+       Conecta otra antes, o usa <em>Borrar cuenta</em>.</p>
+    {% endif %}
+  </section>
+
+  {# ---- Preferencias ---- #}
+  <section class="block">
+    <h2>Preferencias</h2>
+    <p class="conn-row">
+      <span class="conn-main"><span class="conn-label">Tema</span>
+        <span class="conn-purpose">Claro u oscuro (se recuerda en este navegador).</span></span>
+      <button class="btn-ghost" type="button" onclick="vbToggleTheme()">Cambiar tema ◐</button>
+    </p>
+  </section>
+
+  {# ---- Zona sensible ---- #}
+  <section class="block danger-zone">
+    <h2>Cuenta</h2>
+    <div class="danger-actions">
+      <form class="inline-form" action="/auth/logout" method="post">
+        <button class="btn-ghost" type="submit">Cerrar sesión</button>
+      </form>
+      <form class="inline-form" action="/account/delete" method="post"
+            onsubmit="return confirm('¿Seguro? Se borrará tu cuenta, tu wishlist y tus conexiones. No se puede deshacer.');">
+        <button class="btn-danger" type="submit">Borrar cuenta</button>
+      </form>
+    </div>
+  </section>
+
+{% endif %}
+
+{% endblock %}

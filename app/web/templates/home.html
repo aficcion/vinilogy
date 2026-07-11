@@ -1,50 +1,43 @@
 {% extends "base.html" %}
-{% block title %}Vinylbe — recomendación de vinilos{% endblock %}
+{% block title %}Vinylbe — el vinilo que buscas, al precio de verdad{% endblock %}
 {% block content %}
 <section class="landing">
-  {% if mosaic %}
-  <div class="mosaic" aria-hidden="true">
-    {% for thumb in mosaic %}<img src="{{ thumb }}" alt="" loading="lazy" referrerpolicy="no-referrer">{% endfor %}
+  <div class="hero">
+    <span class="kicker"><span class="dot-live"></span> Descubre · Colecciona · Obsesiónate</span>
+    <h1><span>Tu próximo vinilo,</span><span>al precio <span class="hero-em">de verdad</span>.</span></h1>
+    <p class="lead">Busca un disco o un artista y compara sus ediciones en vinilo
+       en <strong>tiendas españolas</strong> — sin salir de aquí.</p>
+    <form class="search-big" action="/buscar" method="get" role="search" data-typeahead>
+      <input type="search" name="q" placeholder="Radiohead, In Rainbows, garage rock…"
+             autocomplete="off" autofocus>
+      <button type="submit">Buscar</button>
+    </form>
+    <p class="hint">¿No sabes qué buscar? Prueba la
+       <a class="nav-vibra" href="/vibra">recomendación por vibra ✦</a>{% if not user %}
+       &nbsp;·&nbsp; Guarda discos con <strong>♥</strong> sin cuenta, o
+       <a href="/auth/google/login">entra con Google</a>{% endif %}</p>
+  </div>
+
+  {% if featured %}
+  <div class="strip">
+    <div class="strip-head">
+      <span class="strip-label">En tiendas ahora</span>
+      <span class="strip-sub">precios reales en tiendas ES · actualizado a diario</span>
+    </div>
+    <div class="strip-track">
+      {% for w in featured %}
+      <a class="strip-card" href="/obra/{{ w.id }}">
+        <div class="strip-cover">
+          <img src="{{ w.cover_thumb }}" alt="" loading="lazy" referrerpolicy="no-referrer"
+               onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'strip-cover-empty',textContent:'♫'}))">
+          <span class="strip-price">{{ w.cheapest_price }}</span>
+        </div>
+        <div class="strip-title">{{ w.title }}</div>
+        {% if w.artist_name %}<div class="strip-artist">{{ w.artist_name }}</div>{% endif %}
+      </a>
+      {% endfor %}
+    </div>
   </div>
   {% endif %}
-  <div class="mosaic-veil" aria-hidden="true"></div>
-
-  <div class="hero">
-    <div class="hero-card">
-      <span class="kicker"><span class="dot-live"></span> Descubre · Colecciona · Obsesiónate</span>
-      <h1><span>Tu próximo</span><span class="hero-em">vinilo</span><span>en 12 pulgadas.</span></h1>
-      <p class="lead">Busca un disco o un artista y mira sus ediciones en vinilo y su
-         precio <em>de verdad</em> en tiendas españolas.</p>
-      <form class="search-big" action="/buscar" method="get" role="search" data-typeahead>
-        <input type="search" name="q" placeholder="Radiohead, In Rainbows, garage rock…"
-               autocomplete="off" autofocus>
-        <button type="submit">Buscar</button>
-      </form>
-      <p class="hint">¿No sabes qué buscar? Prueba la
-         <a class="nav-vibra" href="/vibra">recomendación por vibra ✦</a></p>
-    </div>
-  </div>
 </section>
-
-{% if not user %}
-<section class="onboarding">
-  <div class="onboard-card">
-    <h2>Recomendación a tu medida</h2>
-    <p>Empieza sin cuentas: guardamos tus recomendaciones y, cuando quieras,
-       conectas Discogs para ver tu <strong>gap de vinilo</strong> (lo que tienes
-       en CD y existe en vinilo).</p>
-    <form class="inline-form" action="/auth/guest" method="post">
-      <button class="btn-primary" type="submit">Empezar sin cuentas</button>
-    </form>
-    <div class="onboard-connect">
-      <button class="btn-ghost" type="button" disabled title="Próximamente (M3b)">
-        Conectar Discogs · próximamente</button>
-      <button class="btn-ghost" type="button" disabled title="Próximamente (M3b)">
-        Conectar Last.fm · próximamente</button>
-    </div>
-    <p class="hint">Las conexiones con Discogs y Last.fm llegan en la próxima
-       entrega.</p>
-  </div>
-</section>
-{% endif %}
 {% endblock %}

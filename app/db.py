@@ -213,6 +213,31 @@ def _close_pool():
 # Mosaico decorativo (fondo del hero de la home)
 # ---------------------------------------------------------------------------
 
+def sample_cover_works(pool=600):
+    """Muestra barata de obras CON portada de Discogs (id, título, año, artista,
+    miniatura), para la TIRA de discos reales de la home.
+
+    Mismo muestreo barato que `sample_cover_thumbs` (TABLESAMPLE, evita el
+    `ORDER BY random()` sobre las ~235K filas): coge un bloque aleatorio de works,
+    cruza a su portada y a su artista, y capa a `pool`. La ruta luego adorna estas
+    obras con su precio ES (pricing.attach_cheapest) y se queda solo con las que lo
+    tienen. Best-effort: puede salir corta.
+    """
+    sql = """
+        SELECT w.id, w.title, w.year,
+               {clean_name} AS artist_name,
+               ci.url_thumb AS cover_thumb
+        FROM works w TABLESAMPLE SYSTEM (4)
+        JOIN cover_images ci ON ci.work_id = w.id
+             AND ci.source = 'discogs' AND ci.url_thumb IS NOT NULL
+        JOIN artists a ON a.id = w.primary_artist_id
+        LIMIT %(pool)s
+    """.format(clean_name=_clean_artist_name_sql("a.name"))
+    with _cursor() as cur:
+        cur.execute(sql, {"pool": pool})
+        return [dict(r) for r in cur.fetchall()]
+
+
 def sample_cover_thumbs(limit=60):
     """Lista de URLs de miniaturas de portadas Discogs para el mosaico del hero.
 
@@ -1935,10 +1960,74 @@ def delete_session(token):
 
 
 def delete_user_and_sessions(user_id):
-    """Borra un usuario y sus sesiones (CASCADE). Solo para LIMPIEZA de test —
-    nunca se llama desde el flujo web. Sin efecto si el id no existe."""
+    """Borra un usuario y TODO lo suyo por CASCADE (sesiones, credenciales OAuth y
+    wishlist). Lo usa "Borrar cuenta" en /cuenta y la limpieza de tests. Sin efecto
+    si el id no existe."""
     with _cursor() as cur:
         cur.execute("DELETE FROM app_users WHERE id = %(u)s", {"u": user_id})
+
+
+# ---------------------------------------------------------------------------
+# CAPA DE USUARIO — wishlist (M3c · Fase 1)
+# ---------------------------------------------------------------------------
+#
+# Escritura ACOTADA a `user_wishlist` (dato propiedad de v2; ver migración
+# migrations/001_user_wishlist.sql). El catálogo sigue SOLO LECTURA: aquí solo se
+# guardan pares (user_id, work_id). La hidratación a tarjetas (portada/precio) la
+# hace la vista reutilizando catalog/covers/pricing, no estas funciones.
+
+
+def wishlist_add(user_id, work_id):
+    """Guarda un disco en la wishlist del usuario. Idempotente (ON CONFLICT)."""
+    with _cursor() as cur:
+        cur.execute(
+            "INSERT INTO user_wishlist (user_id, work_id) VALUES (%(u)s, %(w)s) "
+            "ON CONFLICT (user_id, work_id) DO NOTHING",
+            {"u": user_id, "w": work_id},
+        )
+
+
+def wishlist_remove(user_id, work_id):
+    """Quita un disco de la wishlist. No-op si no estaba."""
+    with _cursor() as cur:
+        cur.execute(
+            "DELETE FROM user_wishlist WHERE user_id = %(u)s AND work_id = %(w)s",
+            {"u": user_id, "w": work_id},
+        )
+
+
+def wishlist_work_ids(user_id):
+    """IDs de la wishlist del usuario, lo más reciente primero. [] si vacía."""
+    with _cursor() as cur:
+        cur.execute(
+            "SELECT work_id FROM user_wishlist WHERE user_id = %(u)s "
+            "ORDER BY created_at DESC",
+            {"u": user_id},
+        )
+        return [r["work_id"] for r in cur.fetchall()]
+
+
+def wishlist_add_many(user_id, work_ids):
+    """Fusiona una lista de work_ids en la wishlist (import tras conectar cuenta).
+
+    Ignora ids que no existan en el catálogo (FK) o ya guardados. Devuelve cuántas
+    filas se insertaron de verdad. [] / None → 0 sin tocar la BD.
+    """
+    ids = [int(w) for w in (work_ids or []) if str(w).isdigit()]
+    if not ids:
+        return 0
+    with _cursor() as cur:
+        # Solo ids que existan como work (evita romper la FK y descarta basura del
+        # localStorage). El INSERT con SELECT resuelve todo en una query.
+        cur.execute(
+            """
+            INSERT INTO user_wishlist (user_id, work_id)
+            SELECT %(u)s, w.id FROM works w WHERE w.id = ANY(%(ids)s)
+            ON CONFLICT (user_id, work_id) DO NOTHING
+            """,
+            {"u": user_id, "ids": ids},
+        )
+        return cur.rowcount
 
 
 # ---------------------------------------------------------------------------
@@ -1978,37 +2067,61 @@ def find_oauth_credential(provider, provider_account_id):
 
 def upsert_oauth_credential(user_id, provider, provider_account_id,
                             provider_username=None, oauth_token=None,
-                            oauth_token_secret=None, session_key=None):
+                            oauth_token_secret=None, session_key=None,
+                            oauth2_access_token=None, oauth2_refresh_token=None,
+                            oauth2_expires_at=None):
     """UPSERT de la credencial de un usuario para un proveedor (tokens frescos).
 
     Clave de conflicto = UNIQUE (user_id, provider): re-conectar el MISMO
     proveedor refresca los tokens en la fila existente en vez de duplicar. Los
     campos por proveedor respetan la CHECK del schema (discogs: token+secret;
-    lastfm: session_key). Devuelve el id de la credencial.
+    lastfm: session_key; google/OAuth2: oauth2_access_token). Devuelve el id de la
+    credencial.
     """
     with _cursor() as cur:
         cur.execute(
             """
             INSERT INTO user_oauth_credentials
                 (user_id, provider, provider_account_id, provider_username,
-                 oauth_token, oauth_token_secret, session_key, updated_at)
+                 oauth_token, oauth_token_secret, session_key,
+                 oauth2_access_token, oauth2_refresh_token, oauth2_expires_at,
+                 updated_at)
             VALUES
                 (%(uid)s, %(p)s::oauth_provider, %(acc)s, %(uname)s,
-                 %(tok)s, %(sec)s, %(skey)s, now())
+                 %(tok)s, %(sec)s, %(skey)s,
+                 %(a2t)s, %(a2r)s, %(a2e)s, now())
             ON CONFLICT (user_id, provider) DO UPDATE
-                SET provider_account_id = EXCLUDED.provider_account_id,
-                    provider_username   = EXCLUDED.provider_username,
-                    oauth_token         = EXCLUDED.oauth_token,
-                    oauth_token_secret  = EXCLUDED.oauth_token_secret,
-                    session_key         = EXCLUDED.session_key,
-                    updated_at          = now()
+                SET provider_account_id  = EXCLUDED.provider_account_id,
+                    provider_username    = EXCLUDED.provider_username,
+                    oauth_token          = EXCLUDED.oauth_token,
+                    oauth_token_secret   = EXCLUDED.oauth_token_secret,
+                    session_key          = EXCLUDED.session_key,
+                    oauth2_access_token  = EXCLUDED.oauth2_access_token,
+                    oauth2_refresh_token = COALESCE(EXCLUDED.oauth2_refresh_token,
+                                                    user_oauth_credentials.oauth2_refresh_token),
+                    oauth2_expires_at    = EXCLUDED.oauth2_expires_at,
+                    updated_at           = now()
             RETURNING id
             """,
             {"uid": user_id, "p": provider, "acc": str(provider_account_id),
              "uname": provider_username, "tok": oauth_token,
-             "sec": oauth_token_secret, "skey": session_key},
+             "sec": oauth_token_secret, "skey": session_key,
+             "a2t": oauth2_access_token, "a2r": oauth2_refresh_token,
+             "a2e": oauth2_expires_at},
         )
         return cur.fetchone()["id"]
+
+
+def delete_oauth_credential(user_id, provider):
+    """Desvincula un proveedor de un usuario (desconectar en /cuenta). No-op si no
+    existía. Devuelve cuántas filas se borraron (0/1)."""
+    with _cursor() as cur:
+        cur.execute(
+            "DELETE FROM user_oauth_credentials "
+            "WHERE user_id = %(u)s AND provider = %(p)s::oauth_provider",
+            {"u": user_id, "p": provider},
+        )
+        return cur.rowcount
 
 
 def create_identified_user(display_name=None):
