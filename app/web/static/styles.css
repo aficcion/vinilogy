@@ -67,8 +67,8 @@ code {
 /* ── Cabecera ─────────────────────────────────────────────── */
 .topbar {
   position: sticky; top: 0; z-index: 40;
-  display: flex; align-items: center; gap: 22px;
-  padding: 0 26px; height: 62px;
+  display: flex; align-items: center; gap: 10px 22px; flex-wrap: wrap;
+  padding: 9px 26px; min-height: 62px;
   background: color-mix(in srgb, var(--bg) 86%, transparent);
   backdrop-filter: blur(18px) saturate(150%);
   -webkit-backdrop-filter: blur(18px) saturate(150%);
@@ -91,17 +91,29 @@ code {
   font-family: var(--mono-font); letter-spacing: .04em; margin-left: 1px;
 }
 
-/* Búsqueda en la barra (pill) */
-.search { display: flex; align-items: center; flex: 1; max-width: 520px; }
-.search .ta-box { flex: 1; }
-.search > input[type="search"] { flex: 1; }
-.search input[type="search"], .search input:not([type]) {
-  width: 100%; padding: 9px 15px; border-radius: 999px;
+/* Búsqueda en la barra: caja de chips que crece hacia abajo sin romper la cabecera */
+.search { display: flex; align-items: flex-start; flex: 1; max-width: 560px; }
+/* Con JS: `.ta-box` ES el pill (borde + fondo) y contiene chips + input. Al añadir
+   chips crece en vertical (radio menor, no cápsula) y la cabecera se expande. */
+.search .ta-box {
+  flex: 1; min-width: 0;
+  padding: 4px 6px; border-radius: 16px;
+  border: .5px solid var(--line); background: var(--panel);
+}
+.search .ta-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.search .ta-box input[type="search"] {
+  flex: 1; min-width: 120px; border: none; background: none; box-shadow: none;
+  padding: 5px 8px; font: inherit; font-size: 14px; color: var(--ink);
+}
+.search .ta-box input[type="search"]:focus { outline: none; box-shadow: none; }
+/* Sin JS (fallback, input suelto): pill clásico. */
+.search > input[type="search"] {
+  flex: 1; min-width: 0; padding: 9px 15px; border-radius: 999px;
   border: .5px solid var(--line); background: var(--panel); color: var(--ink);
   font: inherit; font-size: 14px;
 }
+.search > input[type="search"]:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .search input::placeholder { color: var(--ink-3); }
-.search input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .search button[type="submit"] {
   margin-left: 8px; padding: 9px 18px; border-radius: 999px; border: none;
   background: var(--accent); color: var(--on-accent); font-weight: 600; cursor: pointer;
