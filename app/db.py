@@ -1621,9 +1621,16 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
 
     Base fiable = `work_styles` con styles limpios. Los tags (folksonomía Last.fm,
     ruidosos) solo SUMAN señal si están en la whitelist del mood — nunca deciden
-    solos. Ranked por popularidad (releases_count/playcount). Cap por artista para
-    diversidad. El número de styles/tags casados va en `match_count` (para el
-    `porque`), pero NUNCA se expone playcount crudo.
+    solos. Cap por artista para diversidad. El número de styles/tags casados va en
+    `match_count` (para el `porque`), pero NUNCA se expone playcount crudo.
+
+    RANKING (score BALANCEADO): `(style_hits + tag_hits) + ln(1+playcount)/4`. Antes
+    ordenaba SOLO por nº de styles/tags casados, y como las bandas OSCURAS están
+    sobre-etiquetadas de género (casan los 4 styles del mood) y las conocidas suelen
+    casar 1-2, salían discos rarísimos. El término log de popularidad (playcount)
+    pesa ~como 1 style-hit por cada e⁴≈55× de escuchas, así que a igualdad de vibra
+    gana el disco CONOCIDO, sin que un megahit fuera-de-vibra (style_hits=1) desplace
+    a los realmente afines. Divisor 4 elegido por prueba (ver moods de referencia).
 
     `exclude_user_id` (M3a): excluye los works de la colección de ese usuario (mood
     para el logueado no repite lo que ya tiene).
@@ -1678,9 +1685,9 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
             SELECT s.*,
                    ROW_NUMBER() OVER (
                        PARTITION BY s.primary_artist_id
-                       ORDER BY (s.style_hits + s.tag_hits) DESC,
-                                s.releases_count DESC NULLS LAST,
-                                s.lastfm_playcount DESC NULLS LAST
+                       ORDER BY ((s.style_hits + s.tag_hits)
+                                 + ln(1 + COALESCE(s.lastfm_playcount, 0)) / 4.0) DESC,
+                                s.releases_count DESC NULLS LAST
                    ) AS rn_artist
             FROM scored s
         ),
@@ -1694,9 +1701,9 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
                    style_hits, tag_hits, matched_styles
             FROM ranked
             WHERE rn_artist <= %(cap)s
-            ORDER BY (style_hits + tag_hits) DESC,
-                     releases_count DESC NULLS LAST,
-                     lastfm_playcount DESC NULLS LAST
+            ORDER BY ((style_hits + tag_hits)
+                      + ln(1 + COALESCE(lastfm_playcount, 0)) / 4.0) DESC,
+                     releases_count DESC NULLS LAST
             LIMIT %(cand_limit)s
         ),
         albumok AS MATERIALIZED (
@@ -1722,9 +1729,9 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
         FROM albumok ao
         LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb
                    FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = ao.id
-        ORDER BY (ao.style_hits + ao.tag_hits) DESC,
-                 ao.releases_count DESC NULLS LAST,
-                 ao.lastfm_playcount DESC NULLS LAST
+        ORDER BY ((ao.style_hits + ao.tag_hits)
+                  + ln(1 + COALESCE(ao.lastfm_playcount, 0)) / 4.0) DESC,
+                 ao.releases_count DESC NULLS LAST
     """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL,
                album_track_ok=_album_track_ok_sql("w"))
     with _cursor() as cur:
