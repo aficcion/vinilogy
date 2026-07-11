@@ -47,9 +47,12 @@ def suggest(q, per_kind=6):
     year}]}. Mismo ranking/filtros que search (portada-obligatoria en works). Min 3
     chars (lo controla db). NO devuelve missing_cover_ids (el buscador pleno los
     encola; sugerir es de solo lectura)."""
+    # PREFIJO: el type-ahead manda cadenas incompletas ("radioh"); el modo prefix usa
+    # una tsquery `:*` que casa por prefijo con el índice FTS (0,6s → ~0,05s) en vez
+    # de caer al trigram. Mismo ranking/filtros (portada-obligatoria).
     with ThreadPoolExecutor(max_workers=2) as ex:
-        fw = ex.submit(db.search_works, q, per_kind)
-        fa = ex.submit(db.search_artists, q, per_kind)
+        fw = ex.submit(db.search_works, q, per_kind, prefix=True)
+        fa = ex.submit(db.search_artists, q, per_kind, prefix=True)
         works = fw.result()["works"]
         artists = fa.result()
     return {
