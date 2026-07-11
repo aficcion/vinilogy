@@ -37,21 +37,17 @@ _SEARCH_WORK_TYPES = _DISCOGRAPHY_WORK_TYPES
 # Filtro anti-morralla para RECOMENDACIÓN por contenido (solo obras de verdad).
 _RECO_WORK_TYPES = ("studio_album", "ep")
 
-# SINGLES DISFRAZADOS — PARCHE RETIRADO (migración core 049, 10-jul-2026).
-# Antes core insertaba los works de origen Discogs como `studio_album` por defecto
-# y los singles/EPs quedaban mal tipados; este predicado los excluía midiendo el
-# nº de pistas del prensado de vinilo. La migración 049 re-tipó de raíz en core
-# (≤3 pistas → single, 4-5 → ep, ≥6 → álbum, señal = max pistas entre ediciones),
-# así que el work_type ya es fiable y el filtro transversal por work_type
-# (`_RECO_WORK_TYPES`/`_DISCOGRAPHY_WORK_TYPES` = studio_album+ep) hace el trabajo.
-# El predicado se neutraliza a TRUE (no-op) para no tocar los ~14 sitios donde se
-# interpola; el scaffolding {album_track_ok} queda inerte y se puede limpiar.
-# NOTA: 049 mide sobre TODAS las ediciones (no solo vinilo), así que algún work con
-# vinilo ≤3 pistas pero CD/digital ≥4 (p.ej. Interpol "Evil") ahora es `ep` y SÍ
-# aparece — es el criterio core-consistente, aceptado al retirar el parche.
+# OBRA OFICIAL — excluye ediciones no oficiales (bootlegs). Core marca
+# `is_official=false` en los works cuyas ediciones son todas "unofficial release"
+# (formato Discogs); sin este filtro un bootleg en LP (p.ej. Arctic Monkeys
+# "Soiled", master Discogs 865304) aparece como studio_album normal. Se interpola
+# en los ~13 sitios de búsqueda/reco/discografía reutilizando el scaffolding
+# {album_track_ok} del antiguo parche de singles-disfrazados (ya retirado).
+# El índice parcial de core `idx_works_artist_type ... WHERE is_official=true`
+# soporta justo este predicado.
 def _album_track_ok_sql(work_alias="w"):
-    """No-op (TRUE) — parche retirado tras la migración core 049. Ver comentario."""
-    return "TRUE"
+    """Predicado anti-bootleg: exige is_official=true en el work indicado."""
+    return f"{work_alias}.is_official"
 
 
 # Regla TRANSVERSAL de PORTADA OBLIGATORIA: un work solo se MUESTRA si tiene una
@@ -213,28 +209,46 @@ def _close_pool():
 # Mosaico decorativo (fondo del hero de la home)
 # ---------------------------------------------------------------------------
 
-def sample_cover_works(pool=600):
-    """Muestra barata de obras CON portada de Discogs (id, título, año, artista,
-    miniatura), para la TIRA de discos reales de la home.
+def top_covers_by_playcount(style_names, min_playcount=3_000_000, limit=150):
+    """Obras CONOCIDAS (más escuchadas en Last.fm) de unos estilos dados, con
+    portada de Discogs, para la TIRA de discos reales de la home.
 
-    Mismo muestreo barato que `sample_cover_thumbs` (TABLESAMPLE, evita el
-    `ORDER BY random()` sobre las ~235K filas): coge un bloque aleatorio de works,
-    cruza a su portada y a su artista, y capa a `pool`. La ruta luego adorna estas
-    obras con su precio ES (pricing.attach_cheapest) y se queda solo con las que lo
-    tienen. Best-effort: puede salir corta.
+    A diferencia de un muestreo aleatorio, sesga hacia lo RECONOCIBLE: filtra por
+    `has_vinyl` + álbum/EP + estilo en `style_names` + un umbral de `lastfm_playcount`
+    (el umbral recorta el candidato a unos pocos miles ANTES del join de estilos —
+    sin él habría que ordenar ~90K works, medido ~8s → ~0,8s). El estilo se comprueba
+    con EXISTS (evita duplicar la fila por cada estilo casado). Ordena por playcount
+    desc y capa a `limit`. La ruta luego les cuelga el precio ES
+    (pricing.attach_cheapest) y descarta las que no tienen. Sin estilos → [].
     """
+    style_names = [s for s in (style_names or []) if s]
+    if not style_names:
+        return []
     sql = """
-        SELECT w.id, w.title, w.year,
+        SELECT w.id, w.title, w.year, w.lastfm_playcount,
                {clean_name} AS artist_name,
                ci.url_thumb AS cover_thumb
-        FROM works w TABLESAMPLE SYSTEM (4)
+        FROM works w
         JOIN cover_images ci ON ci.work_id = w.id
              AND ci.source = 'discogs' AND ci.url_thumb IS NOT NULL
         JOIN artists a ON a.id = w.primary_artist_id
-        LIMIT %(pool)s
+        WHERE w.has_vinyl = true
+          AND w.work_type = ANY(%(work_types)s::work_type[])
+          AND w.lastfm_playcount > %(thr)s
+          AND EXISTS (
+              SELECT 1 FROM work_styles ws
+              JOIN styles st ON st.id = ws.style_id
+              WHERE ws.work_id = w.id AND st.name = ANY(%(styles)s))
+        ORDER BY w.lastfm_playcount DESC
+        LIMIT %(limit)s
     """.format(clean_name=_clean_artist_name_sql("a.name"))
     with _cursor() as cur:
-        cur.execute(sql, {"pool": pool})
+        cur.execute(sql, {
+            "styles": style_names,
+            "thr": min_playcount,
+            "work_types": list(_RECO_WORK_TYPES),
+            "limit": limit,
+        })
         return [dict(r) for r in cur.fetchall()]
 
 

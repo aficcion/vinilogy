@@ -22,6 +22,7 @@ Arranque:
         uvicorn app.main:app --port 7788 --reload
 """
 import os
+import random
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -104,10 +105,17 @@ def _oauth_error(request, provider, detail, status_code=400):
 # Páginas (anónimas; excluyen colección cuando hay user)
 # ---------------------------------------------------------------------------
 
-# Tira de discos reales de la home: obras con portada Y precio ES real. El match
+# Tira de discos reales de la home: obras CONOCIDAS de vibra indie/alt con portada
+# Y precio ES real. Estilos curados (editorial) sesgados a ese rollo. El match
 # obra→precio no es gratis (trigram sobre marketplace_listings), y la tira es la
-# misma para todos → se cachea en proceso unos minutos. Se conserva la última tanda
-# buena si una recarga falla, para no dejar la home sin tira.
+# misma para todos → se cachea en proceso unos minutos. De la cabeza por popularidad
+# se toma una MUESTRA aleatoria (todas conocidas, pero rota entre recargas). Se
+# conserva la última tanda buena si una recarga falla, para no dejar la home sin tira.
+_STRIP_STYLES = [
+    "Alternative Rock", "Indie Rock", "Indie Pop", "Post-Punk", "New Wave",
+    "Shoegaze", "Dream Pop", "Post Rock", "Grunge", "Garage Rock",
+    "Art Rock", "Britpop", "Emo", "Math Rock", "Post-Hardcore",
+]
 _FEATURED = {"at": 0.0, "works": []}
 _FEATURED_TTL = 600  # 10 min
 
@@ -117,9 +125,13 @@ def _featured_priced_works(limit=14):
     if _FEATURED["works"] and (now - _FEATURED["at"] < _FEATURED_TTL):
         return _FEATURED["works"]
     try:
-        cands = db.sample_cover_works(600)
+        cands = db.top_covers_by_playcount(_STRIP_STYLES, limit=150)
         pricing.attach_cheapest(cands)
-        priced = [w for w in cands if w.get("cheapest_price")][:limit]
+        priced = [w for w in cands if w.get("cheapest_price")]
+        # De las ~más conocidas con precio, muestrea `limit` para que rote entre
+        # recargas (todas siguen siendo discos reconocibles).
+        pool = priced[: max(limit * 4, limit)]
+        priced = random.sample(pool, min(limit, len(pool)))
     except Exception:
         priced = []
     if priced:

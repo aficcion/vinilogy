@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Vinylbe{% endblock %}</title>
+  <title>{% block title %}Vinilogy{% endblock %}</title>
   <script>
     /* Tema antes de pintar (evita el flash): preferencia guardada, o papel por defecto. */
     (function () {
@@ -16,11 +16,11 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=17">
+  <link rel="stylesheet" href="/static/styles.css?v=25">
 </head>
 <body data-auth="{{ 'user' if user else 'anon' }}">
   <header class="topbar">
-    <a class="brand" href="/">Vinylbe<span class="brand-v2">v2</span></a>
+    <a class="brand" href="/">Vinilogy<span class="brand-v2">v2</span></a>
     <form class="search" action="/buscar" method="get" role="search" data-typeahead>
       <input type="search" name="q" value="{{ q|default('') }}"
              placeholder="Busca un disco o un artista…" autocomplete="off">
@@ -49,7 +49,7 @@
   </main>
 
   <footer class="footer">
-    <span>Vinylbe v2 · M3a · datos de <code>vinology_core</code></span>
+    <span>Vinilogy v2 · M3a · datos de <code>vinology_core</code></span>
   </footer>
   <script>
     function vbToggleTheme() {

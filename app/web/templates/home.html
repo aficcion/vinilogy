@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% block title %}Vinylbe — el vinilo que buscas, al precio de verdad{% endblock %}
+{% block title %}Vinilogy — busca cualquier vinilo y su precio en tiendas de España{% endblock %}
 {% block content %}
 <section class="landing">
   <div class="hero">
-    <span class="kicker"><span class="dot-live"></span> Descubre · Colecciona · Obsesiónate</span>
-    <h1><span>Tu próximo vinilo,</span><span>al precio <span class="hero-em">de verdad</span>.</span></h1>
-    <p class="lead">Busca un disco o un artista y compara sus ediciones en vinilo
-       en <strong>tiendas españolas</strong> — sin salir de aquí.</p>
+    <span class="kicker"><span class="dot-live"></span> No compras canciones. Compras discos.</span>
+    <h1><span>Deja de rastrear tiendas.</span><span>Busca el disco y <span class="hero-em">punto</span>.</span></h1>
+    <p class="lead">Vinilogy junta las ediciones en vinilo de cualquier álbum y lo que
+       cuesta en <strong>cada tienda independiente</strong>. Tú solo eliges cuál cae este mes.</p>
     <form class="search-big" action="/buscar" method="get" role="search" data-typeahead>
       <input type="search" name="q" placeholder="Radiohead, In Rainbows, garage rock…"
              autocomplete="off" autofocus>
@@ -38,6 +38,33 @@
       {% endfor %}
     </div>
   </div>
+  {% endif %}
+
+  {% if not user %}
+  <section class="connect">
+    <div class="connect-head">
+      <h2>Hazla <em>tuya</em></h2>
+      <span>Conecta tus cuentas y deja de ser un catálogo para volverse tuyo</span>
+    </div>
+    <div class="connect-grid">
+      <div class="connect-card">
+        <div class="connect-logo connect-logo--discogs" aria-hidden="true">◉</div>
+        <div class="connect-body">
+          <h3>Discogs</h3>
+          <p>Importa tu colección y calcula tu <strong>gap de vinilo</strong>, con precios ES.</p>
+        </div>
+        <a class="btn-primary" href="/auth/discogs/login">Conectar</a>
+      </div>
+      <div class="connect-card">
+        <div class="connect-logo connect-logo--lastfm" aria-hidden="true">❋</div>
+        <div class="connect-body">
+          <h3>Last.fm</h3>
+          <p>Afina la reco con lo que <strong>de verdad escuchas</strong>.</p>
+        </div>
+        <a class="btn-primary" href="/auth/lastfm/login">Conectar</a>
+      </div>
+    </div>
+  </section>
   {% endif %}
 </section>
 {% endblock %}
