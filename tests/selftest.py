@@ -100,14 +100,15 @@ def _no_disguised_singles(items):
 def derive_fixtures():
     fx = {}
 
-    # Work popular con vinilo cuyo artista TIENE listings con precio.
+    # Work popular con vinilo con listings ENLAZADOS por work_id (match precio
+    # M4: marketplace_listings.work_id, resuelto en el port de core).
     rows = _q("""
         SELECT w.id
         FROM works w
         WHERE w.has_vinyl = true
           AND EXISTS (
               SELECT 1 FROM marketplace_listings ml
-              WHERE ml.artist_id = w.primary_artist_id AND ml.price_cents > 0
+              WHERE ml.work_id = w.id AND ml.price_cents > 0
           )
         ORDER BY w.releases_count DESC NULLS LAST
         LIMIT 1
@@ -124,14 +125,14 @@ def derive_fixtures():
     """)
     fx["work_top_vinyl"] = rows[0]["id"] if rows else None
 
-    # Work cuyo artista NO tiene ningún listing (camino honesto → precios []).
+    # Work SIN listing enlazado por work_id (camino honesto → precios []).
     rows = _q("""
         SELECT w.id
         FROM works w
         WHERE w.has_vinyl = true
           AND NOT EXISTS (
               SELECT 1 FROM marketplace_listings ml
-              WHERE ml.artist_id = w.primary_artist_id
+              WHERE ml.work_id = w.id
           )
         ORDER BY w.releases_count DESC NULLS LAST
         LIMIT 1
@@ -208,21 +209,27 @@ def derive_fixtures():
     # tracklist, y existe una edición de vinilo con MUCHAS más pistas (una caja
     # de tomas/sessions). Regresión: get_work_tracklist debe devolver la de
     # referencia, no la caja (bug histórico del MAX → Abbey Road Super Deluxe).
+    # PERF: se proyecta ref_n en un subquery (hash estrecho, no arrastra el jsonb
+    # tracklist_cache de 7,58M releases → antes 5GB de hash y >10min) y se toma
+    # CUALQUIER work que cumpla el patrón con LIMIT 1 sin ORDER BY (corta al
+    # primer match; el check 14b vale para cualquier caja, no hace falta la MAX).
     rows = _q("""
-        SELECT wmr.work_id AS id,
-               jsonb_array_length(mr.tracklist_cache) AS ref_n
-        FROM work_main_release wmr
-        JOIN releases mr ON mr.discogs_release_id = wmr.main_release_id
-             AND jsonb_typeof(mr.tracklist_cache) = 'array'
+        SELECT m.work_id AS id, m.ref_n
+        FROM (
+            SELECT wmr.work_id,
+                   jsonb_array_length(mr.tracklist_cache) AS ref_n
+            FROM work_main_release wmr
+            JOIN releases mr ON mr.discogs_release_id = wmr.main_release_id
+            WHERE jsonb_typeof(mr.tracklist_cache) = 'array'
+              AND jsonb_array_length(mr.tracklist_cache) BETWEEN 4 AND 30
+        ) m
         JOIN LATERAL (
             SELECT max(jsonb_array_length(r.tracklist_cache)) AS max_n
             FROM releases r
-            WHERE r.work_id = wmr.work_id AND r.format = 'vinyl'
+            WHERE r.work_id = m.work_id AND r.format = 'vinyl'
               AND jsonb_typeof(r.tracklist_cache) = 'array'
         ) mx ON true
-        WHERE jsonb_array_length(mr.tracklist_cache) BETWEEN 4 AND 30
-          AND mx.max_n > jsonb_array_length(mr.tracklist_cache) + 8
-        ORDER BY mx.max_n DESC
+        WHERE mx.max_n > m.ref_n + 8
         LIMIT 1
     """)
     fx["work_with_boxset"] = (rows[0] if rows else None)
@@ -400,7 +407,7 @@ def run_checks(fx):
     else:
         check("fixture work_top_vinyl existe", False, "no derivada")
 
-    # 3. Work cuyo artista tiene listings → >=1 precio, EUR, price>0, asc.
+    # 3. Work con listings enlazados por work_id → >=1 precio, EUR, price>0, asc.
     if fx["work_with_prices"]:
         prices = db.get_prices_for_work(fx["work_with_prices"])
         check(
@@ -435,7 +442,7 @@ def run_checks(fx):
     else:
         check("fixture work_with_prices existe", False, "no derivada")
 
-    # 4. Work cuyo artista NO tiene listings → precios [] sin petar.
+    # 4. Work sin listing enlazado por work_id → precios [] sin petar.
     if fx["work_no_prices"]:
         try:
             prices = db.get_prices_for_work(fx["work_no_prices"])

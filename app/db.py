@@ -10,9 +10,9 @@ Contratos del proyecto respetados aquí:
   - Solo works con vinilo (`has_vinyl = true`) salen en búsqueda/discografía.
   - Discografía se ordena por escuchas (`lastfm_playcount DESC NULLS LAST`),
     NUNCA cronológico. El playcount CRUDO no se expone al render (regla de números).
-  - Precios: match por `artist_id` + trigram de título (en core `release_id`
-    de marketplace_listings es 100% NULL — ver nota en get_prices_for_work).
-    Nunca se inventa precio: sin datos → lista vacía.
+  - Precios: match por `marketplace_listings.work_id`, pre-resuelto en el port
+    de core (migración 056 — ver nota en get_prices_for_work). Nunca se inventa
+    precio: sin datos → lista vacía.
 """
 import os
 import atexit
@@ -1045,47 +1045,21 @@ def works_primary_artists(work_ids):
 def get_prices_for_work(work_id, max_age_days=None):
     """Listings de tienda para la obra, ordenados por precio ASC.
 
-    Estrategia de match (paridad con el prototipo):
-      1. Por release_id de las releases de la work — camino canónico, PERO en
-         core `marketplace_listings.release_id` es 100% NULL hoy (verificado
-         8-jul-2026: 0 de 25.582). Se deja implementado por si core lo puebla.
-      2. Por artist_id = primary_artist_id de la work, cruzado con match de
-         título por trigram sobre title_text (usa título de la work + de sus
-         releases). Es el camino REAL en M0.
+    Match por `marketplace_listings.work_id`, RESUELTO una vez en el port de core
+    (`ingest/port_store_listings.resolve_work_ids`, migración 056): artist_text
+    normalizado + título limpio → obra del MISMO artista (exacto OR trigram>0.55).
+    Antes se casaba EN CALIENTE por artist_id + título difuso (trigram>0.35 OR
+    substring) sobre título de la work y de sus releases como semillas: semillas
+    contaminadas ("Abbey Road (3LP Anniversary Edition)") cruzaban álbumes del
+    mismo artista (Abbey Road mostraba precios de With The Beatles / Sgt Pepper /
+    White Album). Con el enlace pre-resuelto ese cruce desaparece y la consulta
+    es un simple index-scan por work_id.
 
     Cada fila lleva `data_as_of` (fecha de last_seen) y `stale` (bool) según
     STORE_FRESHNESS_MAX_DAYS (o `max_age_days` si se pasa). Sin datos → [].
     Nunca inventa precio.
     """
     stale_days = max_age_days if max_age_days is not None else STORE_FRESHNESS_MAX_DAYS
-
-    # Título de la work + títulos de sus releases, como semillas de match.
-    with _cursor() as cur:
-        cur.execute("""
-            SELECT w.title AS work_title,
-                   w.primary_artist_id AS artist_id,
-                   COALESCE(
-                       (SELECT array_agg(DISTINCT r.title)
-                        FROM releases r WHERE r.work_id = w.id),
-                       ARRAY[]::text[]
-                   ) AS release_titles,
-                   COALESCE(
-                       (SELECT array_agg(r.id)
-                        FROM releases r WHERE r.work_id = w.id),
-                       ARRAY[]::bigint[]
-                   ) AS release_ids
-            FROM works w
-            WHERE w.id = %(work_id)s
-        """, {"work_id": work_id})
-        meta = cur.fetchone()
-
-    if not meta:
-        return []
-
-    titles = [meta["work_title"]] + list(meta["release_titles"] or [])
-    titles = [t for t in titles if t]
-    artist_id = meta["artist_id"]
-    release_ids = list(meta["release_ids"] or [])
 
     sql = """
         SELECT ml.source,
@@ -1100,29 +1074,13 @@ def get_prices_for_work(work_id, max_age_days=None):
                ml.last_seen_at::date AS data_as_of,
                (ml.last_seen_at < (now() - make_interval(days => %(stale_days)s))) AS stale
         FROM marketplace_listings ml
-        WHERE ml.price_cents > 0
-          AND (
-                -- Camino 1: por release_id (hoy vacío en core, dejado por robustez)
-                (%(release_ids)s::bigint[] <> ARRAY[]::bigint[]
-                 AND ml.release_id = ANY(%(release_ids)s))
-                OR
-                -- Camino 2 (real en M0): artist_id + match de título por trigram
-                (ml.artist_id = %(artist_id)s
-                 AND EXISTS (
-                     SELECT 1 FROM unnest(%(titles)s::text[]) t(title)
-                     WHERE similarity(lower(immutable_unaccent(ml.title_text)),
-                                      lower(immutable_unaccent(t.title))) > 0.35
-                        OR lower(immutable_unaccent(ml.title_text))
-                           LIKE '%%' || lower(immutable_unaccent(t.title)) || '%%'
-                 ))
-          )
+        WHERE ml.work_id = %(work_id)s
+          AND ml.price_cents > 0
         ORDER BY ml.price_cents ASC
     """
     with _cursor() as cur:
         cur.execute(sql, {
-            "artist_id": artist_id,
-            "titles": titles,
-            "release_ids": release_ids,
+            "work_id": work_id,
             "stale_days": stale_days,
         })
         return cur.fetchall()
