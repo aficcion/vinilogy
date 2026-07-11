@@ -383,10 +383,17 @@ def artista(request: Request, artist_id: int):
     covers.request_missing(discography)
     covers.request_missing_ids(disc.get("missing_cover_ids"))
     pricing.attach_cheapest(discography)
-    # Backfill de FOTO DE ARTISTA sin bloquear: si la ficha mostraría el
-    # monograma (image_url NULL), pide la foto a Discogs (mismo worker/throttle
-    # que las portadas). Esta carga muestra monograma; la siguiente ya trae foto.
-    covers.request_missing_artists(artist)
+    # FOTO DE ARTISTA: si la ficha mostraría el monograma (image_url NULL), recupera
+    # la foto de Discogs EN EL ACTO (~0,3s, una llamada) para que salga en la PRIMERA
+    # carga — antes solo aparecía tras un refresco (la traía el worker async). Si la
+    # recuperación síncrona falla (429/sin foto), cae al worker async para converger
+    # en la siguiente carga (mismo patrón que recover_cover_now en /buscar).
+    if covers.needs_artist_photo(artist):
+        got = covers.recover_artist_image_now(artist_id)
+        if got:
+            artist["image_url"] = got
+        else:
+            covers.request_missing_artists(artist)
     return _render(
         request, "artist.html",
         artist=artist,

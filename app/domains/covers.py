@@ -507,6 +507,36 @@ def recover_cover_now(work_id):
         return None
 
 
+def recover_artist_image_now(artist_id):
+    """Recupera la foto de UN artista de Discogs de forma SÍNCRONA (bloquea ~0,3s).
+
+    Espejo de `recover_cover_now` para la ficha de artista: si el artista mostraría
+    el monograma, se pide su foto a Discogs EN EL ACTO y se muestra en la PRIMERA
+    carga (antes solo aparecía tras un refresco, cuando la traía el worker async).
+    Devuelve la url (y la guarda en core `artists.image_url`), o None si el flag/
+    credenciales están off, el artista no tiene `discogs_artist_id`, o Discogs no
+    da foto/429/error. Degrada silenciosamente (nunca lanza): si falla, sigue el
+    monograma y el worker async puede converger en la siguiente carga.
+
+    NO usa el throttle del worker (igual que `recover_cover_now`): es UNA llamada
+    por carga de página (ritmo humano), no un bucle — no puede saturar el rate limit.
+    """
+    if not _enabled():
+        return None
+    try:
+        dg_id = db.artist_discogs_ids([artist_id]).get(artist_id)
+        if not dg_id:
+            return None
+        url = fetch_artist_image(dg_id)
+        if not url:
+            return None
+        store_artist_image(artist_id, url)
+        return url
+    except Exception as e:  # noqa: BLE001 — jamás romper la ficha por esto
+        log.debug("covers: recover_artist_image_now falló artist=%s (%s)", artist_id, e)
+        return None
+
+
 def request_missing_ids(work_ids):
     """Encola una lista de work_ids que YA se sabe que NO tienen portada de Discogs.
 
