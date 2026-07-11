@@ -210,6 +210,33 @@ def _close_pool():
 
 
 # ---------------------------------------------------------------------------
+# Mosaico decorativo (fondo del hero de la home)
+# ---------------------------------------------------------------------------
+
+def sample_cover_thumbs(limit=60):
+    """Lista de URLs de miniaturas de portadas Discogs para el mosaico del hero.
+
+    Decorativo y best-effort. Muestreo barato con TABLESAMPLE (evita el
+    `ORDER BY random()` sobre las ~235K filas): coge un bloque aleatorio y capa a
+    `limit`. Si el sample sale corto (poco frecuente), rellena con un fetch simple.
+    """
+    sql = """
+        SELECT url_thumb FROM cover_images TABLESAMPLE SYSTEM (1)
+        WHERE source = 'discogs' AND url_thumb IS NOT NULL
+        LIMIT %(limit)s
+    """
+    with _cursor() as cur:
+        cur.execute(sql, {"limit": limit})
+        rows = [r["url_thumb"] for r in cur.fetchall()]
+        if len(rows) < limit:
+            cur.execute(
+                "SELECT url_thumb FROM cover_images WHERE source='discogs'"
+                " AND url_thumb IS NOT NULL LIMIT %(limit)s", {"limit": limit})
+            rows = [r["url_thumb"] for r in cur.fetchall()]
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # Búsqueda
 # ---------------------------------------------------------------------------
 

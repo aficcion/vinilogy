@@ -1,5 +1,6 @@
 {# Tarjeta de obra reutilizable. Espera `w` (dict de work). #}
 <a class="card" href="/obra/{{ w.id }}">
+  <div class="card-band"><span>Álbum</span><span class="card-band__action">ver ficha</span></div>
   <div class="card-cover">
     {% if w.cover_thumb or w.cover_url %}
       <img src="{{ w.cover_thumb or w.cover_url }}" alt="" loading="lazy"

@@ -98,7 +98,12 @@ def _oauth_error(request, provider, detail, status_code=400):
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
     user = users.current_user(request)
-    return _render(request, "home.html", user=user)
+    # Mosaico de portadas del fondo del hero (decorativo, best-effort).
+    try:
+        mosaic = db.sample_cover_thumbs(60)
+    except Exception:
+        mosaic = []
+    return _render(request, "home.html", user=user, mosaic=mosaic)
 
 
 def _parse_id_csv(raw):

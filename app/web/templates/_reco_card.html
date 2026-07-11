@@ -1,5 +1,6 @@
 {# Tarjeta de recomendación: reutiliza _work_card y añade el `porque`. Espera `w`. #}
 <a class="card reco-card" href="/obra/{{ w.id }}">
+  <div class="card-band card-band--reco"><span>Afín</span><span class="card-band__action">recomendación</span></div>
   <div class="card-cover">
     {% if w.cover_thumb or w.cover_url %}
       <img src="{{ w.cover_thumb or w.cover_url }}" alt="" loading="lazy"

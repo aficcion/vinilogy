@@ -4,7 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Vinylbe{% endblock %}</title>
-  <link rel="stylesheet" href="/static/styles.css">
+  <script>
+    /* Tema antes de pintar (evita el flash): preferencia guardada, o papel por defecto. */
+    (function () {
+      try {
+        var t = localStorage.getItem("vb-theme");
+        document.documentElement.setAttribute("data-theme", t || "light");
+      } catch (e) { document.documentElement.setAttribute("data-theme", "light"); }
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css?v=6">
 </head>
 <body>
   <header class="topbar">
@@ -16,6 +28,7 @@
     </form>
     <a class="nav-vibra" href="/vibra">Por vibra ✦</a>
     <nav class="topbar-user">
+      <button class="theme-toggle" type="button" aria-label="Cambiar tema" onclick="vbToggleTheme()">◐</button>
       {% if user %}
         {% set providers = user.providers or [] %}
         {% if 'discogs' not in providers %}
@@ -45,6 +58,14 @@
   <footer class="footer">
     <span>Vinylbe v2 · M3a · datos de <code>vinology_core</code></span>
   </footer>
+  <script>
+    function vbToggleTheme() {
+      var cur = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+      var next = cur === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      try { localStorage.setItem("vb-theme", next); } catch (e) {}
+    }
+  </script>
   <script src="/static/search.js" defer></script>
 </body>
 </html>

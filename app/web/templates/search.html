@@ -36,7 +36,7 @@
   <p class="empty">Escribe algo en el buscador para empezar.</p>
 {% else %}
   {# ---- Búsqueda por TEXTO (§1): artistas + discos en bloques ---- #}
-  <h1 class="page-title">Resultados para “{{ q }}”</h1>
+  <h1 class="page-title">Resultados para <span class="q">“{{ q }}”</span></h1>
 
   {% if artists %}
   <section class="block">
@@ -45,6 +45,12 @@
       {% for a in artists %}
       <li>
         <a href="/artista/{{ a.id }}">
+          {% if a.image_url %}
+            <img class="artist-avatar" src="{{ a.image_url }}" alt="" loading="lazy" referrerpolicy="no-referrer"
+                 onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'artist-avatar artist-avatar-empty',textContent:(this.dataset.i||'♪')}))" data-i="{{ a.name[0]|upper }}">
+          {% else %}
+            <span class="artist-avatar artist-avatar-empty">{{ a.name[0]|upper }}</span>
+          {% endif %}
           <span class="artist-name">{{ a.name }}</span>
           {% if a.disambiguation %}<span class="artist-dis">({{ a.disambiguation }})</span>{% endif %}
           {% if a.country %}<span class="artist-country">{{ a.country }}</span>{% endif %}
