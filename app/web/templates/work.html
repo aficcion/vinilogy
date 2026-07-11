@@ -94,32 +94,6 @@
   {% endif %}
 
   <section class="block">
-    <h2>Ediciones en vinilo</h2>
-    {% if editions %}
-      <table class="editions">
-        <thead>
-          <tr><th>Año</th><th>País</th><th>Sello</th><th>Cat. nº</th><th></th></tr>
-        </thead>
-        <tbody>
-          {% for e in editions %}
-          <tr>
-            <td>{{ e.year or '—' }}</td>
-            <td>{{ e.country or '—' }}</td>
-            <td>{{ e.label_name or '—' }}</td>
-            <td>{{ e.catno or '—' }}</td>
-            <td>
-              {% if e.is_reissue %}<span class="pill">reedición{% if e.original_year %} de {{ e.original_year }}{% endif %}</span>{% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    {% else %}
-      <p class="empty">Sin ediciones en vinilo localizadas para esta obra.</p>
-    {% endif %}
-  </section>
-
-  <section class="block">
     <h2>Precios en tiendas ES</h2>
     {% if prices.listings %}
       {% if prices.any_stale %}

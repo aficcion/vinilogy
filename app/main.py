@@ -242,7 +242,6 @@ def obra(request: Request, work_id: int):
         covers.request_missing(work)
         return _render(request, "404.html", what="obra", ident=work_id,
                        status_code=404, user=user)
-    editions = catalog.get_work_vinyl_editions(work_id)
     tracklist = catalog.get_work_tracklist(work_id)
     prices = pricing.get_prices_for_work(work_id)
     press_signals = press.get_signals(work_id)
@@ -255,7 +254,6 @@ def obra(request: Request, work_id: int):
     return _render(
         request, "work.html",
         work=work,
-        editions=editions,
         tracklist=tracklist,
         prices=prices,
         press=press_signals,
