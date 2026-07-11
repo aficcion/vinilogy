@@ -20,3 +20,7 @@ env/
 .vscode/
 .claude/
 *.swp
+
+# Exports/informes de análisis generados (regenerables, no versionar)
+ambiguos_12_10_worktype.csv
+no_mapeados_por_tienda.csv
