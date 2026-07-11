@@ -136,7 +136,13 @@ def buscar(request: Request, q: str = "", artists: str = "", works: str = ""):
     if sel_artist_ids or sel_work_ids:
         sel = reco.search_by_selection(
             sel_artist_ids, sel_work_ids, exclude_user_id=uid)
+        # Los DISCOS que el usuario eligió: se MUESTRAN (antes solo se usaban de
+        # semilla para los afines y no aparecían → "elijo Hot Fuss y no sale").
+        selected_works = [w for w in (catalog.get_work(wid) for wid in sel_work_ids)
+                          if w]
         # Backfill de portadas + precio ES más barato de cada disco (en lote).
+        covers.request_missing(selected_works)
+        pricing.attach_cheapest(selected_works)
         for blk in sel["artist_blocks"]:
             covers.request_missing(blk["works"])
             pricing.attach_cheapest(blk["works"])
@@ -145,6 +151,7 @@ def buscar(request: Request, q: str = "", artists: str = "", works: str = ""):
         return _render(
             request, "search.html",
             q="", mode="selection",
+            selected_works=selected_works,
             artist_blocks=sel["artist_blocks"],
             combined=sel["combined"],
             user=user,

@@ -3,8 +3,17 @@
 {% block content %}
 
 {% if mode == 'selection' %}
-  {# ---- Búsqueda por SELECCIÓN (chips): mejores por artista + combinadas ---- #}
+  {# ---- Búsqueda por SELECCIÓN (chips): tu selección + mejores por artista + combinadas ---- #}
   <h1 class="page-title">Tu selección</h1>
+
+  {% if selected_works %}
+  <section class="block">
+    <h2>Los discos que has elegido</h2>
+    <div class="grid">
+      {% for w in selected_works %}{% include "_work_card.html" %}{% endfor %}
+    </div>
+  </section>
+  {% endif %}
 
   {% for blk in artist_blocks %}
   <section class="block">
