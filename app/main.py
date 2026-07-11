@@ -121,19 +121,33 @@ def _parse_id_csv(raw):
     return out
 
 
-def _spotify_search_link(*parts):
-    """Link "escuchar en Spotify": búsqueda pública de los `parts` (p.ej. artista +
-    título de obra, o solo el artista). SIN OAuth ni API key (patrón de degradación
-    honesta del diseño). Devuelve {"web", "app"}: `app` es la URI `spotify:` que abre
-    la APP de escritorio/móvil si está instalada; `web` es el fallback en el navegador
-    (lo maneja el JS: intenta la app y cae a la web). None si no hay texto útil."""
+def _spotify_search_link(query):
+    """Link "escuchar en Spotify" a partir de una `query` de búsqueda ya formada.
+
+    SIN OAuth ni API key (patrón de degradación honesta del diseño; core NO tiene los
+    IDs de Spotify — columnas vacías). Para clavar el disco exacto, el caller usa los
+    filtros de Spotify (`album:"…" artist:"…"`) en `query`. Devuelve {"web", "app"}:
+    `app` es la URI `spotify:` que abre la APP si está instalada; `web` es el fallback
+    (lo maneja el JS: intenta la app y cae a la web). None si `query` vacía."""
     import urllib.parse
-    q = " ".join(p for p in parts if p).strip()
+    q = (query or "").strip()
     if not q:
         return None
     quoted = urllib.parse.quote(q)
     return {"web": "https://open.spotify.com/search/" + quoted,
             "app": "spotify:search:" + quoted}
+
+
+def _spotify_work_query(work):
+    """Query de Spotify que clava un ÁLBUM: `album:"título" artist:"artista"`."""
+    title = (work.get("title") or "").strip()
+    if not title:
+        return None
+    artist = (work.get("artist_name") or "").strip()
+    q = 'album:"{}"'.format(title)
+    if artist:
+        q += ' artist:"{}"'.format(artist)
+    return q
 
 
 @app.get("/buscar", response_class=HTMLResponse)
@@ -273,7 +287,7 @@ def obra(request: Request, work_id: int):
         prices=prices,
         press=press_signals,
         artist_bio=artist_bio,
-        spotify_url=_spotify_search_link(work.get("artist_name"), work.get("title")),
+        spotify_url=_spotify_search_link(_spotify_work_query(work)),
         user=user,
     )
 
@@ -320,7 +334,8 @@ def artista(request: Request, artist_id: int):
         request, "artist.html",
         artist=artist,
         discography=discography,
-        spotify_url=_spotify_search_link(artist.get("name")),
+        spotify_url=_spotify_search_link(
+            'artist:"{}"'.format(artist["name"]) if artist.get("name") else None),
         user=user,
     )
 
