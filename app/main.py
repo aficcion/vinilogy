@@ -161,6 +161,17 @@ def buscar(request: Request, q: str = "", artists: str = "", works: str = ""):
     # (cada hilo saca su conexión del pool) → el turno paga max(artistas, afines)
     # en vez de la suma → /buscar baja de ~5,5s a ~3s.
     works_res = catalog.search_works_only(q)
+    # Si el MEJOR match está OCULTO por falta de portada, recupérala de Discogs en el
+    # acto (~0,25s) y muéstralo el PRIMERO: así el disco que buscas aparece ya en la
+    # primera búsqueda (antes solo salían sus afines hasta que el worker la traía). Se
+    # hace ANTES de los afines para que estos se siembren del disco buscado.
+    top = works_res.get("top_coverless")
+    if top:
+        got = covers.recover_cover_now(top["id"])
+        if got:
+            top["cover_url"], top["cover_thumb"] = got
+            top["has_discogs"] = True
+            works_res["works"].insert(0, top)
     with ThreadPoolExecutor(max_workers=2) as ex:
         f_artists = ex.submit(catalog.search_artists_only, q)
         f_affines = ex.submit(reco.affine_for_search,

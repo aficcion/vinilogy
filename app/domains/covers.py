@@ -476,6 +476,37 @@ def request_missing(works):
         enqueue(ids)
 
 
+def recover_cover_now(work_id):
+    """Recupera la portada de Discogs de UN work de forma SÍNCRONA (bloquea ~0,25s).
+
+    Para el camino de búsqueda: si el mejor match no tiene portada, se recupera en el
+    momento para que el disco buscado aparezca en la PRIMERA búsqueda (no solo sus
+    afines). Devuelve (url, url_thumb) y la guarda en core, o None si el flag/
+    credenciales están off, el work no tiene ids de Discogs, o Discogs no da imagen.
+    Degrada silenciosamente (nunca lanza): si falla, el disco sigue oculto como antes.
+    """
+    if not _enabled():
+        return None
+    try:
+        ids = db.work_discogs_ids([work_id]).get(work_id)
+        if not ids:
+            return None
+        # UNA sola llamada a Discogs para ACOTAR la latencia del camino síncrono
+        # (master si lo hay — la portada canónica —, si no el release). El worker
+        # asíncrono ya intenta master+release a fondo, así que si esta falla el disco
+        # puede converger en la siguiente carga.
+        master, release = ids.get("master_id"), ids.get("release_id")
+        picked = fetch_cover(master, None) if master else fetch_cover(None, release)
+        if not picked:
+            return None
+        url, thumb = picked
+        store_cover(work_id, url, thumb)
+        return url, thumb
+    except Exception as e:  # noqa: BLE001 — jamás romper la búsqueda por esto
+        log.debug("covers: recover_cover_now falló work=%s (%s)", work_id, e)
+        return None
+
+
 def request_missing_ids(work_ids):
     """Encola una lista de work_ids que YA se sabe que NO tienen portada de Discogs.
 

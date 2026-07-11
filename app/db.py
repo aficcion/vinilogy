@@ -358,8 +358,12 @@ def search_works(q, limit=20):
             return cur.fetchall()
 
     def _split(rows):
-        works, missing = [], []
-        for r in rows:
+        # `top_coverless`: el candidato MEJOR rankeado (rows[0], p.ej. el match exacto
+        # de título) cuando NO tiene portada → estaría OCULTO por la regla transversal
+        # y el disco buscado no aparecería (solo sus afines). El router recupera su
+        # portada de Discogs en el momento (~0,25s) para mostrarlo en la 1ª búsqueda.
+        works, missing, top_coverless = [], [], None
+        for i, r in enumerate(rows):
             r = dict(r)
             has_cover = r.pop("has_cover", False)
             if has_cover:
@@ -367,16 +371,19 @@ def search_works(q, limit=20):
                 if len(works) < limit:
                     works.append(r)
             else:
+                if i == 0:
+                    top_coverless = r
                 missing.append(r["id"])
-        return works, missing
+        return works, missing, top_coverless
 
     rows = _run(use_trgm=False)
     # Solo caemos al trigram si el FTS no casó NADA (typo real). Un token común y bien
     # escrito casa por FTS → nunca paga el barrido trigram (ver docstring).
     if not rows:
         rows = _run(use_trgm=True)
-    works, missing = _split(rows)
-    return {"works": works, "missing_cover_ids": missing}
+    works, missing, top_coverless = _split(rows)
+    return {"works": works, "missing_cover_ids": missing,
+            "top_coverless": top_coverless}
 
 
 def _clean_artist_name_sql(col="a.name"):
