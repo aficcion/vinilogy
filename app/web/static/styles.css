@@ -354,6 +354,17 @@ body:has(.landing) .footer { display: none; }
 
 /* ── Resultados: obras (tiles) ────────────────────────────── */
 .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(178px, 1fr)); }
+/* "Ver más": en estado colapsado ocultamos a partir de la 13ª tarjeta (2-3 filas
+   de preview según ancho). El JS quita .is-collapsed y muestra el pool completo. */
+.grid.is-collapsed > .card-wrap:nth-child(n+13) { display: none; }
+.more-row { margin-top: 14px; text-align: center; }
+.btn-more {
+  font-family: var(--mono-font); font-size: 11px; letter-spacing: .14em;
+  text-transform: uppercase; font-weight: 500; cursor: pointer;
+  background: var(--panel); color: var(--ink); border: .5px solid var(--line);
+  border-radius: var(--radius); padding: 10px 22px; transition: border-color .18s, color .18s;
+}
+.btn-more:hover { border-color: var(--accent); color: var(--accent); }
 .card {
   background: var(--panel); border: .5px solid var(--line); border-radius: var(--radius);
   overflow: hidden; display: flex; flex-direction: column; transition: transform .18s, border-color .18s;

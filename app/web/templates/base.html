@@ -58,6 +58,16 @@
       document.documentElement.setAttribute("data-theme", next);
       try { localStorage.setItem("vb-theme", next); } catch (e) {}
     }
+    // "Ver más": revela el pool completo de una sección (quita el colapso del grid
+    // hermano anterior) y retira el botón. Delegado, un solo listener.
+    document.addEventListener("click", function (e) {
+      var btn = e.target.closest("[data-more]");
+      if (!btn) return;
+      var row = btn.closest(".more-row");
+      var grid = row && row.previousElementSibling;
+      if (grid && grid.classList.contains("grid")) grid.classList.remove("is-collapsed");
+      if (row) row.remove();
+    });
   </script>
   <script src="/static/search.js?v=12" defer></script>
   <script src="/static/wishlist.js?v=2" defer></script>

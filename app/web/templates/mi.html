@@ -52,9 +52,14 @@
     {% if for_you %}
       <p class="hint">En la onda de lo que ya tienes, con vinilo. Nada que ya
          poseas.</p>
-      <div class="grid">
+      <div class="grid{% if for_you|length > 12 %} is-collapsed{% endif %}">
         {% for w in for_you %}{% include "_reco_card.html" %}{% endfor %}
       </div>
+      {% if for_you|length > 12 %}
+      <div class="more-row">
+        <button class="btn-more" type="button" data-more>Ver más ({{ for_you|length - 12 }})</button>
+      </div>
+      {% endif %}
     {% else %}
       <p class="empty">Necesitamos algo de tu colección (o escucha) para
          recomendarte a medida. Conecta Discogs/Last.fm en la próxima entrega.</p>
@@ -74,9 +79,14 @@
       {%- if 'upgrade' in tiers %}{% if 'buy' in tiers %}, y{% else %}Discos que escuchas para{% endif %} subir de formato a vinilo{% endif %}
       {%- if 'artist' in tiers %}{% if 'buy' in tiers or 'upgrade' in tiers %}, más{% else %}Más{% endif %} discos de los artistas que escuchas{% endif %}. En vinilo, nada que ya tengas.
     </p>
-    <div class="grid">
+    <div class="grid{% if listening|length > 12 %} is-collapsed{% endif %}">
       {% for w in listening %}{% include "_reco_card.html" %}{% endfor %}
     </div>
+    {% if listening|length > 12 %}
+    <div class="more-row">
+      <button class="btn-more" type="button" data-more>Ver más ({{ listening|length - 12 }})</button>
+    </div>
+    {% endif %}
   </section>
   {% endif %}
 

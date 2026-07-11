@@ -2194,8 +2194,10 @@ def user_collection_summary(user_id):
 
 # Cuántos candidatos del grafo (ordenados por score) llevamos a la fase 2. Margen
 # amplio sobre `limit` para no quedarnos cortos si alguno no tiene obra válida en
-# vinilo tras el filtro anti-single / suelo de popularidad.
-_COESCUCHA_CAND_LIMIT = 60
+# vinilo tras el filtro anti-single / suelo de popularidad. Subido a 150 para que el
+# pool completo de "Para ti" (ver-más = 50) se pueda llenar en usuarios con grafo
+# rico; usuarios con grafo escaso devuelven honestamente lo que haya (uno/artista).
+_COESCUCHA_CAND_LIMIT = 150
 
 # Suelo de popularidad LIGERO para la mejor obra del candidato: descarta fantasmas
 # (obra sin escuchas Y sin ediciones decentes) pero NO por popularidad alta — el
@@ -2627,14 +2629,27 @@ def recommend_from_listening(user_id, limit=12):
                     ORDER BY ula.artist_id, ula.playcount DESC
                 ),
                 best AS MATERIALIZED (
-                    SELECT la.artist_id, la.artist_name, la.rank,
+                    -- `rn` = ranking de la obra DENTRO del artista: la mejor primero.
+                    -- Orden de calidad: álbum de estudio antes que EP, no-directo antes
+                    -- que directo, y luego escuchas/ediciones. Así rn=1 es la obra
+                    -- "de verdad" del artista, no un EP suelto ni un disco en vivo.
+                    -- El nombre mostrado es el CANÓNICO del artista de la obra
+                    -- (artists.name vía primary_artist_id), NO el texto crudo de
+                    -- Last.fm de `user_lastfm_artists` — ese puede venir mal resuelto
+                    -- o corrupto ("Geese • Audio sin pérdida"), y dejaría la tarjeta
+                    -- incoherente con la ficha a la que enlaza (obra/<id>).
+                    SELECT la.artist_id, art.name AS artist_name, la.rank,
                            w.id, w.title, w.work_type, w.year, w.releases_count,
                            ROW_NUMBER() OVER (
                                PARTITION BY la.artist_id
-                               ORDER BY w.lastfm_playcount DESC NULLS LAST,
+                               ORDER BY (w.title ILIKE '%%live%%'
+                                         OR w.title ILIKE '%%directo%%') ASC,
+                                        (w.work_type = 'ep') ASC,
+                                        w.lastfm_playcount DESC NULLS LAST,
                                         w.releases_count DESC NULLS LAST) AS rn
                     FROM listened_artists la
                     JOIN works w ON w.primary_artist_id = la.artist_id
+                    JOIN artists art ON art.id = w.primary_artist_id
                     WHERE w.has_vinyl = true
                       AND w.work_type = ANY(%(work_types)s::work_type[])
                       AND NOT (w.id = ANY(%(owned)s::bigint[]))
@@ -2655,7 +2670,10 @@ def recommend_from_listening(user_id, limit=12):
                 FROM picked p
                 LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb
                            FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = p.id
-                ORDER BY p.rank ASC NULLS LAST, p.releases_count DESC NULLS LAST
+                -- Round-robin: PRIMERO la mejor obra de cada artista (por cuánto lo
+                -- escuchas), y solo después las segundas. Evita 2 discos seguidos del
+                -- mismo artista cuando el cap por artista es >1.
+                ORDER BY p.rn ASC, p.rank ASC NULLS LAST, p.releases_count DESC NULLS LAST
             """.format(album_track_ok_w=_album_track_ok_sql("w")),
                 {"u": user_id, "p": period, "work_types": list(_RECO_WORK_TYPES),
                  "owned": owned_work_ids or [0], "cap": _LISTEN_TIER3_ARTIST_CAP})

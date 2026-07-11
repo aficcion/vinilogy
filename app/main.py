@@ -447,8 +447,8 @@ def mi(request: Request):
     # ThreadedConnectionPool, cada hilo saca su conexión) — mismo patrón que
     # catalog.search. gap_total es una query trivial, va con ellas.
     with ThreadPoolExecutor(max_workers=4) as ex:
-        f_for_you = ex.submit(users.recommend_for_user, uid, 12)
-        f_listening = ex.submit(users.recommend_from_listening, uid, 12)
+        f_for_you = ex.submit(users.recommend_for_user, uid, 50)
+        f_listening = ex.submit(users.recommend_from_listening, uid, 50)
         f_gap = ex.submit(users.vinyl_gap, uid, 24)
         f_gap_total = ex.submit(users.vinyl_gap_count, uid)
         for_you = f_for_you.result()
