@@ -1222,9 +1222,17 @@ def resolve_suena_a_artists(names):
 
     Devuelve {nombre_original: artist_id} SOLO para los que resuelven a un
     artista primary con al menos una obra en vinilo (para que el enlace a
-    /artista tenga sentido). Match exacto por nombre normalizado (unaccent+lower);
-    la crítica escribe el nombre canónico, no hace falta trigram agresivo.
-    Sin match → el nombre no aparece (la vista lo pinta como texto plano).
+    /artista tenga sentido). Sin match → el nombre no aparece (la vista lo pinta
+    como texto plano).
+
+    RENDIMIENTO (crítico): el match se hace contra `artists.name_clean` (columna
+    normalizada CON índice btree `idx_artists_name_clean`), NO contra
+    `lower(immutable_unaccent(a.name))` — esa expresión NO está indexada y forzaba
+    un seq-scan de artists POR CADA nombre (medido: 8 nombres → ~3-11s, bloqueaba
+    la ficha entera). `name_clean` además quita el prefijo "The" y la "(N)" de
+    Discogs, así que se prueba `norm` y su variante sin "the " (ambas por índice) →
+    superconjunto de lo que casaba antes (enlaza también homónimos con "(N)") en
+    ~0s. La crítica escribe el nombre canónico; no hace falta trigram.
     """
     names = _dedup_preserve(names)
     if not names:
@@ -1236,7 +1244,7 @@ def resolve_suena_a_artists(names):
             SELECT lower(immutable_unaccent(input.name)) AS norm
         ) n ON true
         JOIN artists a
-          ON lower(immutable_unaccent(a.name)) = n.norm
+          ON a.name_clean IN (n.norm, regexp_replace(n.norm, '^the ', ''))
          AND a.is_primary = true
          AND EXISTS (
              SELECT 1 FROM works w
