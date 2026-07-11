@@ -16,6 +16,7 @@
       {% if w.year %}{{ w.year }}{% endif %}
       {% if w.work_type %}· {{ w.work_type|replace('_', ' ') }}{% endif %}
     </div>
+    {% if w.cheapest_price %}<div class="card-price">desde {{ w.cheapest_price }}</div>{% endif %}
     {% if w.porque %}<div class="card-porque">{{ w.porque }}</div>{% endif %}
   </div>
 </a>

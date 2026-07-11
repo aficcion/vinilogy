@@ -136,10 +136,12 @@ def buscar(request: Request, q: str = "", artists: str = "", works: str = ""):
     if sel_artist_ids or sel_work_ids:
         sel = reco.search_by_selection(
             sel_artist_ids, sel_work_ids, exclude_user_id=uid)
-        # Backfill de portadas de los works mostrados en ambos bloques.
+        # Backfill de portadas + precio ES más barato de cada disco (en lote).
         for blk in sel["artist_blocks"]:
             covers.request_missing(blk["works"])
+            pricing.attach_cheapest(blk["works"])
         covers.request_missing(sel["combined"]["results"])
+        pricing.attach_cheapest(sel["combined"]["results"])
         return _render(
             request, "search.html",
             q="", mode="selection",
@@ -172,8 +174,10 @@ def buscar(request: Request, q: str = "", artists: str = "", works: str = ""):
 
     covers.request_missing(works_res["works"])
     covers.request_missing_ids(works_res.get("missing_cover_ids"))
+    pricing.attach_cheapest(works_res["works"])
     if affines:
         covers.request_missing(affines.get("results"))
+        pricing.attach_cheapest(affines.get("results"))
     return _render(
         request, "search.html",
         q=q, mode="text",
@@ -240,6 +244,8 @@ def obra_afines(request: Request, work_id: int):
     similar_press = reco.similar_by_press_to_work(work_id)
     covers.request_missing(similar)
     covers.request_missing(similar_press)
+    pricing.attach_cheapest(similar)
+    pricing.attach_cheapest(similar_press)
     return _render(
         request, "_work_afines.html",
         similar=similar, similar_press=similar_press, user=user,
@@ -262,6 +268,8 @@ def artista(request: Request, artist_id: int):
     covers.request_missing(discography)
     covers.request_missing_ids(disc.get("missing_cover_ids"))
     covers.request_missing(similar)
+    pricing.attach_cheapest(discography)
+    pricing.attach_cheapest(similar)
     # Backfill de FOTO DE ARTISTA sin bloquear: si la ficha mostraría el
     # monograma (image_url NULL), pide la foto a Discogs (mismo worker/throttle
     # que las portadas). Esta carga muestra monograma; la siguiente ya trae foto.

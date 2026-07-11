@@ -1050,6 +1050,49 @@ def get_prices_for_work(work_id, max_age_days=None):
         return cur.fetchall()
 
 
+def cheapest_prices_for_works(work_ids):
+    """Precio MÁS BARATO en tiendas ES por obra, EN LOTE (para las tarjetas).
+
+    Devuelve {work_id: {price_cents, currency, url, source}} solo para las obras
+    que tienen algún listing con precio. Usa EXACTAMENTE el mismo match que
+    `get_prices_for_work` (artist_id + título por trigram/substring sobre el título
+    de la obra y de sus releases) → la tarjeta y la ficha nunca discrepan. Una sola
+    query para todas las obras (evita el N+1). Lista vacía → {}.
+    """
+    ids = [int(i) for i in (work_ids or []) if i is not None]
+    if not ids:
+        return {}
+    sql = """
+        WITH wm AS (
+            SELECT w.id AS work_id,
+                   w.primary_artist_id AS artist_id,
+                   array_prepend(
+                       w.title,
+                       COALESCE((SELECT array_agg(DISTINCT r.title)
+                                 FROM releases r WHERE r.work_id = w.id),
+                                ARRAY[]::text[])) AS titles
+            FROM works w
+            WHERE w.id = ANY(%(ids)s)
+        )
+        SELECT DISTINCT ON (wm.work_id)
+               wm.work_id, ml.price_cents, ml.currency, ml.url, ml.source
+        FROM wm
+        JOIN marketplace_listings ml
+             ON ml.artist_id = wm.artist_id AND ml.price_cents > 0
+        WHERE EXISTS (
+            SELECT 1 FROM unnest(wm.titles) t(title)
+            WHERE similarity(lower(immutable_unaccent(ml.title_text)),
+                             lower(immutable_unaccent(t.title))) > 0.35
+               OR lower(immutable_unaccent(ml.title_text))
+                  LIKE '%%' || lower(immutable_unaccent(t.title)) || '%%'
+        )
+        ORDER BY wm.work_id, ml.price_cents ASC
+    """
+    with _cursor() as cur:
+        cur.execute(sql, {"ids": ids})
+        return {r["work_id"]: dict(r) for r in cur.fetchall()}
+
+
 # ---------------------------------------------------------------------------
 # Capa de PRENSA española (work_press_signals) — EL CORAZÓN de M2
 # ---------------------------------------------------------------------------
