@@ -344,6 +344,16 @@ th { color: var(--ink-3); font-family: var(--mono-font); font-weight: 500; font-
 .artist-photo { width: 150px; height: 150px; object-fit: cover; border-radius: var(--radius); }
 .artist-photo-empty { display: grid; place-items: center; background: var(--panel-2); color: var(--accent); font-family: var(--display-font); font-size: 60px; }
 .artist-meta { color: var(--ink-3); display: flex; gap: 14px; font-family: var(--mono-font); font-size: 11px; letter-spacing: .05em; text-transform: uppercase; }
+.work-actions { margin: 16px 0 0; }
+.btn-spotify {
+  display: inline-flex; align-items: center; gap: 9px;
+  padding: 10px 20px; border-radius: 999px;
+  background: #1DB954; color: #fff; font-weight: 600; font-size: 14px;
+  transition: transform .15s, box-shadow .15s, background .15s;
+}
+.btn-spotify:hover { background: #1ed760; transform: translateY(-1px); box-shadow: 0 10px 24px rgba(29,185,84,.35); }
+.btn-spotify-mark { flex-shrink: 0; }
+
 .artist-bio { color: var(--ink-2); font-size: 14px; margin-top: 14px; line-height: 1.65; max-width: 62ch; }
 .bio-more { color: var(--accent); white-space: nowrap; }
 

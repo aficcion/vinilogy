@@ -121,6 +121,18 @@ def _parse_id_csv(raw):
     return out
 
 
+def _spotify_search_url(work):
+    """Link "escuchar en Spotify" para una obra: búsqueda de `artista título` en la
+    web de Spotify. SIN OAuth ni API key (patrón de degradación honesta del diseño):
+    es solo una URL de búsqueda pública. None si falta título."""
+    import urllib.parse
+    parts = [work.get("artist_name"), work.get("title")]
+    q = " ".join(p for p in parts if p).strip()
+    if not q:
+        return None
+    return "https://open.spotify.com/search/" + urllib.parse.quote(q)
+
+
 @app.get("/buscar", response_class=HTMLResponse)
 def buscar(request: Request, q: str = "", artists: str = "", works: str = ""):
     """Buscador §6: con SELECCIÓN (`artists=1,2&works=3,4`) → bloques "mejores de
@@ -258,6 +270,7 @@ def obra(request: Request, work_id: int):
         prices=prices,
         press=press_signals,
         artist_bio=artist_bio,
+        spotify_url=_spotify_search_url(work),
         user=user,
     )
 
