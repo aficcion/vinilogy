@@ -28,6 +28,12 @@ STORE_FRESHNESS_MAX_DAYS = int(os.environ.get("VINYLBE_STORE_FRESHNESS_DAYS", "3
 # Filtro anti-morralla para discografía (contrato del proyecto).
 _DISCOGRAPHY_WORK_TYPES = ("studio_album", "ep")
 
+# Tipos de obra visibles en BÚSQUEDA. Contrato del selftest (§1: "search_works NUNCA
+# devuelve compilation/live_album/single"): solo álbum de estudio + EP. Es una
+# constante propia por si se decide ampliarla en el futuro (recopilatorios/BSOs/
+# directos que la gente sí busca) — ese cambio exigiría actualizar ese contrato.
+_SEARCH_WORK_TYPES = _DISCOGRAPHY_WORK_TYPES
+
 # Filtro anti-morralla para RECOMENDACIÓN por contenido (solo obras de verdad).
 _RECO_WORK_TYPES = ("studio_album", "ep")
 
@@ -213,6 +219,14 @@ def _close_pool():
 # portada tras el filtro.
 _SEARCH_CAND_LIMIT = 120
 
+# Umbral de similitud del trigram SOLO en la fase de fallback typo-tolerante. El
+# fallback existe para RESCATAR errores de tecleo (`radiohed`→`radiohead`), que son
+# de similitud alta (1-2 caracteres); subir el umbral del `%%` de 0.3 (default) a
+# este valor recorta los falsos positivos flojos y acelera el barrido (medido
+# `kid a` 4,3s→0,9s) sin perder los typos reales. Es transaccional (`SET LOCAL`),
+# así que NO se filtra a otras queries de la conexión del pool.
+_TRGM_FALLBACK_THRESHOLD = 0.4
+
 
 def search_works(q, limit=20):
     """Works que casan `q`, cumpliendo la regla TRANSVERSAL (vinilo + álbum/EP +
@@ -234,82 +248,107 @@ def search_works(q, limit=20):
     ids candidatos (`work_id = ANY(...)`) — NO con un EXISTS que el planner
     convertiría en un barrido de las ~205K filas discogs re-ejecutando el candidato
     por cada una (medido: 27s → <1s).
+
+    TYPO-TOLERANCIA EN DOS FASES (medido: `love` 2,3s → 0,2s): el TRIGRAM del WHERE
+    (`title %% nq`) sobre un token común barre ~cientos de miles de filas aunque el
+    FTS ya casara de sobra. Por eso primero se corre SOLO con FTS; únicamente si el
+    FTS no casa NADA (typo real, p.ej. `radiohed`) se reintenta añadiendo el trigram
+    (barato: un token que no casó por FTS es raro, casa pocas filas). Los tokens
+    comunes y bien escritos nunca pagan el trigram → sin timeouts.
     """
     q = normalize_search_query(q)
     if not q or len(q) < _SEARCH_MIN_CHARS:
         return {"works": [], "missing_cover_ids": []}
-    sql = """
-        WITH params AS MATERIALIZED (
-            SELECT immutable_unaccent(%(q)s)               AS uq,
-                   lower(immutable_unaccent(%(q)s))        AS nq
-        ),
-        cand AS MATERIALIZED (
-            -- Ranking + LIMIT holgado SIN filtro de portada (convergencia) y SIN el
-            -- anti-single (que corre sobre este puñado, no sobre todo lo que casa).
-            SELECT w.id, w.title, w.work_type, w.year, w.releases_count,
-                   w.primary_artist_id, w.lastfm_playcount,
-                   ts_rank(w.search_doc, plainto_tsquery('simple', p.uq)) AS fts_rank
-            FROM works w, params p
-            WHERE w.has_vinyl = true
-              AND w.work_type = ANY(%(work_types)s::work_type[])
-              AND (
-                  w.search_doc @@ plainto_tsquery('simple', p.uq)
-                  OR lower(immutable_unaccent(w.title)) %% p.nq
-              )
-            ORDER BY CASE WHEN lower(immutable_unaccent(w.title)) = p.nq
+
+    def _run(use_trgm):
+        # El trigram va en el WHERE (typos), NUNCA en el ORDER BY (ranking).
+        trgm_or = ("OR lower(immutable_unaccent(w.title)) %% p.nq"
+                   if use_trgm else "")
+        sql = """
+            WITH params AS MATERIALIZED (
+                SELECT immutable_unaccent(%(q)s)               AS uq,
+                       lower(immutable_unaccent(%(q)s))        AS nq
+            ),
+            cand AS MATERIALIZED (
+                -- Ranking + LIMIT holgado SIN filtro de portada (convergencia) y SIN
+                -- el anti-single (corre sobre este puñado, no sobre todo lo que casa).
+                SELECT w.id, w.title, w.work_type, w.year, w.releases_count,
+                       w.primary_artist_id, w.lastfm_playcount,
+                       ts_rank(w.search_doc, plainto_tsquery('simple', p.uq)) AS fts_rank
+                FROM works w, params p
+                WHERE w.has_vinyl = true
+                  AND w.work_type = ANY(%(work_types)s::work_type[])
+                  AND (
+                      w.search_doc @@ plainto_tsquery('simple', p.uq)
+                      {trgm_or}
+                  )
+                ORDER BY CASE WHEN lower(immutable_unaccent(w.title)) = p.nq
+                              THEN 0 ELSE 1 END,
+                         ts_rank(w.search_doc, plainto_tsquery('simple', p.uq)) DESC,
+                         w.lastfm_playcount DESC NULLS LAST,
+                         w.releases_count DESC NULLS LAST
+                LIMIT %(cand_limit)s
+            ),
+            albumok AS MATERIALIZED (
+                -- Candidatos que además son disco de verdad (anti-single disfrazado).
+                SELECT c.* FROM cand c
+                WHERE {album_track_ok_c}
+            ),
+            with_cover AS MATERIALIZED (
+                -- Restringir cover_images a los ids candidatos (usa el índice por
+                -- work_id) en vez de un EXISTS que barrería las 205K filas discogs.
+                SELECT DISTINCT work_id FROM cover_images
+                WHERE source = 'discogs'
+                  AND work_id = ANY(ARRAY(SELECT id FROM albumok))
+            )
+            SELECT ao.id, ao.title, ao.work_type, ao.year, ao.releases_count,
+                   ao.fts_rank,
+                   (ao.id IN (SELECT work_id FROM with_cover)) AS has_cover,
+                   a.id   AS artist_id,
+                   a.name AS artist_name,
+                   vc.preferred_thumb AS cover_thumb,
+                   vc.preferred_url   AS cover_url
+            FROM albumok ao
+            CROSS JOIN params p
+            JOIN artists a ON a.id = ao.primary_artist_id
+            LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb
+                       FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = ao.id
+            ORDER BY CASE WHEN lower(immutable_unaccent(ao.title)) = p.nq
                           THEN 0 ELSE 1 END,
-                     ts_rank(w.search_doc, plainto_tsquery('simple', p.uq)) DESC,
-                     w.lastfm_playcount DESC NULLS LAST,
-                     w.releases_count DESC NULLS LAST
-            LIMIT %(cand_limit)s
-        ),
-        albumok AS MATERIALIZED (
-            -- Candidatos que además son disco de verdad (anti-single disfrazado).
-            SELECT c.* FROM cand c
-            WHERE {album_track_ok_c}
-        ),
-        with_cover AS MATERIALIZED (
-            -- Restringir cover_images a los ids candidatos (usa el índice por
-            -- work_id) en vez de un EXISTS que barrería las 205K filas discogs.
-            SELECT DISTINCT work_id FROM cover_images
-            WHERE source = 'discogs'
-              AND work_id = ANY(ARRAY(SELECT id FROM albumok))
-        )
-        SELECT ao.id, ao.title, ao.work_type, ao.year, ao.releases_count,
-               ao.fts_rank,
-               (ao.id IN (SELECT work_id FROM with_cover)) AS has_cover,
-               a.id   AS artist_id,
-               a.name AS artist_name,
-               vc.preferred_thumb AS cover_thumb,
-               vc.preferred_url   AS cover_url
-        FROM albumok ao
-        CROSS JOIN params p
-        JOIN artists a ON a.id = ao.primary_artist_id
-        LEFT JOIN (SELECT work_id, url AS preferred_url, url_thumb AS preferred_thumb
-                   FROM cover_images WHERE source = 'discogs') vc ON vc.work_id = ao.id
-        ORDER BY CASE WHEN lower(immutable_unaccent(ao.title)) = p.nq
-                      THEN 0 ELSE 1 END,
-                 ao.fts_rank DESC,
-                 ao.lastfm_playcount DESC NULLS LAST,
-                 ao.releases_count DESC NULLS LAST
-    """.format(album_track_ok_c=_album_track_ok_sql("c"))
-    with _cursor() as cur:
-        cur.execute(sql, {
-            "q": q,
-            "work_types": list(_DISCOGRAPHY_WORK_TYPES),
-            "cand_limit": _SEARCH_CAND_LIMIT,
-        })
-        rows = cur.fetchall()
-    works, missing = [], []
-    for r in rows:
-        r = dict(r)
-        has_cover = r.pop("has_cover", False)
-        if has_cover:
-            r["has_discogs"] = True  # señal para needs_reliable_cover
-            if len(works) < limit:
-                works.append(r)
-        else:
-            missing.append(r["id"])
+                     ao.fts_rank DESC,
+                     ao.lastfm_playcount DESC NULLS LAST,
+                     ao.releases_count DESC NULLS LAST
+        """.format(album_track_ok_c=_album_track_ok_sql("c"), trgm_or=trgm_or)
+        with _cursor() as cur:
+            if use_trgm:
+                cur.execute("SET LOCAL pg_trgm.similarity_threshold = %s"
+                            % _TRGM_FALLBACK_THRESHOLD)
+            cur.execute(sql, {
+                "q": q,
+                "work_types": list(_SEARCH_WORK_TYPES),
+                "cand_limit": _SEARCH_CAND_LIMIT,
+            })
+            return cur.fetchall()
+
+    def _split(rows):
+        works, missing = [], []
+        for r in rows:
+            r = dict(r)
+            has_cover = r.pop("has_cover", False)
+            if has_cover:
+                r["has_discogs"] = True  # señal para needs_reliable_cover
+                if len(works) < limit:
+                    works.append(r)
+            else:
+                missing.append(r["id"])
+        return works, missing
+
+    rows = _run(use_trgm=False)
+    # Solo caemos al trigram si el FTS no casó NADA (typo real). Un token común y bien
+    # escrito casa por FTS → nunca paga el barrido trigram (ver docstring).
+    if not rows:
+        rows = _run(use_trgm=True)
+    works, missing = _split(rows)
     return {"works": works, "missing_cover_ids": missing}
 
 
@@ -341,78 +380,108 @@ def search_artists(q, limit=20):
     WHERE (typos), NUNCA en el ORDER BY. `disambiguation` numérica → NULL; `name`
     sin la "(N)".
 
-    RENDIMIENTO (dos fases, medido <1s): `cand` rankea/limita barato por FTS+trgm
-    sobre `artists`; el filtro de work-mostrable (EXISTS acotado) y el dedup corren
-    sobre ese puñado, no sobre todo lo que casa.
+    RENDIMIENTO (dos fases, medido <1s): `cand` rankea/limita barato por FTS
+    sobre `artists`; el filtro de work-mostrable y el dedup corren sobre ese puñado.
+
+    TYPO-TOLERANCIA EN DOS FASES (medido: `love` 11,5s → 0,2s): igual que
+    `search_works`, el TRIGRAM del WHERE (`name %% nq`) sobre un token común barre
+    ~190K nombres aunque el FTS ya casara. Se corre primero SOLO con FTS; solo si el
+    FTS no devuelve NINGÚN artista mostrable (typo real) se reintenta con trigram.
+
+    PORTADA (acotada): el nº de works mostrables NO usa un EXISTS correlacionado
+    (`cover_images WHERE source='discogs'` que el planner convierte en un barrido de
+    las ~235K filas discogs, medido ~2,8s aun con pocos candidatos), sino el mismo
+    truco de `search_works`: se junta a `cover_images` restringido a los work-ids
+    candidatos (`work_id = ANY(...)`, índice por work_id).
     """
     q = normalize_search_query(q)
     if not q or len(q) < _SEARCH_MIN_CHARS:
         return []
-    sql = """
-        WITH params AS MATERIALIZED (
-            SELECT immutable_unaccent(%(q)s)        AS uq,
-                   lower(immutable_unaccent(%(q)s)) AS nq
-        ),
-        cand AS MATERIALIZED (
-            SELECT a.id, a.name, a.name_clean, a.kind, a.disambiguation, a.country,
-                   a.is_primary, a.listeners, a.image_url,
-                   ts_rank(a.search_doc, plainto_tsquery('simple', p.uq)) AS fts_rank
-            FROM artists a, params p
-            WHERE a.search_doc @@ plainto_tsquery('simple', p.uq)
-               OR lower(immutable_unaccent(a.name)) %% p.nq
-            ORDER BY CASE WHEN a.name_clean = p.nq THEN 0 ELSE 1 END,
-                     a.is_primary DESC,
-                     ts_rank(a.search_doc, plainto_tsquery('simple', p.uq)) DESC,
-                     a.listeners DESC NULLS LAST
-            LIMIT %(cand_limit)s
-        ),
-        show_counts AS MATERIALIZED (
-            -- nº de works MOSTRABLES por artista candidato. CRÍTICO: se conduce por
-            -- `primary_artist_id = ANY(cand_ids)` (índice de works) y la portada se
-            -- comprueba por `work_id` — NO al revés. Un EXISTS/count conducido por
-            -- `cover_images WHERE source='discogs'` hace que el planner barra las
-            -- ~205K filas discogs por cada candidato (medido: ~100s). Solo aparecen
-            -- artistas con ≥1 work mostrable (los homónimos-basura sin discos caen).
-            SELECT w.primary_artist_id AS aid, count(*) AS n_works
-            FROM works w
-            WHERE w.primary_artist_id = ANY(ARRAY(SELECT id FROM cand))
-              AND w.has_vinyl = true
-              AND w.work_type = ANY(%(work_types)s::work_type[])
-              AND {album_track_ok_w}
-              AND {has_cover_w}
-            GROUP BY w.primary_artist_id
-        ),
-        deduped AS (
-            -- Dedup de homónimos por nombre normalizado: canónico = is_primary,
-            -- luego nº de works mostrables, luego listeners (no salen dos "Geese").
-            SELECT DISTINCT ON (c.name_clean) c.*, sc.n_works
-            FROM cand c JOIN show_counts sc ON sc.aid = c.id
-            ORDER BY c.name_clean, c.is_primary DESC, sc.n_works DESC,
-                     c.listeners DESC NULLS LAST
-        )
-        SELECT d.id,
-               {clean_name}   AS name,
-               d.kind,
-               {clean_disamb} AS disambiguation,
-               d.country, d.is_primary, d.listeners, d.image_url
-        FROM deduped d, params p
-        ORDER BY CASE WHEN d.name_clean = p.nq THEN 0 ELSE 1 END,
-                 d.is_primary DESC,
-                 d.fts_rank DESC,
-                 d.listeners DESC NULLS LAST
-        LIMIT %(limit)s
-    """.format(album_track_ok_w=_album_track_ok_sql("w"),
-               has_cover_w=_has_discogs_cover_sql("w"),
-               clean_name=_clean_artist_name_sql("d.name"),
-               clean_disamb=_clean_disambiguation_sql("d.disambiguation"))
-    with _cursor() as cur:
-        cur.execute(sql, {
-            "q": q,
-            "work_types": list(_DISCOGRAPHY_WORK_TYPES),
-            "cand_limit": _SEARCH_CAND_LIMIT,
-            "limit": limit,
-        })
-        return cur.fetchall()
+
+    def _run(use_trgm):
+        trgm_or = ("OR lower(immutable_unaccent(a.name)) %% p.nq"
+                   if use_trgm else "")
+        sql = """
+            WITH params AS MATERIALIZED (
+                SELECT immutable_unaccent(%(q)s)        AS uq,
+                       lower(immutable_unaccent(%(q)s)) AS nq
+            ),
+            cand AS MATERIALIZED (
+                SELECT a.id, a.name, a.name_clean, a.kind, a.disambiguation, a.country,
+                       a.is_primary, a.listeners, a.image_url,
+                       ts_rank(a.search_doc, plainto_tsquery('simple', p.uq)) AS fts_rank
+                FROM artists a, params p
+                WHERE a.search_doc @@ plainto_tsquery('simple', p.uq)
+                   {trgm_or}
+                ORDER BY CASE WHEN a.name_clean = p.nq THEN 0 ELSE 1 END,
+                         a.is_primary DESC,
+                         ts_rank(a.search_doc, plainto_tsquery('simple', p.uq)) DESC,
+                         a.listeners DESC NULLS LAST
+                LIMIT %(cand_limit)s
+            ),
+            cand_works AS MATERIALIZED (
+                -- Works candidatos (vinilo + tipo-búsqueda) de los artistas candidatos.
+                -- Se conduce por `primary_artist_id = ANY(cand_ids)` (índice de works).
+                SELECT w.id, w.primary_artist_id AS aid
+                FROM works w
+                WHERE w.primary_artist_id = ANY(ARRAY(SELECT id FROM cand))
+                  AND w.has_vinyl = true
+                  AND w.work_type = ANY(%(work_types)s::work_type[])
+                  AND {album_track_ok_w}
+            ),
+            show_counts AS MATERIALIZED (
+                -- nº de works MOSTRABLES por artista. La portada se comprueba
+                -- restringiendo cover_images a los work-ids candidatos (índice por
+                -- work_id), NO con un EXISTS que barrería las ~235K filas discogs.
+                -- Solo aparecen artistas con ≥1 work mostrable (homónimos-basura caen).
+                SELECT cw.aid, count(*) AS n_works
+                FROM cand_works cw
+                WHERE cw.id IN (
+                    SELECT work_id FROM cover_images
+                    WHERE source = 'discogs'
+                      AND work_id = ANY(ARRAY(SELECT id FROM cand_works))
+                )
+                GROUP BY cw.aid
+            ),
+            deduped AS (
+                -- Dedup de homónimos por nombre normalizado: canónico = is_primary,
+                -- luego nº de works mostrables, luego listeners (no salen dos "Geese").
+                SELECT DISTINCT ON (c.name_clean) c.*, sc.n_works
+                FROM cand c JOIN show_counts sc ON sc.aid = c.id
+                ORDER BY c.name_clean, c.is_primary DESC, sc.n_works DESC,
+                         c.listeners DESC NULLS LAST
+            )
+            SELECT d.id,
+                   {clean_name}   AS name,
+                   d.kind,
+                   {clean_disamb} AS disambiguation,
+                   d.country, d.is_primary, d.listeners, d.image_url
+            FROM deduped d, params p
+            ORDER BY CASE WHEN d.name_clean = p.nq THEN 0 ELSE 1 END,
+                     d.is_primary DESC,
+                     d.fts_rank DESC,
+                     d.listeners DESC NULLS LAST
+            LIMIT %(limit)s
+        """.format(album_track_ok_w=_album_track_ok_sql("w"),
+                   trgm_or=trgm_or,
+                   clean_name=_clean_artist_name_sql("d.name"),
+                   clean_disamb=_clean_disambiguation_sql("d.disambiguation"))
+        with _cursor() as cur:
+            if use_trgm:
+                cur.execute("SET LOCAL pg_trgm.similarity_threshold = %s"
+                            % _TRGM_FALLBACK_THRESHOLD)
+            cur.execute(sql, {
+                "q": q,
+                "work_types": list(_SEARCH_WORK_TYPES),
+                "cand_limit": _SEARCH_CAND_LIMIT,
+                "limit": limit,
+            })
+            return cur.fetchall()
+
+    rows = _run(use_trgm=False)
+    if not rows:
+        rows = _run(use_trgm=True)
+    return rows
 
 
 # ---------------------------------------------------------------------------
