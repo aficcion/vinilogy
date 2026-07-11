@@ -167,8 +167,25 @@
     renderChips();
   }
 
+  // Carga ASÍNCRONA de bloques de recomendación (afines). Cualquier elemento con
+  // [data-afines-src] pide ese fragmento HTML y se rellena solo, sin bloquear el
+  // render de la página. Lo usan /obra, /buscar y /artista (el KNN por embedding
+  // tarda ~0,8-1s y no debe retrasar lo que el usuario ya puede ver).
+  function loadAfines() {
+    var slots = document.querySelectorAll("[data-afines-src]");
+    Array.prototype.forEach.call(slots, function (el) {
+      var src = el.getAttribute("data-afines-src");
+      if (!src) return;
+      fetch(src, { headers: { "Accept": "text/html" } })
+        .then(function (r) { return r.ok ? r.text() : ""; })
+        .then(function (html) { el.innerHTML = html; el.removeAttribute("aria-busy"); })
+        .catch(function () { el.innerHTML = ""; el.removeAttribute("aria-busy"); });
+    });
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     var forms = document.querySelectorAll("form[data-typeahead]");
     Array.prototype.forEach.call(forms, install);
+    loadAfines();
   });
 })();

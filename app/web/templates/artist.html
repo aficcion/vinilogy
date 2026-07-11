@@ -36,14 +36,11 @@
 
   <section class="block reco-block">
     <h2>En la onda de {{ artist.name }}</h2>
-    {% if similar %}
+    {# Afines (KNN ~0,9s): cargados aparte (search.js → loadAfines). #}
+    <div data-afines-src="/artista/{{ artist.id }}/afines" aria-busy="true">
       <p class="hint">Otros artistas afines, con vinilo.</p>
-      <div class="grid">
-        {% for w in similar %}{% include "_reco_card.html" %}{% endfor %}
-      </div>
-    {% else %}
-      <p class="empty">Sin afines localizados para este artista.</p>
-    {% endif %}
+      <div class="grid">{% for _ in range(6) %}<div class="skel-card"></div>{% endfor %}</div>
+    </div>
   </section>
 </article>
 

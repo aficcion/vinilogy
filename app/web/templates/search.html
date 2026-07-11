@@ -81,21 +81,15 @@
     {% endif %}
   </section>
 
-  {% if affines and affines.results %}
-  <section class="block reco-block">
-    <h2>Vinilos afines
-      {% if affines.seed_title %}
-        <span class="reco-seed">
-          {% if affines.kind == 'work' %}a “{{ affines.seed_title }}”
-          {% else %}a {{ affines.seed_title }}{% endif %}
-        </span>
-      {% endif %}
-    </h2>
-    <p class="hint">Otros artistas en la misma onda, con vinilo.</p>
-    <div class="grid">
-      {% for w in affines.results %}{% include "_reco_card.html" %}{% endfor %}
-    </div>
-  </section>
+  {# Afines (KNN ~0,8s): se cargan aparte (search.js → loadAfines) para no retrasar
+     works + artistas. Skeleton mientras llega /buscar/afines. #}
+  {% if afines_src %}
+  <div data-afines-src="{{ afines_src }}" aria-busy="true">
+    <section class="block reco-block">
+      <h2>Vinilos afines</h2>
+      <div class="grid">{% for _ in range(6) %}<div class="skel-card"></div>{% endfor %}</div>
+    </section>
+  </div>
   {% endif %}
 {% endif %}
 

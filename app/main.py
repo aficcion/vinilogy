@@ -162,16 +162,13 @@ def buscar(request: Request, q: str = "", artists: str = "", works: str = ""):
         return _render(request, "search.html", q="", mode="text",
                        works=[], artists=[], affines=None, user=user)
 
-    # LATENCIA: la búsqueda de works (~1s) y la de afines (KNN ~2,5s) se solapan.
-    # La búsqueda de works corre primero (los afines necesitan el primer work como
-    # semilla); DESPUÉS, la búsqueda de ARTISTAS y los AFINES corren en PARALELO
-    # (cada hilo saca su conexión del pool) → el turno paga max(artistas, afines)
-    # en vez de la suma → /buscar baja de ~5,5s a ~3s.
+    # LATENCIA: los AFINES (KNN por embedding, ~0,8s) NO se calculan aquí; se cargan
+    # aparte vía /buscar/afines (fetch en search.html), igual que en la ficha. La
+    # página muestra works + artistas al instante (~0,2s).
     works_res = catalog.search_works_only(q)
     # Si el MEJOR match está OCULTO por falta de portada, recupérala de Discogs en el
     # acto (~0,25s) y muéstralo el PRIMERO: así el disco que buscas aparece ya en la
-    # primera búsqueda (antes solo salían sus afines hasta que el worker la traía). Se
-    # hace ANTES de los afines para que estos se siembren del disco buscado.
+    # primera búsqueda (antes solo salían sus afines hasta que el worker la traía).
     top = works_res.get("top_coverless")
     if top:
         got = covers.recover_cover_now(top["id"])
@@ -179,31 +176,47 @@ def buscar(request: Request, q: str = "", artists: str = "", works: str = ""):
             top["cover_url"], top["cover_thumb"] = got
             top["has_discogs"] = True
             works_res["works"].insert(0, top)
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        f_artists = ex.submit(catalog.search_artists_only, q)
-        f_affines = ex.submit(reco.affine_for_search,
-                              works_res["works"], [], exclude_user_id=uid)
-        artists = f_artists.result()
-        affines = f_affines.result()
-    # affine_for_search prefiere la primera OBRA; si no hay obras pero sí artistas,
-    # rehacemos el afín desde el primer artista (barato, solo cuando works=[]).
-    if not works_res["works"] and artists:
-        affines = reco.affine_for_search([], artists, exclude_user_id=uid)
-
+    artists = catalog.search_artists_only(q)
     covers.request_missing(works_res["works"])
     covers.request_missing_ids(works_res.get("missing_cover_ids"))
     pricing.attach_cheapest(works_res["works"])
-    if affines:
-        covers.request_missing(affines.get("results"))
-        pricing.attach_cheapest(affines.get("results"))
+    # Semilla de los afines (fragmento async): la 1ª obra; si no hay obras, el 1er
+    # artista. affine_for_search prefiere obra > artista → misma semántica.
+    afines_src = None
+    if works_res["works"]:
+        afines_src = "/buscar/afines?work={}".format(works_res["works"][0]["id"])
+    elif artists:
+        afines_src = "/buscar/afines?artist={}".format(artists[0]["id"])
     return _render(
         request, "search.html",
         q=q, mode="text",
         works=works_res["works"],
         artists=artists,
-        affines=affines,
+        afines_src=afines_src,
         user=user,
     )
+
+
+@app.get("/buscar/afines", response_class=HTMLResponse)
+def buscar_afines(request: Request, work: int = 0, artist: int = 0):
+    """Fragmento HTML con el bloque "Vinilos afines" de /buscar (KNN por embedding,
+    ~0,8s). Se pide por fetch para no bloquear el render de la búsqueda. La semilla
+    es un work (preferido) o un artista, resuelta en el router de /buscar."""
+    user = users.current_user(request)
+    uid = user["id"] if user else None
+    affines = None
+    if work:
+        seed = catalog.get_work(work)
+        if seed:
+            affines = reco.affine_for_search([seed], [], exclude_user_id=uid)
+    elif artist:
+        seed = catalog.get_artist(artist)
+        if seed:
+            affines = reco.affine_for_search([], [seed], exclude_user_id=uid)
+    if affines and affines.get("results"):
+        covers.request_missing(affines["results"])
+        pricing.attach_cheapest(affines["results"])
+    return _render(request, "_search_afines.html", affines=affines, user=user)
 
 
 @app.get("/api/suggest")
@@ -280,14 +293,11 @@ def artista(request: Request, artist_id: int):
                        status_code=404, user=user)
     disc = catalog.get_artist_discography(artist_id)
     discography = disc["works"]
-    similar = reco.similar_to_artist(artist_id, exclude_user_id=uid)
-    # Backfill de portadas sin bloquear: discografía (los que faltan, por
-    # convergencia) + afines (ya encolados en la fachada).
+    # LATENCIA: los afines (KNN por centroide, ~0,9s) se cargan aparte vía
+    # /artista/{id}/afines. La ficha (foto + discografía) se sirve al instante.
     covers.request_missing(discography)
     covers.request_missing_ids(disc.get("missing_cover_ids"))
-    covers.request_missing(similar)
     pricing.attach_cheapest(discography)
-    pricing.attach_cheapest(similar)
     # Backfill de FOTO DE ARTISTA sin bloquear: si la ficha mostraría el
     # monograma (image_url NULL), pide la foto a Discogs (mismo worker/throttle
     # que las portadas). Esta carga muestra monograma; la siguiente ya trae foto.
@@ -296,9 +306,20 @@ def artista(request: Request, artist_id: int):
         request, "artist.html",
         artist=artist,
         discography=discography,
-        similar=similar,
         user=user,
     )
+
+
+@app.get("/artista/{artist_id}/afines", response_class=HTMLResponse)
+def artista_afines(request: Request, artist_id: int):
+    """Fragmento HTML con los afines de un artista (KNN por centroide de embeddings,
+    ~0,9s). Se pide por fetch desde artist.html para no bloquear el render."""
+    user = users.current_user(request)
+    uid = user["id"] if user else None
+    similar = reco.similar_to_artist(artist_id, exclude_user_id=uid)
+    covers.request_missing(similar)
+    pricing.attach_cheapest(similar)
+    return _render(request, "_artist_afines.html", similar=similar, user=user)
 
 
 @app.get("/vibra", response_class=HTMLResponse)

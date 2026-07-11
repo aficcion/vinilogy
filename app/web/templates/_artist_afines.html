@@ -1,0 +1,11 @@
+{# Fragmento async: contenido del bloque "En la onda de {artista}" (KNN por
+   centroide de embeddings, ~0,9s). Espera `similar` (lista). El <h2> lo pinta
+   artist.html al instante; aquí solo va la rejilla. #}
+{% if similar %}
+  <p class="hint">Otros artistas afines, con vinilo.</p>
+  <div class="grid">
+    {% for w in similar %}{% include "_reco_card.html" %}{% endfor %}
+  </div>
+{% else %}
+  <p class="empty">Sin afines localizados para este artista.</p>
+{% endif %}

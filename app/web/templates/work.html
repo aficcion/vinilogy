@@ -149,9 +149,9 @@
     {% endif %}
   </section>
 
-  {# Afines (KNN por embedding, ~2s): se cargan aparte para que la ficha aparezca
-     al instante. Skeleton mientras llega el fragmento de /obra/{id}/afines. #}
-  <div id="work-afines" data-src="/obra/{{ work.id }}/afines" aria-busy="true">
+  {# Afines (KNN por embedding, ~2s): se cargan aparte (search.js → loadAfines) para
+     que la ficha aparezca al instante. Skeleton mientras llega el fragmento. #}
+  <div data-afines-src="/obra/{{ work.id }}/afines" aria-busy="true">
     <section class="block reco-block">
       <h2>Vinilos afines</h2>
       <div class="grid">
@@ -160,20 +160,6 @@
     </section>
   </div>
 </article>
-
-<script>
-  (function () {
-    var el = document.getElementById("work-afines");
-    if (!el) return;
-    fetch(el.dataset.src, { headers: { "Accept": "text/html" } })
-      .then(function (r) { return r.ok ? r.text() : ""; })
-      .then(function (html) {
-        el.innerHTML = html;                 // vacío honesto si no hay afines
-        el.removeAttribute("aria-busy");
-      })
-      .catch(function () { el.innerHTML = ""; el.removeAttribute("aria-busy"); });
-  })();
-</script>
 {% endblock %}
 {#
 TODO(core): reco/precio a nivel de EDICIÓN precisa está BLOQUEADO —
