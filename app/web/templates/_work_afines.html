@@ -1,0 +1,24 @@
+{# Fragmento asíncrono: bloques de "afines" de la ficha de obra (los cálculos KNN
+   por embedding tardan ~2s; se cargan aparte para que la ficha aparezca al
+   instante). Espera `similar` y `similar_press`. #}
+{% if similar_press %}
+<section class="block reco-block reco-press">
+  <h2>Afines por lo que dice la crítica</h2>
+  <p class="hint">Otros vinilos con una vibra editorial cercana, según la prensa española.</p>
+  <div class="grid">
+    {% for w in similar_press %}{% include "_reco_card.html" %}{% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section class="block reco-block">
+  <h2>Vinilos afines</h2>
+  {% if similar %}
+    <p class="hint">Otros artistas afines en género y estilo, con vinilo.</p>
+    <div class="grid">
+      {% for w in similar %}{% include "_reco_card.html" %}{% endfor %}
+    </div>
+  {% else %}
+    <p class="empty">Sin afines localizados para esta obra.</p>
+  {% endif %}
+</section>

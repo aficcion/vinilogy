@@ -211,14 +211,12 @@ def obra(request: Request, work_id: int):
     tracklist = catalog.get_work_tracklist(work_id)
     prices = pricing.get_prices_for_work(work_id)
     press_signals = press.get_signals(work_id)
-    similar = reco.similar_to_work(work_id, exclude_user_id=uid)
-    similar_press = reco.similar_by_press_to_work(work_id)
     artist = catalog.get_artist(work["artist_id"])
     artist_bio = catalog.artist_bio_excerpt(artist)
-    # Backfill de portadas sin bloquear: la obra + sus afines (contenido y prensa).
+    # LATENCIA: los afines (KNN por embedding, ~2,3s) NO se calculan aquí; la ficha
+    # se sirve al instante y el bloque "Vinilos afines" se carga aparte vía
+    # /obra/{id}/afines (fetch en work.html). Todo lo de arriba es ~0,05s.
     covers.request_missing(work)
-    covers.request_missing(similar)
-    covers.request_missing(similar_press)
     return _render(
         request, "work.html",
         work=work,
@@ -226,10 +224,25 @@ def obra(request: Request, work_id: int):
         tracklist=tracklist,
         prices=prices,
         press=press_signals,
-        similar=similar,
-        similar_press=similar_press,
         artist_bio=artist_bio,
         user=user,
+    )
+
+
+@app.get("/obra/{work_id}/afines", response_class=HTMLResponse)
+def obra_afines(request: Request, work_id: int):
+    """Fragmento HTML con los bloques de afines de la ficha (KNN por embedding,
+    ~2,3s). Se pide por fetch desde work.html para no bloquear el render de la
+    ficha. Devuelve HTML parcial (sin base.html)."""
+    user = users.current_user(request)
+    uid = user["id"] if user else None
+    similar = reco.similar_to_work(work_id, exclude_user_id=uid)
+    similar_press = reco.similar_by_press_to_work(work_id)
+    covers.request_missing(similar)
+    covers.request_missing(similar_press)
+    return _render(
+        request, "_work_afines.html",
+        similar=similar, similar_press=similar_press, user=user,
     )
 
 
