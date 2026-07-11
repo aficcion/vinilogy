@@ -362,6 +362,7 @@ def vibra(request: Request, mood: str = "", q: str = ""):
               if entry else None)
     if result:
         covers.request_missing(result.get("results"))
+        pricing.attach_cheapest(result.get("results"))
     return _render(
         request, "vibra.html",
         entry=entry,
