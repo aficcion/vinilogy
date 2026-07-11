@@ -56,6 +56,36 @@
     </div>
   </div>
 
+  <section class="block">
+    <h2>Precios en tiendas ES</h2>
+    {% if prices.listings %}
+      {% if prices.any_stale %}
+      <p class="freshness">Algún dato de tienda puede estar desactualizado
+         (más antiguo: {{ prices.data_as_of }}).</p>
+      {% endif %}
+      <table class="prices">
+        <thead>
+          <tr><th>Precio</th><th>Tienda</th><th>Disponibilidad</th><th>Estado</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for p in prices.listings %}
+          <tr>
+            <td class="price">{{ p.price_display }}</td>
+            <td>{{ p.store_label }}</td>
+            <td>{{ p.availability_label }}</td>
+            <td class="cond">{{ p.condition_media or '—' }}{% if p.condition_sleeve %} / {{ p.condition_sleeve }}{% endif %}</td>
+            <td><a class="buy" href="{{ p.url }}" target="_blank" rel="noopener">Ver en tienda ↗</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="hint price-level-note">Precios de tiendas ES para esta obra (aún no
+         atribuidos a la edición/prensado exacto).</p>
+    {% else %}
+      <p class="empty">Sin precio localizado en tiendas ES para esta obra.</p>
+    {% endif %}
+  </section>
+
   {% if press.has_signals %}
   <section class="block press-block">
     <h2>La crítica dice</h2>
@@ -112,36 +142,6 @@
     <p class="hint">Tracklist de la edición de referencia del disco.</p>
   </section>
   {% endif %}
-
-  <section class="block">
-    <h2>Precios en tiendas ES</h2>
-    {% if prices.listings %}
-      {% if prices.any_stale %}
-      <p class="freshness">Algún dato de tienda puede estar desactualizado
-         (más antiguo: {{ prices.data_as_of }}).</p>
-      {% endif %}
-      <table class="prices">
-        <thead>
-          <tr><th>Precio</th><th>Tienda</th><th>Disponibilidad</th><th>Estado</th><th></th></tr>
-        </thead>
-        <tbody>
-          {% for p in prices.listings %}
-          <tr>
-            <td class="price">{{ p.price_display }}</td>
-            <td>{{ p.store_label }}</td>
-            <td>{{ p.availability_label }}</td>
-            <td class="cond">{{ p.condition_media or '—' }}{% if p.condition_sleeve %} / {{ p.condition_sleeve }}{% endif %}</td>
-            <td><a class="buy" href="{{ p.url }}" target="_blank" rel="noopener">Ver en tienda ↗</a></td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      <p class="hint price-level-note">Precios de tiendas ES para esta obra (aún no
-         atribuidos a la edición/prensado exacto).</p>
-    {% else %}
-      <p class="empty">Sin precio localizado en tiendas ES para esta obra.</p>
-    {% endif %}
-  </section>
 
   {# Afines (KNN por embedding, ~2s): se cargan aparte (search.js → loadAfines) para
      que la ficha aparezca al instante. Skeleton mientras llega el fragmento. #}
