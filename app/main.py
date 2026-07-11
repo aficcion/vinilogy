@@ -121,12 +121,11 @@ def _parse_id_csv(raw):
     return out
 
 
-def _spotify_search_url(work):
-    """Link "escuchar en Spotify" para una obra: búsqueda de `artista título` en la
-    web de Spotify. SIN OAuth ni API key (patrón de degradación honesta del diseño):
-    es solo una URL de búsqueda pública. None si falta título."""
+def _spotify_search_link(*parts):
+    """Link "escuchar en Spotify": búsqueda pública de los `parts` (p.ej. artista +
+    título de obra, o solo el artista) en la web de Spotify. SIN OAuth ni API key
+    (patrón de degradación honesta del diseño). None si no hay texto útil."""
     import urllib.parse
-    parts = [work.get("artist_name"), work.get("title")]
     q = " ".join(p for p in parts if p).strip()
     if not q:
         return None
@@ -270,7 +269,7 @@ def obra(request: Request, work_id: int):
         prices=prices,
         press=press_signals,
         artist_bio=artist_bio,
-        spotify_url=_spotify_search_url(work),
+        spotify_url=_spotify_search_link(work.get("artist_name"), work.get("title")),
         user=user,
     )
 
@@ -317,6 +316,7 @@ def artista(request: Request, artist_id: int):
         request, "artist.html",
         artist=artist,
         discography=discography,
+        spotify_url=_spotify_search_link(artist.get("name")),
         user=user,
     )
 
