@@ -183,9 +183,35 @@
     });
   }
 
+  // Botones "Escuchar en Spotify": abren la APP si está instalada (esquema
+  // `spotify:`), con FALLBACK a la web si no. Al clicar se intenta la URI de la app;
+  // si el foco NO se va (no había app) a los ~800ms, se navega a la web. `href` sigue
+  // siendo la URL web → sin JS o con la app ausente, el link funciona igual.
+  function installSpotifyLinks() {
+    var links = document.querySelectorAll("a.btn-spotify[data-spotify-app]");
+    Array.prototype.forEach.call(links, function (a) {
+      a.addEventListener("click", function (e) {
+        var appUri = a.getAttribute("data-spotify-app");
+        if (!appUri) return;                 // sin URI de app → link web normal
+        e.preventDefault();
+        var webUrl = a.href;
+        var left = false;
+        function mark() { left = true; }     // la app tomó el foco
+        window.addEventListener("blur", mark, { once: true });
+        document.addEventListener("visibilitychange", mark, { once: true });
+        window.location.href = appUri;        // intenta abrir la app
+        window.setTimeout(function () {
+          window.removeEventListener("blur", mark);
+          if (!left) window.location.href = webUrl;  // no había app → web
+        }, 800);
+      });
+    });
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     var forms = document.querySelectorAll("form[data-typeahead]");
     Array.prototype.forEach.call(forms, install);
     loadAfines();
+    installSpotifyLinks();
   });
 })();

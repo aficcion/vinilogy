@@ -123,13 +123,17 @@ def _parse_id_csv(raw):
 
 def _spotify_search_link(*parts):
     """Link "escuchar en Spotify": búsqueda pública de los `parts` (p.ej. artista +
-    título de obra, o solo el artista) en la web de Spotify. SIN OAuth ni API key
-    (patrón de degradación honesta del diseño). None si no hay texto útil."""
+    título de obra, o solo el artista). SIN OAuth ni API key (patrón de degradación
+    honesta del diseño). Devuelve {"web", "app"}: `app` es la URI `spotify:` que abre
+    la APP de escritorio/móvil si está instalada; `web` es el fallback en el navegador
+    (lo maneja el JS: intenta la app y cae a la web). None si no hay texto útil."""
     import urllib.parse
     q = " ".join(p for p in parts if p).strip()
     if not q:
         return None
-    return "https://open.spotify.com/search/" + urllib.parse.quote(q)
+    quoted = urllib.parse.quote(q)
+    return {"web": "https://open.spotify.com/search/" + quoted,
+            "app": "spotify:search:" + quoted}
 
 
 @app.get("/buscar", response_class=HTMLResponse)
