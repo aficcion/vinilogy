@@ -47,6 +47,15 @@ from app import db  # noqa: E402
 _COOKIE_MAX_AGE = db.SESSION_TTL_DAYS * 24 * 3600
 
 
+def _owned_formats_map(user):
+    """work_id -> formatos que el usuario POSEE ('vinyl'/'cd'), para el flag "ya lo
+    tienes" en cualquier tarjeta/ficha. Solo con Discogs conectado (la colección
+    viene de ahí); sin conexión → {} y no tocamos la BD."""
+    if not user or "discogs" not in (user.get("providers") or []):
+        return {}
+    return catalog.owned_formats_for_user(user["id"])
+
+
 def _render(request, name, status_code=200, **ctx):
     ctx["request"] = request
     # `user` disponible en TODAS las plantillas (cabecera): la resuelve el router
@@ -54,6 +63,11 @@ def _render(request, name, status_code=200, **ctx):
     if "user" not in ctx:
         ctx["user"] = users.current_user(request)
     ctx["display_label"] = users.display_label(ctx.get("user"))
+    # `owned` disponible en TODAS las plantillas: mapa work_id -> formatos poseídos,
+    # para pintar el flag "ya lo tienes" donde salga un work. {} para anónimos / sin
+    # Discogs. El router puede pasarlo ya calculado para no repetir la query.
+    if "owned" not in ctx:
+        ctx["owned"] = _owned_formats_map(ctx.get("user"))
     return templates.TemplateResponse(name, ctx, status_code=status_code)
 
 

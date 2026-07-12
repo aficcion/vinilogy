@@ -19,6 +19,8 @@
   --accent-2:    #7FD3C0;   /* teal (comprar / escuchar) */
   --on-accent:   #0A0A0C;   /* texto sobre oro */
   --lastfm:  #D51007;
+  --owned:     #3AA76D;   /* verde "ya lo tienes" (posesión) */
+  --on-owned:  #06130C;
 
   --display-font: 'Instrument Serif', Georgia, 'Times New Roman', serif;
   --ui-font: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
@@ -41,6 +43,8 @@
   --accent-soft: rgba(201,138,30,0.18);
   --accent-2:    #2F7D6E;
   --on-accent:   #FFFCF2;
+  --owned:     #2E8B57;   /* verde "ya lo tienes" sobre papel */
+  --on-owned:  #FFFCF2;
   --shadow-lg: 0 24px 70px rgba(120,90,30,0.18);
 }
 
@@ -443,6 +447,25 @@ th { color: var(--ink-3); font-family: var(--mono-font); font-weight: 500; font-
    válido) y posicionarlo sobre la portada. */
 .card-wrap { position: relative; display: flex; }
 .card-wrap > .card { flex: 1; min-width: 0; }
+
+/* ── Flag "ya lo tienes" — posesión (colección Discogs) ─────── */
+/* En tarjeta: pastilla sobre la portada, esquina superior izquierda (debajo de la
+   banda del card, alineada con el ♥ de la derecha). */
+.owned-flag {
+  position: absolute; top: 40px; left: 16px; z-index: 3;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 9px; border-radius: 999px;
+  background: var(--owned); color: var(--on-owned);
+  font-family: var(--mono-font); font-size: 9px; letter-spacing: .1em;
+  text-transform: uppercase; font-weight: 600; line-height: 1;
+  box-shadow: 0 4px 12px rgba(0,0,0,.22);
+}
+.owned-flag__ico { font-size: 11px; }
+.owned-flag__fmt { padding-left: 6px; border-left: 1px solid color-mix(in srgb, var(--on-owned) 40%, transparent); }
+.owned-flag__fmt:first-of-type { padding-left: 0; border-left: none; }
+/* En ficha: en el flujo, sin posicionar, un punto más grande. */
+.owned-line { margin-top: 12px; }
+.owned-flag--inline { position: static; font-size: 10px; padding: 6px 13px; }
 
 .wish-btn {
   position: absolute; top: 40px; right: 16px; z-index: 3;

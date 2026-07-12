@@ -109,3 +109,9 @@ def get_artist_discography(artist_id, limit=40):
     """Discografía en vinilo: dict {"works", "missing_cover_ids"} (regla
     transversal de portada + convergencia)."""
     return db.get_artist_discography(artist_id, limit=limit)
+
+
+def owned_formats_for_user(user_id):
+    """work_id -> lista de formatos poseídos ('vinyl'/'cd'). Base del flag
+    "ya lo tienes" en tarjetas/fichas."""
+    return db.owned_formats_for_user(user_id)

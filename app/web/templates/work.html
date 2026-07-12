@@ -22,6 +22,18 @@
         {% if work.year %}<span>{{ work.year }}</span>{% endif %}
         {% if work.work_type %}<span>{{ work.work_type|replace('_', ' ') }}</span>{% endif %}
       </p>
+      {% if owned and work.id in owned %}
+      {# Flag "ya lo tienes": la work está en la colección Discogs del usuario. #}
+      <p class="owned-line">
+        <span class="owned-flag owned-flag--inline" title="Ya lo tienes en tu colección">
+          <span class="owned-flag__ico" aria-hidden="true">✓</span>
+          <span class="owned-flag__txt">En tu colección</span>
+          {% set _f = owned[work.id] %}
+          {% if 'vinyl' in _f %}<span class="owned-flag__fmt">Vinilo</span>{% endif %}
+          {% if 'cd' in _f %}<span class="owned-flag__fmt">CD</span>{% endif %}
+        </span>
+      </p>
+      {% endif %}
       {% if work.genres or work.styles %}
       <p class="tags">
         {% for g in work.genres %}<span class="tag genre">{{ g }}</span>{% endfor %}

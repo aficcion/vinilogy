@@ -2163,6 +2163,42 @@ def user_collection_summary(user_id):
         return cur.fetchone()
 
 
+def owned_formats_for_user(user_id):
+    """work_id -> lista de formatos POSEÍDOS por el usuario ('vinyl'/'cd'), para
+    marcar cualquier tarjeta/ficha con el flag "ya lo tienes".
+
+    Misma base que la exclusión de colección (`_owned_work_ids`): posesión a nivel
+    de OBRA por `release_id` resuelto, unido a `releases.work_id`; el formato sale de
+    `releases.format` ('vinyl'/'cd'/…). Se agrega por work con bool_or para que una
+    work con ediciones en dos formatos liste ambos. Sin filas → {}.
+
+    La colección la puebla el pipeline de core desde Discogs (esta app no sincroniza),
+    así que solo tiene sentido llamarlo para usuarios con Discogs conectado.
+    """
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT r.work_id,
+                   bool_or(r.format = 'vinyl') AS vinyl,
+                   bool_or(r.format = 'cd')    AS cd
+            FROM user_collection uc
+            JOIN releases r ON r.id = uc.release_id
+            WHERE uc.user_id = %(u)s AND uc.release_id IS NOT NULL
+            GROUP BY r.work_id
+            """,
+            {"u": user_id},
+        )
+        out = {}
+        for row in cur.fetchall():
+            fmts = []
+            if row["vinyl"]:
+                fmts.append("vinyl")
+            if row["cd"]:
+                fmts.append("cd")
+            out[row["work_id"]] = fmts
+        return out
+
+
 # ---------------------------------------------------------------------------
 # CAPA PERSONAL DE RECO — "Para ti" por GRAFO DE CO-ESCUCHA (Last.fm getSimilar)
 # ---------------------------------------------------------------------------

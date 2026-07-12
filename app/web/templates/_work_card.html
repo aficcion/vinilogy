@@ -4,6 +4,16 @@
 <div class="card-wrap">
   <button class="wish-btn" type="button" data-work="{{ w.id }}"
           aria-label="Guardar en tu wishlist" aria-pressed="false" hidden>♥</button>
+  {% if owned and w.id in owned %}
+  {# Flag "ya lo tienes": la work está en la colección Discogs del usuario. #}
+  <div class="owned-flag" title="Ya lo tienes en tu colección">
+    <span class="owned-flag__ico" aria-hidden="true">✓</span>
+    {% set _f = owned[w.id] %}
+    {% if 'vinyl' in _f %}<span class="owned-flag__fmt">Vinilo</span>{% endif %}
+    {% if 'cd' in _f %}<span class="owned-flag__fmt">CD</span>{% endif %}
+    {% if not _f %}<span class="owned-flag__fmt">Lo tienes</span>{% endif %}
+  </div>
+  {% endif %}
   <a class="card" href="/obra/{{ w.id }}">
     <div class="card-band"><span>Álbum</span><span class="card-band__action">ver ficha</span></div>
     <div class="card-cover">
