@@ -805,7 +805,10 @@ def get_artist(artist_id):
                a.country,
                a.is_primary,
                a.listeners,
-               a.bio,
+               -- Bio: se prefiere Wikipedia (bio_wiki, mejor fuente y a veces en
+               -- español) y se cae a la de Last.fm (bio) cuando no hay Wikipedia.
+               COALESCE(a.bio_wiki, a.bio) AS bio,
+               a.bio_wiki_lang,
                a.tags,""".format(
             clean_name=_clean_artist_name_sql("a.name"),
             clean_disamb=_clean_disambiguation_sql("a.disambiguation")) + """
