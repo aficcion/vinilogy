@@ -21,6 +21,7 @@ Arranque:
     VINYLBE_DB_DSN=postgresql://localhost/vinology_core VINYLBE_DEV_LOGIN=1 \
         uvicorn app.main:app --port 7788 --reload
 """
+import logging
 import os
 import random
 import time
@@ -31,9 +32,19 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from app.domains import catalog, pricing, reco, editorial, press, users, covers
 from app.domains.users import oauth
+
+# Logging al arranque (sin esto, ni los warnings de covers.py salían a ningún sitio).
+logging.basicConfig(
+    level=os.environ.get("VINYLBE_LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+log = logging.getLogger("vinylbe")
 
 _HERE = os.path.dirname(__file__)
 _TEMPLATES_DIR = os.path.join(_HERE, "web", "templates")
@@ -43,9 +54,43 @@ app = FastAPI(title="Vinylbe v2", version="0.0.3-m3a")
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 templates = Jinja2Templates(directory=_TEMPLATES_DIR)
 
+# Rate limiting por IP (slowapi, en memoria → válido con 1 worker; ver deploy). Se
+# aplica solo a los endpoints caros (/api/suggest, /buscar) con @limiter.limit.
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Cookies Secure solo en prod (sobre HTTPS). En dev local (http) queda off o el
+# navegador no enviaría la cookie. Actívalo con VINYLBE_SECURE_COOKIES=1.
+_SECURE_COOKIES = os.environ.get("VINYLBE_SECURE_COOKIES") == "1"
+
 # Vida de la cookie de sesión (segundos), espejo de db.SESSION_TTL_DAYS.
 from app import db  # noqa: E402
 _COOKIE_MAX_AGE = db.SESSION_TTL_DAYS * 24 * 3600
+
+
+@app.exception_handler(Exception)
+async def _unhandled_error(request: Request, exc: Exception):
+    """Cualquier excepción no controlada → 500 con marca + log (en vez de 500 de
+    texto plano sin rastro). Contexto mínimo: no toca la BD (evita fallar de nuevo
+    si el error ERA la BD)."""
+    log.exception("unhandled error on %s %s", request.method, request.url.path)
+    return templates.TemplateResponse(
+        "500.html",
+        {"request": request, "user": None, "display_label": None, "owned": {}},
+        status_code=500,
+    )
+
+
+@app.get("/health")
+def health():
+    """Readiness para el healthcheck de Railway: ping a la BD. 200 ok / 503 si falla."""
+    try:
+        db.ping()
+        return JSONResponse({"status": "ok"})
+    except Exception as e:  # noqa: BLE001
+        log.warning("healthcheck DB ping failed: %s", e)
+        return JSONResponse({"status": "degraded", "db": "down"}, status_code=503)
 
 
 def _owned_formats_map(user):
@@ -76,6 +121,7 @@ def _set_session_cookie(response, token):
     response.set_cookie(
         users.SESSION_COOKIE, token,
         max_age=_COOKIE_MAX_AGE, httponly=True, samesite="lax",
+        secure=_SECURE_COOKIES,
     )
 
 
@@ -89,11 +135,13 @@ def _set_oauth_state_cookie(response, state):
     response.set_cookie(
         oauth.OAUTH_STATE_COOKIE, state,
         max_age=_OAUTH_STATE_MAX_AGE, httponly=True, samesite="lax",
+        secure=_SECURE_COOKIES,
     )
 
 
 def _clear_oauth_state_cookie(response):
-    response.delete_cookie(oauth.OAUTH_STATE_COOKIE)
+    response.delete_cookie(oauth.OAUTH_STATE_COOKIE, httponly=True,
+                           samesite="lax", secure=_SECURE_COOKIES)
 
 
 def _login_after_oauth(user_id, return_to="/mi"):
@@ -222,6 +270,7 @@ def _spotify_work_query(work):
 
 
 @app.get("/buscar", response_class=HTMLResponse)
+@limiter.limit("40/minute")
 def buscar(request: Request, q: str = "", artists: str = "", works: str = ""):
     """Buscador §6: con SELECCIÓN (`artists=1,2&works=3,4`) → bloques "mejores de
     {artista}" + "en la onda de tu selección"; con solo TEXTO (`q`) → búsqueda
@@ -320,7 +369,8 @@ def buscar_afines(request: Request, work: int = 0, artist: int = 0):
 
 
 @app.get("/api/suggest")
-def api_suggest(q: str = ""):
+@limiter.limit("60/minute")
+def api_suggest(request: Request, q: str = ""):
     """Type-ahead JSON: {artists:[{id,name}], works:[{id,title,artist_name,year}]}.
     Mismo ranking/filtros que §1/§2 (portada-obligatoria en works). Min 3 chars →
     listas vacías (lo controla la capa de BD)."""
@@ -589,7 +639,8 @@ def auth_logout(request: Request):
     if token:
         users.close_session(token)
     resp = RedirectResponse(url="/", status_code=303)
-    resp.delete_cookie(users.SESSION_COOKIE)
+    resp.delete_cookie(users.SESSION_COOKIE, httponly=True,
+                       samesite="lax", secure=_SECURE_COOKIES)
     return resp
 
 
@@ -851,7 +902,8 @@ def account_delete(request: Request):
     if user:
         users.delete_account(user)
     resp = RedirectResponse(url="/", status_code=303)
-    resp.delete_cookie(users.SESSION_COOKIE)
+    resp.delete_cookie(users.SESSION_COOKIE, httponly=True,
+                       samesite="lax", secure=_SECURE_COOKIES)
     return resp
 
 

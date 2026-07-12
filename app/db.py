@@ -175,10 +175,16 @@ _ARTIST_NOT_MORRALLA_SQL = (
 _pool = None
 
 
+# Tamaño máximo del pool. Cada request puede abanicar varias conexiones (p.ej. /mi
+# lanza 4 en paralelo), así que 10 se agota en el primer pico. Configurable por env,
+# acotado al max_connections de Postgres. Default holgado para el arranque.
+_POOL_MAX = int(os.environ.get("VINYLBE_DB_POOL_MAX", "24"))
+
+
 def _get_pool():
     global _pool
     if _pool is None:
-        _pool = ThreadedConnectionPool(minconn=1, maxconn=10, dsn=DSN)
+        _pool = ThreadedConnectionPool(minconn=1, maxconn=_POOL_MAX, dsn=DSN)
     return _pool
 
 
@@ -186,15 +192,32 @@ def _get_pool():
 def _cursor():
     pool = _get_pool()
     conn = pool.getconn()
+    # Una conexión que Postgres/pgbouncer cerró por idle puede volver del pool ya
+    # muerta → la descartamos y pedimos otra en vez de repartir una conexión rota.
+    if getattr(conn, "closed", 0):
+        pool.putconn(conn, close=True)
+        conn = pool.getconn()
+    broken = False
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             yield cur
         conn.commit()
     except Exception:
-        conn.rollback()
+        # Si el rollback también falla, la conexión está muerta → que no vuelva al pool.
+        try:
+            conn.rollback()
+        except Exception:
+            broken = True
         raise
     finally:
-        pool.putconn(conn)
+        pool.putconn(conn, close=broken)
+
+
+def ping():
+    """SELECT 1 contra el pool (para /health). Lanza si la BD no responde."""
+    with _cursor() as cur:
+        cur.execute("SELECT 1")
+        cur.fetchone()
 
 
 @atexit.register
