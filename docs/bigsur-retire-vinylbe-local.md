@@ -98,15 +98,21 @@ launchd com.vinology.nightly-audit @ 4:30
 ```
 
 ## Cutover + borrado (concreto)
-1. En `~/vinology/nightly_audit.py`: sustituir `step_refresh_stores` (scrapers viejos
-   de `~/Vinylbe` → vinylbe_local) y `step_port_store_listings` por el **camino nuevo**
-   (`ingest/stores` scrape → `core.store_listings` → resolve → `marketplace_listings`).
-   *(Repo de Florent: coordinar — suele haber sesiones autónomas activas.)*
+1. ✅ **HECHO (12-jul, commit ff349aa)** — `~/vinology/nightly_audit.py`, los dos
+   subprocess cambiados a: `-m ingest.stores.run` (scrape 7 tiendas → core.store_listings)
+   y `-m ingest.stores.resolve` (INSERT..SELECT local → marketplace_listings). Verificado:
+   `run --list`=7 tiendas, `resolve --dry-run`=36.058 listings / 79,7% con work_id.
+   (Sesión autónoma de Florent cerrada para poder editar.)
 2. Correr 1–2 noches y verificar `marketplace_listings` con las 7 tiendas frescas por el
    camino nuevo (paridad de nº de filas / `max(last_seen_at)` por tienda).
-3. **`DROP DATABASE vinylbe_local;`** (retira la DB entera).
-4. Retirar el andamiaje viejo: `~/Vinylbe/scripts/scrapers`, `port_store_listings.py`,
-   los defaults `SRC_DSN=vinylbe_local` y el fallback proto de Florent.
+3. **Antes del DROP**: quitar `vinylbe_local` de los targets de
+   `~/vinology/backup_user_data.py` (lo respalda el paso 1 del nocturno,
+   `step_backup_user_data` — si no, ese paso fallaría cada noche al respaldar una DB
+   inexistente). Ese backup es la red de seguridad de los datos proto ANTES de borrar.
+4. **`DROP DATABASE vinylbe_local;`** (retira la DB entera).
+5. Retirar el andamiaje viejo: `~/Vinylbe/scripts/scrapers`, `port_store_listings.py`,
+   los defaults `SRC_DSN=vinylbe_local`, el fallback proto de Florent, y el constante
+   `VINYLBE_REPO` en `nightly_audit.py` (ya sin uso).
 
 ---
 
