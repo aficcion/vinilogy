@@ -12,7 +12,8 @@ CÓMO ADELGAZA (47 GB → ~4,4 GB)
     work_type IN ('studio_album','ep')  (~914K works). Las demás tablas se
     derivan de ese conjunto (artists/releases/covers/junctions referenciados).
   - Poda de COLUMNAS/ediciones:
-      · works    → fuera `embedding_press` (Vinilogy solo usa `embedding` p/ afines)
+      · works    → embedding y embedding_press a halfvec(512) (mitad de tamaño).
+                   embedding_press se MANTIENE (afines por crítica, ~8,7K works).
       · releases → solo la edición representativa (work_main_release) → el
                    monstruo `tracklist_cache` (10 GB) cae a migajas
   - CAA ya está fuera del core (cover_images es Discogs-only).
@@ -75,6 +76,8 @@ INDEXES = [
     "CREATE INDEX ON {s}.works USING gin (lower(immutable_unaccent(title)) gin_trgm_ops)",
     "CREATE INDEX ON {s}.works (primary_artist_id, releases_count DESC NULLS LAST) WHERE has_vinyl",
     "CREATE INDEX ON {s}.works USING hnsw (embedding {ops}) WITH (m = {m}) WHERE embedding IS NOT NULL",
+    # embedding_press: solo ~8,7K works (afines por crítica). Índice pequeño.
+    "CREATE INDEX ON {s}.works USING hnsw (embedding_press {ops}) WITH (m = {m}) WHERE embedding_press IS NOT NULL",
     # artists
     "CREATE UNIQUE INDEX ON {s}.artists (id)",
     "CREATE INDEX ON {s}.artists USING gin (search_doc)",
@@ -114,19 +117,27 @@ def run(cur, sql, label):
     print(f"  · {label:<42} {time.monotonic()-t0:6.1f}s", flush=True)
 
 
-def works_columns_except_embedding_press(cur):
-    """Lista de columnas de works SIN embedding_press (para no copiarla siquiera).
-    Si EMBEDDING_HALFVEC, castea `embedding` a halfvec(EMBED_DIM) en el mismo SELECT."""
-    emb = (f"embedding::halfvec({EMBED_DIM}) AS embedding"
-           if EMBEDDING_HALFVEC else "embedding")
+def works_column_list(cur):
+    """Lista de columnas de works para el SELECT del slim.
+
+    - Se MANTIENE `embedding_press` (feature 'afines por vibra de crítica',
+      similar_by_press): solo ~8,7K works lo tienen → cuesta ~17 MB, no se poda.
+    - Si EMBEDDING_HALFVEC, castea `embedding` y `embedding_press` a
+      halfvec(EMBED_DIM) en el mismo SELECT (mitad de tamaño)."""
+    if EMBEDDING_HALFVEC:
+        emb = f"embedding::halfvec({EMBED_DIM}) AS embedding"
+        embp = f"embedding_press::halfvec({EMBED_DIM}) AS embedding_press"
+    else:
+        emb, embp = "embedding", "embedding_press"
     cur.execute("""
         SELECT string_agg(
-                 CASE WHEN column_name='embedding' THEN %s ELSE quote_ident(column_name) END,
+                 CASE column_name WHEN 'embedding'       THEN %s
+                                  WHEN 'embedding_press' THEN %s
+                                  ELSE quote_ident(column_name) END,
                  ', ' ORDER BY ordinal_position)
         FROM information_schema.columns
         WHERE table_schema='public' AND table_name='works'
-          AND column_name <> 'embedding_press'
-    """, (emb,))
+    """, (emb, embp))
     return cur.fetchone()[0]
 
 
@@ -135,8 +146,8 @@ def build_catalog(cur):
     run(cur, f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE", "drop schema")
     run(cur, f"CREATE SCHEMA {SCHEMA}", "create schema")
 
-    # works — servibles, sin embedding_press
-    cols = works_columns_except_embedding_press(cur)
+    # works — servibles (embedding + embedding_press, ambos a halfvec)
+    cols = works_column_list(cur)
     run(cur, f"CREATE TABLE {SCHEMA}.works AS "
              f"SELECT {cols} FROM public.works w WHERE {SERVIBLE}", "works (servibles)")
 
