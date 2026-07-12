@@ -36,9 +36,11 @@ def _fmt_price(cents, currency):
 def attach_cheapest(works):
     """Adorna una lista de obras (dicts) con su precio ES MÁS BARATO, en lote.
 
-    A cada obra le añade `cheapest_price` (str tipo "32,95 €" o None) y
-    `cheapest_store` (nombre de tienda) para pintarlo en la tarjeta. Una sola query
-    para toda la lista (ver db.cheapest_prices_for_works); mismo match que la ficha.
+    A cada obra le añade `cheapest_price` (str tipo "32,95 €" o None),
+    `cheapest_store` (nombre de tienda) y `cheapest_stale` (bool: el precio elegido
+    está envejecido — todos sus listings pasaron de STORE_FRESHNESS_MAX_DAYS) para
+    pintarlo en la tarjeta. Una sola query para toda la lista
+    (ver db.cheapest_prices_for_works); mismo match por work_id que la ficha.
     Devuelve la misma lista (mutada) por comodidad. Acepta []/None sin romper.
     """
     items = [w for w in (works or []) if w and w.get("id") is not None]
@@ -50,9 +52,11 @@ def attach_cheapest(works):
         if row:
             w["cheapest_price"] = _fmt_price(row.get("price_cents"), row.get("currency"))
             w["cheapest_store"] = _SOURCE_LABELS.get(row.get("source"), row.get("source"))
+            w["cheapest_stale"] = bool(row.get("stale"))
         else:
             w["cheapest_price"] = None
             w["cheapest_store"] = None
+            w["cheapest_stale"] = False
     return works
 
 

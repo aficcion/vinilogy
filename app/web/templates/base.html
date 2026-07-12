@@ -20,7 +20,7 @@
 </head>
 <body data-auth="{{ 'user' if user else 'anon' }}">
   <header class="topbar">
-    <a class="brand" href="/">Vinilogy<span class="brand-v2">v2</span></a>
+    <a class="brand" href="/">Vinilogy</a>
     <form class="search" action="/buscar" method="get" role="search" data-typeahead>
       <input type="search" name="q" value="{{ q|default('') }}"
              placeholder="Busca un disco o un artista…" autocomplete="off">
@@ -49,7 +49,9 @@
   </main>
 
   <footer class="footer">
-    <span>Vinilogy v2 · M3a · datos de <code>vinology_core</code></span>
+    <span>Vinilogy · precios de vinilo en tiendas independientes de España</span>
+    <span class="footer-sep">·</span>
+    <a href="/privacidad">Privacidad</a>
   </footer>
   <script>
     function vbToggleTheme() {

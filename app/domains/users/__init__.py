@@ -251,3 +251,12 @@ def delete_account(user):
     """Borra la cuenta y todo lo suyo (CASCADE). No-op si no hay usuario."""
     if user:
         db.delete_user_and_sessions(user["id"])
+
+
+def export_user_data(user):
+    """Vuelca los datos personales del usuario para portabilidad GDPR (derecho de
+    acceso). None si anónimo. No incluye los tokens OAuth (credenciales de terceros,
+    no datos del sujeto) — ver db.export_user_data."""
+    if not user:
+        return None
+    return db.export_user_data(user["id"])

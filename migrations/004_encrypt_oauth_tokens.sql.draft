@@ -1,0 +1,76 @@
+-- ============================================================================
+-- BORRADOR — NO APLICAR AÚN.  (extensión .sql.draft a propósito: no es una
+-- migración lista; requiere coordinar con el repo de core y una clave compartida.)
+-- ============================================================================
+--
+-- Vinylbe v2 — Fase 2: cifrado at-rest de los tokens que CORE consume
+-- (Discogs oauth_token+oauth_token_secret, Last.fm session_key). Google ya no se
+-- almacena (Fase 1, migración 003).
+--
+-- Diseño:
+--   * pgcrypto simétrico. Clave = VINYLBE_TOKENS_KEY, en el ENTORNO de v2 y de core
+--     (nunca en el repo, nunca en la DB). Un volcado de DB ya no basta para descifrar.
+--   * Columnas siguen siendo `text`: guardamos el PGP ASCII-armored (armor()), así el
+--     CHECK `user_oauth_creds_shape` (NOT NULL por proveedor) sigue valiendo sin tocar.
+--   * Dos funciones TOLERANTES compartidas por v2 (escribe) y core (lee):
+--       - app_encrypt_token(val, key): cifra si hay clave; passthrough si no.
+--       - app_decrypt_token(val, key): descifra SOLO lo que está armored; devuelve el
+--         resto tal cual. Esto hace la transición segura con filas mixtas
+--         (plaintext viejas + cifradas nuevas) sin importar el orden de despliegue.
+--
+-- Aplicar (cuando toques core), UNA vez, fuera de la app, con la clave en una var de
+-- psql (ojo: no la dejes en el history del shell):
+--     psql "$CORE_DSN" -v tokens_key="$VINYLBE_TOKENS_KEY" \
+--          -f migrations/004_encrypt_oauth_tokens.sql
+-- ============================================================================
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- Cifra en escritura. NULL→NULL; sin clave→passthrough (permite convivir con dev sin
+-- clave y hace el cambio de código de v2 seguro de mergear antes que la migración).
+CREATE OR REPLACE FUNCTION app_encrypt_token(val text, key text)
+RETURNS text AS $$
+  SELECT CASE
+    WHEN val IS NULL                     THEN NULL
+    WHEN key IS NULL OR key = ''          THEN val
+    ELSE armor(pgp_sym_encrypt(val, key))
+  END
+$$ LANGUAGE sql IMMUTABLE;
+
+-- Descifra en lectura SOLO lo que esté PGP-armored; el resto (plaintext heredado) se
+-- devuelve tal cual → seguro con filas mixtas y con clave ausente.
+CREATE OR REPLACE FUNCTION app_decrypt_token(val text, key text)
+RETURNS text AS $$
+  SELECT CASE
+    WHEN val IS NULL                                          THEN NULL
+    WHEN val LIKE '-----BEGIN PGP MESSAGE-----%'
+         AND key IS NOT NULL AND key <> ''
+      THEN pgp_sym_decrypt(dearmor(val), key)
+    ELSE val
+  END
+$$ LANGUAGE sql;
+
+-- Backfill: cifra las filas heredadas en claro. Guarda contra doble cifrado
+-- (NOT LIKE armored). Idempotente: re-ejecutar no vuelve a cifrar lo ya cifrado.
+UPDATE user_oauth_credentials
+   SET oauth_token = app_encrypt_token(oauth_token, :'tokens_key')
+ WHERE oauth_token IS NOT NULL
+   AND oauth_token NOT LIKE '-----BEGIN PGP MESSAGE-----%';
+
+UPDATE user_oauth_credentials
+   SET oauth_token_secret = app_encrypt_token(oauth_token_secret, :'tokens_key')
+ WHERE oauth_token_secret IS NOT NULL
+   AND oauth_token_secret NOT LIKE '-----BEGIN PGP MESSAGE-----%';
+
+UPDATE user_oauth_credentials
+   SET session_key = app_encrypt_token(session_key, :'tokens_key')
+ WHERE session_key IS NOT NULL
+   AND session_key NOT LIKE '-----BEGIN PGP MESSAGE-----%';
+
+-- Verificación rápida tras aplicar (debería devolver los tokens en claro):
+--   SELECT provider,
+--          app_decrypt_token(oauth_token,        :'tokens_key') AS tok,
+--          app_decrypt_token(oauth_token_secret, :'tokens_key') AS sec,
+--          app_decrypt_token(session_key,        :'tokens_key') AS skey
+--     FROM user_oauth_credentials
+--    WHERE provider IN ('discogs','lastfm');

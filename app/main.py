@@ -27,6 +27,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -784,20 +785,12 @@ def google_callback(request: Request, code: str = "", state: str = "",
         return _oauth_error(
             request, "Google",
             "No pudimos completar el intercambio con Google ({}).".format(e))
-    expires_at = None
-    try:
-        exp = int(tokens.get("expires_in") or 0)
-        if exp > 0:
-            from datetime import datetime, timezone, timedelta
-            expires_at = datetime.now(timezone.utc) + timedelta(seconds=exp)
-    except (TypeError, ValueError):
-        expires_at = None
+    # Google es SOLO identidad: el access token se usa aquí para leer sub/email y
+    # NO se persiste (nadie lo consume después; ver migración 003). Minimización de
+    # datos: menos secreto guardado, menos riesgo at-rest.
     user_id, _outcome = oauth.persist_identity(
         provider="google", provider_account_id=sub,
         provider_username=name or email, guest_user_id=flow.get("guest_user_id"),
-        oauth2_access_token=tokens["access_token"],
-        oauth2_refresh_token=tokens.get("refresh_token"),
-        oauth2_expires_at=expires_at,
     )
     return _login_after_oauth(user_id, flow.get("return_to"))
 
@@ -828,6 +821,26 @@ def auth_disconnect(request: Request, provider: str):
     if user and provider in ("google", "discogs", "lastfm"):
         users.disconnect_provider(user, provider)
     return RedirectResponse(url="/cuenta", status_code=303)
+
+
+@app.get("/privacidad", response_class=HTMLResponse)
+def privacidad(request: Request):
+    """Política de privacidad (estática). Fecha fija = última revisión del texto."""
+    return _render(request, "privacidad.html", updated="12 de julio de 2026")
+
+
+@app.get("/account/export")
+def account_export(request: Request):
+    """Exporta los datos personales del usuario (GDPR, derecho de acceso/portabilidad)
+    como JSON descargable. Sin sesión → a /cuenta. No incluye tokens OAuth."""
+    user = users.current_user(request)
+    if not user:
+        return RedirectResponse(url="/cuenta", status_code=303)
+    data = users.export_user_data(user)
+    return JSONResponse(
+        content=jsonable_encoder(data),
+        headers={"Content-Disposition": 'attachment; filename="vinilogy-mis-datos.json"'},
+    )
 
 
 @app.post("/account/delete")

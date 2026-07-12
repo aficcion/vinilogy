@@ -79,6 +79,7 @@
       <p class="freshness">Algún dato de tienda puede estar desactualizado
          (más antiguo: {{ prices.data_as_of }}).</p>
       {% endif %}
+      <div class="table-scroll">
       <table class="prices">
         <thead>
           <tr><th>Precio</th><th>Tienda</th><th>Disponibilidad</th><th>Estado</th><th></th></tr>
@@ -95,6 +96,10 @@
           {% endfor %}
         </tbody>
       </table>
+      </div>
+      <p class="price-level-note">El precio corresponde al <strong>álbum</strong>, no a
+         un prensaje concreto (año, color, catálogo). Confirma la edición exacta en la
+         tienda antes de comprar.</p>
     {% else %}
       <p class="empty">Sin precio localizado en tiendas ES para esta obra.</p>
     {% endif %}

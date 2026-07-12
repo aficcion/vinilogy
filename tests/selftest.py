@@ -1997,7 +1997,7 @@ def run_http_smoke(fx):
     # /mi anónimo → invita a entrar, NO 500.
     r = client.get("/mi")
     check("GET /mi sin sesión → 200 e invita a entrar (no 500)",
-          r.status_code == 200 and "invitado" in r.text.lower(),
+          r.status_code == 200 and "entrar con google" in r.text.lower(),
           "status {} / no invita".format(r.status_code))
 
     if not users.DEV_LOGIN_ENABLED:

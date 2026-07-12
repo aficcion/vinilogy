@@ -369,7 +369,7 @@ def search_works(q, limit=20, prefix=False):
                 -- Ranking + LIMIT holgado SIN filtro de portada (convergencia) y SIN
                 -- el anti-single (corre sobre este puñado, no sobre todo lo que casa).
                 SELECT w.id, w.title, w.work_type, w.year, w.releases_count,
-                       w.primary_artist_id, w.lastfm_playcount,
+                       w.primary_artist_id, w.lastfm_playcount, w.is_official,
                        ts_rank(w.search_doc, {tsq}) AS fts_rank
                 FROM works w, params p
                 WHERE w.has_vinyl = true
@@ -1100,46 +1100,38 @@ def get_prices_for_work(work_id, max_age_days=None):
         return cur.fetchall()
 
 
-def cheapest_prices_for_works(work_ids):
+def cheapest_prices_for_works(work_ids, max_age_days=None):
     """Precio MÁS BARATO en tiendas ES por obra, EN LOTE (para las tarjetas).
 
-    Devuelve {work_id: {price_cents, currency, url, source}} solo para las obras
-    que tienen algún listing con precio. Usa EXACTAMENTE el mismo match que
-    `get_prices_for_work` (artist_id + título por trigram/substring sobre el título
-    de la obra y de sus releases) → la tarjeta y la ficha nunca discrepan. Una sola
-    query para todas las obras (evita el N+1). Lista vacía → {}.
+    Match por `marketplace_listings.work_id` (pre-resuelto en el port de core,
+    migración 056) — EXACTAMENTE el mismo enlace que `get_prices_for_work`, de modo
+    que la tarjeta y la ficha NUNCA discrepan. (Antes casaba en caliente por
+    artist_id + título difuso trigram>0.35/substring, lo que cruzaba álbumes del
+    mismo artista: una tarjeta podía anunciar el precio de OTRO disco.)
+
+    Elige el listing NO envejecido más barato; si todos están stale, cae al más
+    barato y lo marca `stale=True` (para no anunciar como "el más barato" un
+    listing fantasma cuando existe uno vivo más caro). Devuelve
+    {work_id: {price_cents, currency, url, source, stale}} solo para las obras con
+    algún listing con precio. Una sola query (evita el N+1). Lista vacía → {}.
     """
     ids = [int(i) for i in (work_ids or []) if i is not None]
     if not ids:
         return {}
+    stale_days = max_age_days if max_age_days is not None else STORE_FRESHNESS_MAX_DAYS
     sql = """
-        WITH wm AS (
-            SELECT w.id AS work_id,
-                   w.primary_artist_id AS artist_id,
-                   array_prepend(
-                       w.title,
-                       COALESCE((SELECT array_agg(DISTINCT r.title)
-                                 FROM releases r WHERE r.work_id = w.id),
-                                ARRAY[]::text[])) AS titles
-            FROM works w
-            WHERE w.id = ANY(%(ids)s)
-        )
-        SELECT DISTINCT ON (wm.work_id)
-               wm.work_id, ml.price_cents, ml.currency, ml.url, ml.source
-        FROM wm
-        JOIN marketplace_listings ml
-             ON ml.artist_id = wm.artist_id AND ml.price_cents > 0
-        WHERE EXISTS (
-            SELECT 1 FROM unnest(wm.titles) t(title)
-            WHERE similarity(lower(immutable_unaccent(ml.title_text)),
-                             lower(immutable_unaccent(t.title))) > 0.35
-               OR lower(immutable_unaccent(ml.title_text))
-                  LIKE '%%' || lower(immutable_unaccent(t.title)) || '%%'
-        )
-        ORDER BY wm.work_id, ml.price_cents ASC
+        SELECT DISTINCT ON (ml.work_id)
+               ml.work_id, ml.price_cents, ml.currency, ml.url, ml.source,
+               (ml.last_seen_at < (now() - make_interval(days => %(stale_days)s))) AS stale
+        FROM marketplace_listings ml
+        WHERE ml.work_id = ANY(%(ids)s)
+          AND ml.price_cents > 0
+        ORDER BY ml.work_id,
+                 (ml.last_seen_at < (now() - make_interval(days => %(stale_days)s))) ASC,
+                 ml.price_cents ASC
     """
     with _cursor() as cur:
-        cur.execute(sql, {"ids": ids})
+        cur.execute(sql, {"ids": ids, "stale_days": stale_days})
         return {r["work_id"]: dict(r) for r in cur.fetchall()}
 
 
@@ -1920,6 +1912,58 @@ def get_app_user(user_id):
             {"u": user_id},
         )
         return cur.fetchone()
+
+
+def export_user_data(user_id):
+    """Vuelca TODOS los datos personales de un usuario para la portabilidad GDPR
+    (derecho de acceso, art. 15/20). Devuelve un dict serializable, o None si el
+    usuario no existe.
+
+    NO incluye los tokens OAuth secretos (oauth_token/oauth_token_secret/
+    session_key/oauth2_*): son credenciales vivas de terceros, no datos del sujeto,
+    y no deben viajar en un fichero descargable. Solo se exportan los metadatos de
+    conexión (proveedor, usuario y cuenta en el proveedor, última actualización).
+    """
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, email, display_name, last_login_at, updated_at,
+                   collection_value_min, collection_value_median,
+                   collection_value_max, collection_value_currency,
+                   collection_value_updated_at
+            FROM app_users WHERE id = %(u)s
+            """,
+            {"u": user_id},
+        )
+        profile = cur.fetchone()
+        if not profile:
+            return None
+        cur.execute(
+            """
+            SELECT provider::text AS provider, provider_username,
+                   provider_account_id, updated_at
+            FROM user_oauth_credentials WHERE user_id = %(u)s
+            ORDER BY provider::text
+            """,
+            {"u": user_id},
+        )
+        connections = cur.fetchall()
+        cur.execute(
+            """
+            SELECT wl.work_id, w.title, wl.created_at AS saved_at
+            FROM user_wishlist wl
+            LEFT JOIN works w ON w.id = wl.work_id
+            WHERE wl.user_id = %(u)s
+            ORDER BY wl.created_at DESC
+            """,
+            {"u": user_id},
+        )
+        wishlist = cur.fetchall()
+    return {
+        "profile": dict(profile),
+        "connections": [dict(c) for c in connections],
+        "wishlist": [dict(x) for x in wishlist],
+    }
 
 
 def delete_session(token):
