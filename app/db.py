@@ -1,6 +1,6 @@
-"""Acceso a datos de Vinylbe v2.
+"""Acceso a datos de Vinilogy.
 
-Única fuente de datos: `vinology_core` (DSN en env `VINYLBE_DB_DSN`).
+Única fuente de datos: `bigsur_core` (DSN en env `VINILOGY_DB_DSN`).
 La app SOLO LEE — jamás hace DDL contra core.
 
 Todas las queries son parametrizadas (nada de f-strings con input de usuario).
@@ -20,10 +20,10 @@ from psycopg2.pool import ThreadedConnectionPool
 from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 
-DSN = os.environ.get("VINYLBE_DB_DSN", "postgresql://localhost/vinology_core")
+DSN = os.environ.get("VINILOGY_DB_DSN", "postgresql://localhost/bigsur_core")
 
 # Umbral de frescura de datos de tienda (días). Contrato heredado del proyecto.
-STORE_FRESHNESS_MAX_DAYS = int(os.environ.get("VINYLBE_STORE_FRESHNESS_DAYS", "3"))
+STORE_FRESHNESS_MAX_DAYS = int(os.environ.get("VINILOGY_STORE_FRESHNESS_DAYS", "3"))
 
 # Filtro anti-morralla para discografía (contrato del proyecto).
 _DISCOGRAPHY_WORK_TYPES = ("studio_album", "ep")
@@ -178,7 +178,7 @@ _pool = None
 # Tamaño máximo del pool. Cada request puede abanicar varias conexiones (p.ej. /mi
 # lanza 4 en paralelo), así que 10 se agota en el primer pico. Configurable por env,
 # acotado al max_connections de Postgres. Default holgado para el arranque.
-_POOL_MAX = int(os.environ.get("VINYLBE_DB_POOL_MAX", "24"))
+_POOL_MAX = int(os.environ.get("VINILOGY_DB_POOL_MAX", "24"))
 
 
 def _get_pool():
@@ -1842,7 +1842,7 @@ def works_by_styles_and_tags(style_names, tag_whitelist, limit=20,
 import secrets
 
 # Vida de la sesión (días). El token es opaco y seguro (secrets.token_urlsafe).
-SESSION_TTL_DAYS = int(os.environ.get("VINYLBE_SESSION_TTL_DAYS", "90"))
+SESSION_TTL_DAYS = int(os.environ.get("VINILOGY_SESSION_TTL_DAYS", "90"))
 
 
 def create_guest_user():

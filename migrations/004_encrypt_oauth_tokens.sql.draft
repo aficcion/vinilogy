@@ -3,12 +3,12 @@
 -- migración lista; requiere coordinar con el repo de core y una clave compartida.)
 -- ============================================================================
 --
--- Vinylbe v2 — Fase 2: cifrado at-rest de los tokens que CORE consume
+-- Vinilogy — Fase 2: cifrado at-rest de los tokens que CORE consume
 -- (Discogs oauth_token+oauth_token_secret, Last.fm session_key). Google ya no se
 -- almacena (Fase 1, migración 003).
 --
 -- Diseño:
---   * pgcrypto simétrico. Clave = VINYLBE_TOKENS_KEY, en el ENTORNO de v2 y de core
+--   * pgcrypto simétrico. Clave = VINILOGY_TOKENS_KEY, en el ENTORNO de v2 y de core
 --     (nunca en el repo, nunca en la DB). Un volcado de DB ya no basta para descifrar.
 --   * Columnas siguen siendo `text`: guardamos el PGP ASCII-armored (armor()), así el
 --     CHECK `user_oauth_creds_shape` (NOT NULL por proveedor) sigue valiendo sin tocar.
@@ -20,7 +20,7 @@
 --
 -- Aplicar (cuando toques core), UNA vez, fuera de la app, con la clave en una var de
 -- psql (ojo: no la dejes en el history del shell):
---     psql "$CORE_DSN" -v tokens_key="$VINYLBE_TOKENS_KEY" \
+--     psql "$CORE_DSN" -v tokens_key="$VINILOGY_TOKENS_KEY" \
 --          -f migrations/004_encrypt_oauth_tokens.sql
 -- ============================================================================
 

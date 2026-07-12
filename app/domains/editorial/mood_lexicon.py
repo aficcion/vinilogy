@@ -1,6 +1,6 @@
 """Léxico de mood curado — ESPAÑOL → styles (base fiable) + tags whitelisted.
 
-Diferenciador de Vinylbe v2: recomendación por AMBIENTE. Sin embed en vivo
+Diferenciador de Vinilogy: recomendación por AMBIENTE. Sin embed en vivo
 (decisión Carlos, 8-jul): la vibra se resuelve por LÉXICO curado sobre la
 folksonomía limpia de core.
 

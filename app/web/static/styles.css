@@ -1,4 +1,4 @@
-/* Vinylbe v2 — sistema visual "papel + oro" (paridad con vinilogy.com v1).
+/* Vinilogy — sistema visual "papel + oro" (paridad con vinilogy.com v1).
  * Tokens en :root (tema oscuro) + [data-theme="light"] (papel). El resto de la
  * app hereda el look al usar estos tokens. Tipografías: Instrument Serif (display)
  * + Geist (UI), cargadas en base.html. */

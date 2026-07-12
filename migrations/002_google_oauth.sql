@@ -1,4 +1,4 @@
--- Vinylbe v2 — M3c · Fase 2: Google como proveedor de IDENTIDAD (OAuth2 / OIDC).
+-- Vinilogy — M3c · Fase 2: Google como proveedor de IDENTIDAD (OAuth2 / OIDC).
 --
 -- El esquema de core ya traía las columnas oauth2_* (pre-provisionadas). Falta:
 --   1) añadir 'google' al enum `oauth_provider`.
@@ -7,7 +7,7 @@
 --      identidad, no hay colección/escucha que sincronizar).
 --
 -- Aplicar UNA vez, fuera de la app:
---     psql postgresql://localhost/vinology_core -f migrations/002_google_oauth.sql
+--     psql postgresql://localhost/bigsur_core -f migrations/002_google_oauth.sql
 --
 -- Se aplica en autocommit (psql -f sin -1): el ADD VALUE queda comprometido antes
 -- de que el ALTER TABLE use el literal 'google'. NO envolver en BEGIN/COMMIT.

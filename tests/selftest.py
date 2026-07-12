@@ -1,4 +1,4 @@
-"""Selftest v0 de Vinylbe v2 — red de seguridad contra `vinology_core`.
+"""Selftest v0 de Vinilogy — red de seguridad contra `bigsur_core`.
 
 Checks DUROS. Los fixtures se DERIVAN con SQL (no hay títulos hardcodeados
 frágiles): si cambian los datos de core, el test sigue eligiendo una obra
@@ -1247,7 +1247,7 @@ def run_m3b_checks(fx):
           sig2 == sig, "no ignoró format/api_sig")
 
     # 26. URLs de autorización bien formadas (sin red).
-    with _env({"VINYLBE_BASE_URL": "http://localhost:7788",
+    with _env({"VINILOGY_BASE_URL": "http://localhost:7788",
                "LASTFM_API_KEY": "LFKEY", "LASTFM_API_SECRET": "LFSEC"}):
         durl = oauth.discogs_authorize_url("REQTOK123")
         pd = urllib.parse.urlparse(durl)
@@ -1728,7 +1728,7 @@ def run_covers_checks(fx):
     # Flag OFF durante la medición → no arranca el worker ni toca Discogs (el
     # selftest NUNCA hace llamadas de red reales).
     import time as _t
-    with _env({"VINYLBE_COVER_BACKFILL": "0"}):
+    with _env({"VINILOGY_COVER_BACKFILL": "0"}):
         t0 = _t.perf_counter()
         covers.request_missing(
             [{"id": 999001, "cover_url": "https://coverartarchive.org/x.jpg"}] * 50)
@@ -2001,7 +2001,7 @@ def run_http_smoke(fx):
           "status {} / no invita".format(r.status_code))
 
     if not users.DEV_LOGIN_ENABLED:
-        print("SKIP  smoke login-dev (VINYLBE_DEV_LOGIN != 1)")
+        print("SKIP  smoke login-dev (VINILOGY_DEV_LOGIN != 1)")
     elif fx.get("fixture_user"):
         # POST /dev/login/1 → set-cookie de sesión.
         r = client.post("/dev/login/1", follow_redirects=False)
@@ -2045,8 +2045,8 @@ def run_http_smoke(fx):
 
 
 def main():
-    print("== Vinylbe v2 selftest (core: {}) ==".format(
-        os.environ.get("VINYLBE_DB_DSN", "postgresql://localhost/vinology_core")))
+    print("== Vinilogy selftest (core: {}) ==".format(
+        os.environ.get("VINILOGY_DB_DSN", "postgresql://localhost/bigsur_core")))
     fx = derive_fixtures()
     print("Fixtures: {}".format(fx))
     print("-" * 60)

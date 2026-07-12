@@ -1,10 +1,10 @@
--- Vinylbe v2 — M3c · Fase 1: wishlist de usuario.
+-- Vinilogy — M3c · Fase 1: wishlist de usuario.
 --
 -- Dato PROPIEDAD de v2 (no toca el catálogo). Misma frontera de escritura ACOTADA
 -- que `app_users`/`user_sessions`: la app escribe aquí, pero nunca hace DDL en
 -- runtime. Esta migración se aplica UNA vez, fuera de la app:
 --
---     psql postgresql://localhost/vinology_core -f migrations/001_user_wishlist.sql
+--     psql postgresql://localhost/bigsur_core -f migrations/001_user_wishlist.sql
 --
 -- `work_id` referencia el catálogo (works) solo para integridad: si un disco
 -- desaparece de core, su entrada de wishlist se limpia sola (CASCADE). Borrar un

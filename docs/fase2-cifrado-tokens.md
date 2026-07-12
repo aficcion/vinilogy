@@ -16,7 +16,7 @@ Piezas:
 
 ## 1. Gestión de la clave
 
-- **`VINYLBE_TOKENS_KEY`**: secreto largo aleatorio, el **mismo** en el entorno de v2
+- **`VINILOGY_TOKENS_KEY`**: secreto largo aleatorio, el **mismo** en el entorno de v2
   y de core. Nunca en el repo, nunca en la DB (así el volcado por sí solo no descifra).
 - Generar: `openssl rand -base64 48`
 - Guardar: gestor de secretos del hosting / variable de entorno del proceso.
@@ -38,7 +38,7 @@ de `STORE_FRESHNESS_MAX_DAYS`):
 ```python
 # Clave de cifrado de tokens OAuth (Fase 2). Ausente → se escribe en claro
 # (app_encrypt_token hace passthrough). Debe coincidir con la de core.
-_TOKENS_KEY = os.environ.get("VINYLBE_TOKENS_KEY") or None
+_TOKENS_KEY = os.environ.get("VINILOGY_TOKENS_KEY") or None
 ```
 
 En `upsert_oauth_credential`, envolver los tokens con `app_encrypt_token(...)` en el
@@ -76,7 +76,7 @@ Notas:
 ## 3. Cambio en core (repo aparte) — leer descifrando
 
 Donde core lea estos tokens para sincronizar, envolver la columna con
-`app_decrypt_token(col, :key)` y pasar `VINYLBE_TOKENS_KEY`:
+`app_decrypt_token(col, :key)` y pasar `VINILOGY_TOKENS_KEY`:
 
 ```sql
 SELECT app_decrypt_token(oauth_token,        :tokens_key) AS oauth_token,
@@ -95,7 +95,7 @@ puede desplegar este cambio **antes o después** del backfill sin romperse.
 
 Gracias al diseño tolerante el orden es flexible, pero el recomendado:
 
-1. **Clave** `VINYLBE_TOKENS_KEY` en el entorno de v2 y de core (mismo valor).
+1. **Clave** `VINILOGY_TOKENS_KEY` en el entorno de v2 y de core (mismo valor).
 2. **Aplicar migración 004** a core (crea pgcrypto + funciones + backfill de las filas
    en claro). A partir de aquí las filas heredadas quedan cifradas.
 3. **Desplegar core** con la lectura vía `app_decrypt_token`.

@@ -1,4 +1,4 @@
-/* Vinylbe v2 — buscador type-ahead + multi-select (§6).
+/* Vinilogy — buscador type-ahead + multi-select (§6).
  *
  * Progresivo: si el JS no carga, el <form> sigue haciendo GET /buscar?q=… (texto
  * libre, búsqueda §1). Con JS: al teclear (debounce ~180ms) pide /api/suggest y

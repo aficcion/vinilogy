@@ -24,10 +24,10 @@ from app.domains.users import oauth  # noqa: F401 (identidad OAuth)
 # Nombre de la cookie de sesión (httponly, server-side).
 SESSION_COOKIE = "vb_session"
 
-# Login-dev: solo existe si VINYLBE_DEV_LOGIN=1. Es el gancho de prueba de la capa
+# Login-dev: solo existe si VINILOGY_DEV_LOGIN=1. Es el gancho de prueba de la capa
 # personal SIN pasar por OAuth real. En prod NO se monta el endpoint.
 import os
-DEV_LOGIN_ENABLED = os.environ.get("VINYLBE_DEV_LOGIN") == "1"
+DEV_LOGIN_ENABLED = os.environ.get("VINILOGY_DEV_LOGIN") == "1"
 
 
 # ---------------------------------------------------------------------------

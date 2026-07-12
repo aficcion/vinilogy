@@ -41,7 +41,7 @@ DISCOGS_REQUEST_TOKEN_URL = "https://api.discogs.com/oauth/request_token"
 DISCOGS_AUTHORIZE_URL = "https://www.discogs.com/oauth/authorize"
 DISCOGS_ACCESS_TOKEN_URL = "https://api.discogs.com/oauth/access_token"
 DISCOGS_IDENTITY_URL = "https://api.discogs.com/oauth/identity"
-DISCOGS_USER_AGENT = "Vinylbe/2.0 +https://vinylbe.local"
+DISCOGS_USER_AGENT = "Vinilogy/2.0 +https://vinylbe.local"
 
 LASTFM_AUTH_URL = "http://www.last.fm/api/auth/"
 LASTFM_API_ROOT = "https://ws.audioscrobbler.com/2.0/"
@@ -65,7 +65,7 @@ _NET_TIMEOUT = 10  # s — degradación honesta ante red lenta.
 # ---------------------------------------------------------------------------
 
 def base_url():
-    return (os.environ.get("VINYLBE_BASE_URL") or "http://localhost:7788").rstrip("/")
+    return (os.environ.get("VINILOGY_BASE_URL") or "http://localhost:7788").rstrip("/")
 
 
 def config():

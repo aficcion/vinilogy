@@ -21,7 +21,7 @@ máquina — Florent, el nightly de tiendas): respetar `Retry-After` en 429 con 
 corto y DEGRADAR; nunca martillear. Un set "ya intentado" con TTL evita re-pedir
 works ya intentados (con o sin éxito) en cada render.
 
-Flag `VINYLBE_COVER_BACKFILL` (default ON si hay credenciales; OFF si faltan →
+Flag `VINILOGY_COVER_BACKFILL` (default ON si hay credenciales; OFF si faltan →
 no-op silencioso). El fetch es fire-and-forget: si el worker cae, la web sigue.
 """
 import os
@@ -38,7 +38,7 @@ log = logging.getLogger("vinylbe.covers")
 
 # --- Configuración -----------------------------------------------------------
 
-_UA = "Vinylbe/2.0"
+_UA = "Vinilogy/2.0"
 _API = "https://api.discogs.com"
 _TIMEOUT = 6.0            # s por request a Discogs (+1 retry)
 _RATE_MIN_INTERVAL = 1.1  # s entre requests (~54/min < 55 objetivo < 60/min)
@@ -57,7 +57,7 @@ def _configured():
 
 def _enabled():
     """Flag: default ON si hay credenciales; OFF si el usuario lo apaga o faltan."""
-    flag = (os.environ.get("VINYLBE_COVER_BACKFILL") or "").strip().lower()
+    flag = (os.environ.get("VINILOGY_COVER_BACKFILL") or "").strip().lower()
     if flag in ("0", "false", "off", "no"):
         return False
     return _configured()

@@ -1,17 +1,17 @@
-# Vinylbe v2 — M0
+# Vinilogy — M0
 
-Reconstrucción de Vinylbe sobre la BD canónica **`vinology_core`**. Web de
+Reconstrucción de Vinilogy sobre la BD canónica **`bigsur_core`**. Web de
 recomendación de vinilos guiada por búsqueda. **M0** entrega el esqueleto y el
 contrato de datos: **buscar → ficha de obra con ediciones en vinilo y precios**,
 end-to-end. Sin motor de recomendación, sin embeddings, sin auth (eso es M1+).
 
-Diseño completo: `~/Vinylbe/docs/DESIGN-vinylbe-v2-core.md`.
+Diseño completo: `~/Vinilogy/docs/DESIGN-vinylbe-v2-core.md`.
 
 ## Fuente de datos
-Única fuente: `vinology_core`. La app **solo lee** (jamás hace DDL). DSN por env:
+Única fuente: `bigsur_core`. La app **solo lee** (jamás hace DDL). DSN por env:
 
 ```
-VINYLBE_DB_DSN=postgresql://localhost/vinology_core   # default
+VINILOGY_DB_DSN=postgresql://localhost/bigsur_core   # default
 ```
 
 ## Arrancar
@@ -21,7 +21,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # ajusta si hace falta
 
-VINYLBE_DB_DSN=postgresql://localhost/vinology_core \
+VINILOGY_DB_DSN=postgresql://localhost/bigsur_core \
   uvicorn app.main:app --reload --port 7788
 ```
 
@@ -47,7 +47,7 @@ código != 0 si algo falla.
 ```
 app/
   main.py            FastAPI: rutas Jinja
-  db.py              pool psycopg2 + queries canónicas contra vinology_core
+  db.py              pool psycopg2 + queries canónicas contra bigsur_core
   domains/
     catalog/         búsqueda de works/artists, ficha, discografía
     pricing/         lectura de marketplace_listings, orden por precio, frescura

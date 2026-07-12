@@ -1,4 +1,4 @@
-/* Vinylbe v2 — wishlist (M3c · Fase 1).
+/* Vinilogy — wishlist (M3c · Fase 1).
  *
  * Dos fuentes de verdad según el estado de sesión (lo dice `body[data-auth]`):
  *   - ANÓNIMO: los ids viven en localStorage (`vb-wishlist`). Cero cuenta. Para

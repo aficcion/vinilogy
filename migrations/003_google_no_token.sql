@@ -1,4 +1,4 @@
--- Vinylbe v2 — Fase 1 (minimización de datos): dejar de almacenar los tokens OAuth
+-- Vinilogy — Fase 1 (minimización de datos): dejar de almacenar los tokens OAuth
 -- de Google. Google es SOLO identidad (no hay colección/escucha que sincronizar: ver
 -- 002_google_oauth.sql), así que su access/refresh token es peso muerto y un riesgo
 -- innecesario at-rest. Relajamos el CHECK para que una credencial de Google sea
@@ -6,7 +6,7 @@
 -- de los tokens que core SÍ consume (Discogs, Last.fm) es la Fase 2.
 --
 -- Aplicar UNA vez, fuera de la app:
---     psql postgresql://localhost/vinology_core -f migrations/003_google_no_token.sql
+--     psql postgresql://localhost/bigsur_core -f migrations/003_google_no_token.sql
 
 ALTER TABLE user_oauth_credentials DROP CONSTRAINT user_oauth_creds_shape;
 

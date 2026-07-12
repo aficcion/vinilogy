@@ -1,4 +1,4 @@
-"""Vinylbe v2 — M3c: capa personal completa (identidad OAuth + wishlist + cuenta).
+"""Vinilogy — M3c: capa personal completa (identidad OAuth + wishlist + cuenta).
 
 FastAPI + Jinja server-rendered. Sobre M0/M1/M2 (buscar → ficha → reco anónima)
 añade la capa de usuario:
@@ -6,7 +6,7 @@ añade la capa de usuario:
     persistente cross-device), Discogs (colección → gap) y Last.fm (escucha → reco).
     Cada conexión tiene un propósito distinto; conectar un 2º proveedor estando
     dentro lo VINCULA a tu cuenta (ver oauth.map_identity), no crea otra. Más un
-    LOGIN-DEV (`VINYLBE_DEV_LOGIN=1`) para probar la capa personal sin OAuth real.
+    LOGIN-DEV (`VINILOGY_DEV_LOGIN=1`) para probar la capa personal sin OAuth real.
   - WISHLIST: anónima en el navegador (localStorage), sin cuenta; con sesión, en
     `user_wishlist` (BD) y cross-device. El "invitado" se retiró (la wishlist
     anónima cubre ese hueco).
@@ -18,7 +18,7 @@ añade la capa de usuario:
     colección cuando hay usuario logueado.
 
 Arranque:
-    VINYLBE_DB_DSN=postgresql://localhost/vinology_core VINYLBE_DEV_LOGIN=1 \
+    VINILOGY_DB_DSN=postgresql://localhost/bigsur_core VINILOGY_DEV_LOGIN=1 \
         uvicorn app.main:app --port 7788 --reload
 """
 import logging
@@ -41,7 +41,7 @@ from app.domains.users import oauth
 
 # Logging al arranque (sin esto, ni los warnings de covers.py salían a ningún sitio).
 logging.basicConfig(
-    level=os.environ.get("VINYLBE_LOG_LEVEL", "INFO"),
+    level=os.environ.get("VINILOGY_LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 log = logging.getLogger("vinylbe")
@@ -50,7 +50,7 @@ _HERE = os.path.dirname(__file__)
 _TEMPLATES_DIR = os.path.join(_HERE, "web", "templates")
 _STATIC_DIR = os.path.join(_HERE, "web", "static")
 
-app = FastAPI(title="Vinylbe v2", version="0.0.3-m3a")
+app = FastAPI(title="Vinilogy", version="0.0.3-m3a")
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 templates = Jinja2Templates(directory=_TEMPLATES_DIR)
 
@@ -61,8 +61,8 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Cookies Secure solo en prod (sobre HTTPS). En dev local (http) queda off o el
-# navegador no enviaría la cookie. Actívalo con VINYLBE_SECURE_COOKIES=1.
-_SECURE_COOKIES = os.environ.get("VINYLBE_SECURE_COOKIES") == "1"
+# navegador no enviaría la cookie. Actívalo con VINILOGY_SECURE_COOKIES=1.
+_SECURE_COOKIES = os.environ.get("VINILOGY_SECURE_COOKIES") == "1"
 
 # Vida de la cookie de sesión (segundos), espejo de db.SESSION_TTL_DAYS.
 from app import db  # noqa: E402
@@ -908,7 +908,7 @@ def account_delete(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# LOGIN-DEV guardado (SOLO si VINYLBE_DEV_LOGIN=1; en prod NO se monta)
+# LOGIN-DEV guardado (SOLO si VINILOGY_DEV_LOGIN=1; en prod NO se monta)
 # ---------------------------------------------------------------------------
 # Es el gancho de prueba de la capa personal SIN OAuth real (M3b). Permite
 # identificarte como un usuario EXISTENTE (p.ej. user 1 = Carlos) para verificar

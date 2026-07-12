@@ -28,7 +28,7 @@ Leyenda de esfuerzo/dueño:
   `httponly` + `samesite="lax"` pero **no `secure`**. Sobre HTTPS público, la sesión
   (90 días) y la cookie CSRF de OAuth pueden viajar en claro → SameSite deja de proteger.
 - **Qué hacer**: `secure=True` en ambas cookies y en sus `delete_cookie`, condicionado a
-  entorno (p.ej. `VINYLBE_SECURE_COOKIES=1` en prod; en dev local sobre http queda off o
+  entorno (p.ej. `VINILOGY_SECURE_COOKIES=1` en prod; en dev local sobre http queda off o
   no habría login). Terminar TLS + HSTS en el proxy.
 - **Verificación**: en prod, la respuesta de login trae `Set-Cookie: ...; Secure`.
 
@@ -94,9 +94,9 @@ Leyenda de esfuerzo/dueño:
 
 | Variable | Por qué es P0 |
 |---|---|
-| `VINYLBE_DEV_LOGIN` **sin definir** | Si queda `=1`, `POST /dev/login/{id}` es **bypass total de auth** (`main.py`, entra como cualquier usuario) |
-| `VINYLBE_BASE_URL` = dominio real https | Construye los `redirect_uri` de OAuth; si falta, **los 3 logins OAuth se rompen** |
-| `VINYLBE_DB_DSN` = DSN de prod con credenciales | El default `localhost/vinology_core` no vale en prod |
+| `VINILOGY_DEV_LOGIN` **sin definir** | Si queda `=1`, `POST /dev/login/{id}` es **bypass total de auth** (`main.py`, entra como cualquier usuario) |
+| `VINILOGY_BASE_URL` = dominio real https | Construye los `redirect_uri` de OAuth; si falta, **los 3 logins OAuth se rompen** |
+| `VINILOGY_DB_DSN` = DSN de prod con credenciales | El default `localhost/bigsur_core` no vale en prod |
 | `DISCOGS_KEY` / `DISCOGS_SECRET` presentes | Si faltan, el worker de covers no arranca (`covers._enabled()` False) → **secciones casi vacías** (83% de works sin portada dependen del backfill) |
 | Migraciones **003** aplicadas al core de prod | Si no, el login de Google falla (CHECK viejo vs código que pasa `None`) |
 
