@@ -22,6 +22,15 @@ from contextlib import contextmanager
 
 DSN = os.environ.get("VINILOGY_DB_DSN", "postgresql://localhost/vinology_core")
 
+# Tipo del embedding en la BD conectada: 'vector' (core/dev, full precision) o
+# 'halfvec' (BD de servicio slim, media precisión). El KNN por índice (`<=>`)
+# necesita que el LITERAL del seed se castee al MISMO tipo que la columna+índice,
+# o el planner no usa el HNSW. La aritmética de centroides castea la columna a
+# vector(512) explícitamente, así que funciona con ambos tipos sin tocar nada más.
+_EMB = os.environ.get("VINILOGY_EMBED_TYPE", "vector")
+if _EMB not in ("vector", "halfvec"):
+    raise ValueError(f"VINILOGY_EMBED_TYPE inválido: {_EMB!r} (usa 'vector' o 'halfvec')")
+
 # Umbral de frescura de datos de tienda (días). Contrato heredado del proyecto.
 STORE_FRESHNESS_MAX_DAYS = int(os.environ.get("VINILOGY_STORE_FRESHNESS_DAYS", "3"))
 
@@ -1483,7 +1492,7 @@ def recommend_similar_to_work(work_id, limit=12, exclude_user_id=None):
             SELECT DISTINCT ON (w.primary_artist_id)
                    w.id,
                    w.primary_artist_id AS artist_id,
-                   (w.embedding <=> %(seed)s::vector) AS dist
+                   (w.embedding <=> %(seed)s::{emb}) AS dist
             FROM works w
             JOIN artists a ON a.id = w.primary_artist_id
             WHERE w.embedding IS NOT NULL
@@ -1493,10 +1502,10 @@ def recommend_similar_to_work(work_id, limit=12, exclude_user_id=None):
               AND w.id <> %(work_id)s
               AND NOT (w.id = ANY(%(owned)s::bigint[]))
               AND {artist_ok}
-            ORDER BY w.primary_artist_id, w.embedding <=> %(seed)s::vector
+            ORDER BY w.primary_artist_id, w.embedding <=> %(seed)s::{emb}
             LIMIT %(cand)s
         )
-    """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL)
+    """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL, emb=_EMB)
     sql = cand_sql + _RECO_PHASE2_SQL
 
     with _cursor() as cur:
@@ -1547,7 +1556,7 @@ def recommend_similar_to_artist(artist_id, limit=12, exclude_user_id=None):
 
         # Centroide sobre sus works con vinilo/obra de verdad → literal de texto.
         cur.execute("""
-            SELECT avg(w.embedding)::vector(512)::text AS centroid, count(*) AS n
+            SELECT avg(w.embedding::vector(512))::vector(512)::text AS centroid, count(*) AS n
             FROM works w
             WHERE w.primary_artist_id = %(id)s
               AND w.embedding IS NOT NULL
@@ -1576,7 +1585,7 @@ def recommend_similar_to_artist(artist_id, limit=12, exclude_user_id=None):
                 SELECT DISTINCT ON (w.primary_artist_id)
                        w.id,
                        w.primary_artist_id AS artist_id,
-                       (w.embedding <=> %(seed)s::vector) AS dist
+                       (w.embedding <=> %(seed)s::{emb}) AS dist
                 FROM works w
                 JOIN artists a ON a.id = w.primary_artist_id
                 WHERE w.embedding IS NOT NULL
@@ -1585,10 +1594,10 @@ def recommend_similar_to_artist(artist_id, limit=12, exclude_user_id=None):
                   AND w.primary_artist_id <> %(artist_id)s
                   AND NOT (w.id = ANY(%(owned)s::bigint[]))
                   AND {artist_ok}
-                ORDER BY w.primary_artist_id, w.embedding <=> %(seed)s::vector
+                ORDER BY w.primary_artist_id, w.embedding <=> %(seed)s::{emb}
                 LIMIT %(cand)s
             )
-        """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL)
+        """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL, emb=_EMB)
         sql = cand_sql + _RECO_PHASE2_SQL
 
         owned = _owned_work_ids(cur, exclude_user_id) if exclude_user_id else []
@@ -1635,7 +1644,7 @@ def similar_by_press(work_id, limit=8):
             SELECT DISTINCT ON (w.primary_artist_id)
                    w.id,
                    w.primary_artist_id AS artist_id,
-                   (w.embedding_press <=> %(seed)s::vector) AS dist
+                   (w.embedding_press <=> %(seed)s::{emb}) AS dist
             FROM works w
             JOIN artists a ON a.id = w.primary_artist_id
             WHERE w.embedding_press IS NOT NULL
@@ -1644,10 +1653,10 @@ def similar_by_press(work_id, limit=8):
               AND w.primary_artist_id <> %(seed_artist)s
               AND w.id <> %(work_id)s
               AND {artist_ok}
-            ORDER BY w.primary_artist_id, w.embedding_press <=> %(seed)s::vector
+            ORDER BY w.primary_artist_id, w.embedding_press <=> %(seed)s::{emb}
             LIMIT %(cand)s
         )
-    """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL)
+    """.format(artist_ok=_ARTIST_NOT_MORRALLA_SQL, emb=_EMB)
     sql = cand_sql + _RECO_PHASE2_SQL
 
     with _cursor() as cur:
@@ -2524,7 +2533,7 @@ def listening_centroid_literal(cur, user_id, period=_LISTEN_PERIOD):
         """
         WITH album_sig AS (
             -- señal álbum-nivel: embedding del work escuchado, peso log1p(pc).
-            SELECT w.embedding AS emb,
+            SELECT w.embedding::vector(512) AS emb,
                    ln(1 + ula.playcount) AS wgt
             FROM user_lastfm_albums ula
             JOIN works w ON w.id = ula.work_id
@@ -2539,7 +2548,7 @@ def listening_centroid_literal(cur, user_id, period=_LISTEN_PERIOD):
                    %(aw)s * ln(1 + ula.playcount) AS wgt
             FROM user_lastfm_artists ula
             JOIN LATERAL (
-                SELECT avg(w.embedding)::vector(512) AS centroid, count(*) AS n
+                SELECT avg(w.embedding::vector(512))::vector(512) AS centroid, count(*) AS n
                 FROM works w
                 WHERE w.primary_artist_id = ula.artist_id
                   AND w.embedding IS NOT NULL
