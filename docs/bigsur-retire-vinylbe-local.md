@@ -79,10 +79,34 @@ un solo Postgres, staging ordenado en su schema, y el port se simplifica a in-DB
   viejo. Verificar que Vinilogy sigue mostrando precios (`/obra/{id}` con tienda).
 - Dejar correr 1–2 noches en verde en paralelo (camino viejo aún vivo) antes de cortar.
 
-## Cutover + borrado
-1. Cuando el camino nuevo lleve 1–2 noches en verde: desactivar el loader/port viejos
-   (los que apuntan a `vinylbe_local`).
-2. **`DROP DATABASE vinylbe_local;`** (recupera el ~25 MB restante + retira la DB).
+## Estado real (12-jul-2026): Paso B ~90% hecho
+- El camino NUEVO (`ingest/stores` → `core.store_listings` → resolve →
+  `marketplace_listings`) **ya existe y cubre las 7 tiendas** (incl. las nuevas
+  `lacasadeldisco`, `marcapasos`). `marketplace_listings` ya las muestra.
+- Lo único que mantiene vivo `vinylbe_local` es el **writer nocturno VIEJO**, ya
+  identificado (ver abajo).
+
+### El writer fantasma de las 05:00 (IDENTIFICADO)
+No es un job de tiendas: va **colgado dentro de la auditoría de Florent**.
+```
+launchd com.vinology.nightly-audit @ 4:30
+  → ~/vinology/nightly_audit.py
+      ├─ step_refresh_stores  → subprocess `python -m scripts.scrapers.run --store all`
+      │                         en ~/Vinylbe (scrapers VIEJOS, db_pg.py → vinylbe_local)
+      └─ step_port_store_listings → ~/vinology-core/ingest/port_store_listings.py
+                                    (vinylbe_local.store_listings → core.marketplace_listings)
+```
+
+## Cutover + borrado (concreto)
+1. En `~/vinology/nightly_audit.py`: sustituir `step_refresh_stores` (scrapers viejos
+   de `~/Vinylbe` → vinylbe_local) y `step_port_store_listings` por el **camino nuevo**
+   (`ingest/stores` scrape → `core.store_listings` → resolve → `marketplace_listings`).
+   *(Repo de Florent: coordinar — suele haber sesiones autónomas activas.)*
+2. Correr 1–2 noches y verificar `marketplace_listings` con las 7 tiendas frescas por el
+   camino nuevo (paridad de nº de filas / `max(last_seen_at)` por tienda).
+3. **`DROP DATABASE vinylbe_local;`** (retira la DB entera).
+4. Retirar el andamiaje viejo: `~/Vinylbe/scripts/scrapers`, `port_store_listings.py`,
+   los defaults `SRC_DSN=vinylbe_local` y el fallback proto de Florent.
 
 ---
 
