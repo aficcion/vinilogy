@@ -6,7 +6,7 @@
 -- de los tokens que core SÍ consume (Discogs, Last.fm) es la Fase 2.
 --
 -- Aplicar UNA vez, fuera de la app:
---     psql postgresql://localhost/bigsur_core -f migrations/003_google_no_token.sql
+--     psql postgresql://localhost/vinology_core -f migrations/003_google_no_token.sql
 
 ALTER TABLE user_oauth_credentials DROP CONSTRAINT user_oauth_creds_shape;
 

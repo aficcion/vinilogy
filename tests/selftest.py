@@ -1,4 +1,4 @@
-"""Selftest v0 de Vinilogy — red de seguridad contra `bigsur_core`.
+"""Selftest v0 de Vinilogy — red de seguridad contra `vinology_core`.
 
 Checks DUROS. Los fixtures se DERIVAN con SQL (no hay títulos hardcodeados
 frágiles): si cambian los datos de core, el test sigue eligiendo una obra
@@ -2046,7 +2046,7 @@ def run_http_smoke(fx):
 
 def main():
     print("== Vinilogy selftest (core: {}) ==".format(
-        os.environ.get("VINILOGY_DB_DSN", "postgresql://localhost/bigsur_core")))
+        os.environ.get("VINILOGY_DB_DSN", "postgresql://localhost/vinology_core")))
     fx = derive_fixtures()
     print("Fixtures: {}".format(fx))
     print("-" * 60)

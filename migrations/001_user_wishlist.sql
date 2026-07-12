@@ -4,7 +4,7 @@
 -- que `app_users`/`user_sessions`: la app escribe aquí, pero nunca hace DDL en
 -- runtime. Esta migración se aplica UNA vez, fuera de la app:
 --
---     psql postgresql://localhost/bigsur_core -f migrations/001_user_wishlist.sql
+--     psql postgresql://localhost/vinology_core -f migrations/001_user_wishlist.sql
 --
 -- `work_id` referencia el catálogo (works) solo para integridad: si un disco
 -- desaparece de core, su entrada de wishlist se limpia sola (CASCADE). Borrar un

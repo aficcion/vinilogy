@@ -18,7 +18,7 @@ añade la capa de usuario:
     colección cuando hay usuario logueado.
 
 Arranque:
-    VINILOGY_DB_DSN=postgresql://localhost/bigsur_core VINILOGY_DEV_LOGIN=1 \
+    VINILOGY_DB_DSN=postgresql://localhost/vinology_core VINILOGY_DEV_LOGIN=1 \
         uvicorn app.main:app --port 7788 --reload
 """
 import logging

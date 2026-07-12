@@ -96,7 +96,7 @@ Leyenda de esfuerzo/dueño:
 |---|---|
 | `VINILOGY_DEV_LOGIN` **sin definir** | Si queda `=1`, `POST /dev/login/{id}` es **bypass total de auth** (`main.py`, entra como cualquier usuario) |
 | `VINILOGY_BASE_URL` = dominio real https | Construye los `redirect_uri` de OAuth; si falta, **los 3 logins OAuth se rompen** |
-| `VINILOGY_DB_DSN` = DSN de prod con credenciales | El default `localhost/bigsur_core` no vale en prod |
+| `VINILOGY_DB_DSN` = DSN de prod con credenciales | El default `localhost/vinology_core` no vale en prod |
 | `DISCOGS_KEY` / `DISCOGS_SECRET` presentes | Si faltan, el worker de covers no arranca (`covers._enabled()` False) → **secciones casi vacías** (83% de works sin portada dependen del backfill) |
 | Migraciones **003** aplicadas al core de prod | Si no, el login de Google falla (CHECK viejo vs código que pasa `None`) |
 

@@ -1,6 +1,6 @@
 """Acceso a datos de Vinilogy.
 
-Única fuente de datos: `bigsur_core` (DSN en env `VINILOGY_DB_DSN`).
+Única fuente de datos: `vinology_core` (DSN en env `VINILOGY_DB_DSN`).
 La app SOLO LEE — jamás hace DDL contra core.
 
 Todas las queries son parametrizadas (nada de f-strings con input de usuario).
@@ -20,7 +20,7 @@ from psycopg2.pool import ThreadedConnectionPool
 from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 
-DSN = os.environ.get("VINILOGY_DB_DSN", "postgresql://localhost/bigsur_core")
+DSN = os.environ.get("VINILOGY_DB_DSN", "postgresql://localhost/vinology_core")
 
 # Umbral de frescura de datos de tienda (días). Contrato heredado del proyecto.
 STORE_FRESHNESS_MAX_DAYS = int(os.environ.get("VINILOGY_STORE_FRESHNESS_DAYS", "3"))

@@ -11,12 +11,12 @@ Piezas en el repo:
 
 ---
 
-## Base de datos — `bigsur_core` en Railway Postgres (decidido)
+## Base de datos — `vinology_core` en Railway Postgres (decidido)
 
-`bigsur_core` vivirá en una **Postgres de Railway**. Implicaciones a resolver en el
+`vinology_core` vivirá en una **Postgres de Railway**. Implicaciones a resolver en el
 setup (no en código):
 - **Cargar el catálogo** en esa Postgres: es un volcado grande (millones de releases +
-  las tablas de la capa usuario). Restaurar un `pg_dump` de `bigsur_core` en la
+  las tablas de la capa usuario). Restaurar un `pg_dump` de `vinology_core` en la
   instancia de Railway. Ese import lo hace el pipeline/proceso de core, no la app.
 - **Conexión**: añade el plugin Postgres en el proyecto de Railway y pon
   `VINILOGY_DB_DSN` = la connection string interna (p.ej. referenciando
@@ -31,7 +31,7 @@ setup (no en código):
 
 | Variable | Valor | Notas |
 |---|---|---|
-| `VINILOGY_DB_DSN` | DSN de la Postgres con `bigsur_core` (prod) | Bloqueante #1. Con `?sslmode=require` si aplica |
+| `VINILOGY_DB_DSN` | DSN de la Postgres con `vinology_core` (prod) | Bloqueante #1. Con `?sslmode=require` si aplica |
 | `VINILOGY_BASE_URL` | `https://<tu-dominio>` | Debe casar EXACTO con los redirect URIs registrados |
 | `VINILOGY_SECURE_COOKIES` | `1` | Cookies con flag Secure (estás sobre HTTPS) |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | de Google Cloud Console | Redirect: `<BASE_URL>/auth/google/callback` |

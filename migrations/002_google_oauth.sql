@@ -7,7 +7,7 @@
 --      identidad, no hay colección/escucha que sincronizar).
 --
 -- Aplicar UNA vez, fuera de la app:
---     psql postgresql://localhost/bigsur_core -f migrations/002_google_oauth.sql
+--     psql postgresql://localhost/vinology_core -f migrations/002_google_oauth.sql
 --
 -- Se aplica en autocommit (psql -f sin -1): el ADD VALUE queda comprometido antes
 -- de que el ALTER TABLE use el literal 'google'. NO envolver en BEGIN/COMMIT.
