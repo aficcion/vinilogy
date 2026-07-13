@@ -3155,33 +3155,36 @@ def resolve_lastfm_user(user_id):
     por MusicBrainz id. `artists.mb_artist_id` y `releases.mb_release_id` son ÚNICOS
     e indexados en el catálogo → JOIN directo por índice, acotado a las ~150 filas
     del usuario (nada de agregar el catálogo entero). Mismos FKs que el port del core."""
+    # Subconsulta CORRELACIONADA (no UPDATE..FROM): fuerza un lookup por el índice
+    # único en cada una de las ~150 filas del usuario. Con UPDATE..FROM el planner
+    # elegía un seq scan de artists (9,7 GB) → minutos; así son milisegundos.
     with _cursor() as cur:
-        # artistas: artist_id por mb_artist_id (índice único)
+        # artistas: artist_id por mb_artist_id
         cur.execute(
             """
             UPDATE user_lastfm_artists ula
-               SET artist_id = a.id,
-                   resolved_at = COALESCE(ula.resolved_at, now())
-              FROM artists a
+               SET artist_id = (SELECT a.id FROM artists a
+                                 WHERE a.mb_artist_id = ula.artist_mbid),
+                   resolved_at = now()
              WHERE ula.user_id = %(u)s
-               AND a.mb_artist_id = NULLIF(ula.artist_mbid, '')
+               AND ula.artist_mbid IS NOT NULL AND ula.artist_mbid <> ''
             """, {"u": user_id})
-        # álbumes: work_id por mb_release_id (resolved_at se ancla al work_id)
+        # álbumes: work_id por mb_release_id
         cur.execute(
             """
             UPDATE user_lastfm_albums ula
-               SET work_id = r.work_id,
-                   resolved_at = COALESCE(ula.resolved_at, now())
-              FROM releases r
+               SET work_id = (SELECT r.work_id FROM releases r
+                               WHERE r.mb_release_id = ula.album_mbid),
+                   resolved_at = now()
              WHERE ula.user_id = %(u)s
-               AND r.mb_release_id = NULLIF(ula.album_mbid, '')
+               AND ula.album_mbid IS NOT NULL AND ula.album_mbid <> ''
             """, {"u": user_id})
         # álbumes: artist_id por mb_artist_id (independiente del work_id)
         cur.execute(
             """
             UPDATE user_lastfm_albums ula
-               SET artist_id = a.id
-              FROM artists a
+               SET artist_id = (SELECT a.id FROM artists a
+                                 WHERE a.mb_artist_id = ula.artist_mbid)
              WHERE ula.user_id = %(u)s
-               AND a.mb_artist_id = NULLIF(ula.artist_mbid, '')
+               AND ula.artist_mbid IS NOT NULL AND ula.artist_mbid <> ''
             """, {"u": user_id})
