@@ -514,6 +514,9 @@ def mi(request: Request):
         return _render(request, "mi.html", user=None, anon=True)
     summary = users.collection_summary(user)
     uid = user["id"]
+    # Refresco perezoso de Last.fm: si los datos están viejos (>24h), re-sincroniza en
+    # segundo plano (no bloquea; entra para la próxima carga). Como Florent.
+    lastfm_sync.maybe_refresh_lastfm(uid)
     # Las tres recomendaciones de /mi son independientes y cada una ronda ~1s
     # (KNN de dos fases + join de precios en el gap). En serie sumaban ~2,6s, muy
     # cerca del presupuesto de 3s; se lanzan en PARALELO (el pool es

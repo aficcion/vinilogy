@@ -3188,3 +3188,43 @@ def resolve_lastfm_user(user_id):
              WHERE ula.user_id = %(u)s
                AND ula.artist_mbid IS NOT NULL AND ula.artist_mbid <> ''
             """, {"u": user_id})
+
+
+def upsert_lastfm_profile(user_id, username, scrobble_count, country):
+    """Perfil Last.fm del usuario + sello de frescura (updated_at). Lo escribe el
+    sync al terminar; sirve de señal para el refresco perezoso."""
+    with _cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO user_profile_lastfm
+                (user_id, lastfm_username, scrobble_count, country, updated_at)
+            VALUES (%(u)s, %(n)s, %(s)s, %(c)s, now())
+            ON CONFLICT (user_id) DO UPDATE SET
+                lastfm_username = EXCLUDED.lastfm_username,
+                scrobble_count = EXCLUDED.scrobble_count,
+                country = EXCLUDED.country,
+                updated_at = now()
+            """, {"u": user_id, "n": username,
+                  "s": int(scrobble_count or 0), "c": country})
+
+
+def lastfm_username(user_id):
+    """Username de Last.fm del usuario (de su credencial OAuth) o None."""
+    with _cursor() as cur:
+        cur.execute(
+            "SELECT provider_username FROM user_oauth_credentials "
+            "WHERE user_id = %(u)s AND provider = 'lastfm'", {"u": user_id})
+        row = cur.fetchone()
+        return row["provider_username"] if row else None
+
+
+def lastfm_is_stale(user_id, ttl_hours=24):
+    """True si el usuario nunca sincronizó Last.fm o su último sync es más viejo que
+    `ttl_hours`. Se calcula en SQL (evita líos de zona horaria)."""
+    with _cursor() as cur:
+        cur.execute(
+            "SELECT NOT COALESCE(bool_or(updated_at > now() - make_interval(hours => %(h)s)), false) AS stale "
+            "FROM user_profile_lastfm WHERE user_id = %(u)s",
+            {"u": user_id, "h": ttl_hours})
+        row = cur.fetchone()
+        return bool(row["stale"]) if row and row["stale"] is not None else True
