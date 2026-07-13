@@ -54,6 +54,10 @@ _STATIC_DIR = os.path.join(_HERE, "web", "static")
 app = FastAPI(title="Vinilogy", version="0.0.3-m3a")
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 templates = Jinja2Templates(directory=_TEMPLATES_DIR)
+# Defaults i18n para CUALQUIER render (aunque no pase por _render): ES / identidad.
+# _render los sobrescribe por-petición con el idioma real y el `t` ligado.
+templates.env.globals["t"] = lambda s: s
+templates.env.globals["lang"] = i18n.DEFAULT
 
 # Rate limiting por IP (slowapi, en memoria → válido con 1 worker; ver deploy). Se
 # aplica solo a los endpoints caros (/api/suggest, /buscar) con @limiter.limit.
@@ -66,7 +70,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 _SECURE_COOKIES = os.environ.get("VINILOGY_SECURE_COOKIES") == "1"
 
 # Vida de la cookie de sesión (segundos), espejo de db.SESSION_TTL_DAYS.
-from app import db  # noqa: E402
+from app import db, i18n  # noqa: E402
 _COOKIE_MAX_AGE = db.SESSION_TTL_DAYS * 24 * 3600
 
 
@@ -105,6 +109,10 @@ def _owned_formats_map(user):
 
 def _render(request, name, status_code=200, **ctx):
     ctx["request"] = request
+    # Idioma de la petición + helper de traducción ligado a él (fallback a ES).
+    lang = i18n.resolve_lang(request)
+    ctx["lang"] = lang
+    ctx["t"] = lambda s: i18n.t(s, lang)
     # `user` disponible en TODAS las plantillas (cabecera): la resuelve el router
     # y lo pasa; si no, lo inferimos de la cookie para no romper vistas simples.
     if "user" not in ctx:
@@ -480,6 +488,21 @@ def artista_afines(request: Request, artist_id: int):
     covers.request_missing(similar)
     pricing.attach_cheapest(similar)
     return _render(request, "_artist_afines.html", similar=similar, user=user)
+
+
+@app.get("/lang/{code}")
+def set_lang(request: Request, code: str):
+    """Fija el idioma (cookie vb_lang) y vuelve a la página anterior. Sólo es/en.
+    Redirige SÓLO al path del referer (descarta host) para evitar redirects externos."""
+    from urllib.parse import urlparse
+    if code not in i18n.SUPPORTED:
+        code = i18n.DEFAULT
+    ref = urlparse(request.headers.get("referer") or "/")
+    back = (ref.path or "/") + (("?" + ref.query) if ref.query else "")
+    resp = RedirectResponse(url=back, status_code=303)
+    resp.set_cookie(i18n.LANG_COOKIE, code, max_age=_COOKIE_MAX_AGE,
+                    httponly=True, samesite="lax", secure=_SECURE_COOKIES)
+    return resp
 
 
 @app.get("/vibra", response_class=HTMLResponse)

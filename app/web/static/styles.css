@@ -126,6 +126,10 @@ code {
 .search button[type="submit"]:hover { background: var(--ink); }
 
 .topbar-user { display: flex; align-items: center; gap: 10px; white-space: nowrap; margin-left: auto; }
+.lang-switch { display: inline-flex; gap: 1px; font-family: "Geist Mono", monospace; font-size: 12px; }
+.lang-switch a { color: var(--ink-3); padding: 2px 6px; border-radius: 6px; text-decoration: none; }
+.lang-switch a:hover { color: var(--ink); }
+.lang-switch a.is-on { color: var(--ink); background: var(--accent-soft); font-weight: 600; }
 .nav-vibra { color: var(--accent-2); font-family: var(--display-font); font-size: 17px; font-style: italic; white-space: nowrap; }
 .nav-vibra:hover { color: var(--accent); }
 

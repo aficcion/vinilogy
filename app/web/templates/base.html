@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="{{ lang }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -16,30 +16,34 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=28">
+  <link rel="stylesheet" href="/static/styles.css?v=29">
 </head>
 <body data-auth="{{ 'user' if user else 'anon' }}" data-page="{% block page %}{% endblock %}">
   <header class="topbar">
     <a class="brand" href="/">Vinilogy</a>
     <form class="search" action="/buscar" method="get" role="search" data-typeahead>
       <input type="search" name="q" value="{{ q|default('') }}"
-             placeholder="Busca un disco o un artista…" autocomplete="off">
-      <button type="submit">Buscar</button>
+             placeholder="{{ t('Busca un disco o un artista…') }}" autocomplete="off">
+      <button type="submit">{{ t('Buscar') }}</button>
     </form>
-    <a class="nav-vibra" href="/vibra">Por vibra ✦</a>
+    <a class="nav-vibra" href="/vibra">{{ t('Por vibra ✦') }}</a>
     <nav class="topbar-user">
-      <a class="nav-wish" href="/wishlist" aria-label="Tu wishlist">
-        <span aria-hidden="true">♥</span> Wishlist<span class="nav-wish-count" hidden></span>
+      <a class="nav-wish" href="/wishlist" aria-label="{{ t('Tu wishlist') }}">
+        <span aria-hidden="true">♥</span> {{ t('Wishlist') }}<span class="nav-wish-count" hidden></span>
       </a>
-      <button class="theme-toggle" type="button" aria-label="Cambiar tema" onclick="vbToggleTheme()">◐</button>
+      <button class="theme-toggle" type="button" aria-label="{{ t('Cambiar tema') }}" onclick="vbToggleTheme()">◐</button>
+      <span class="lang-switch" aria-label="Language">
+        <a href="/lang/es"{% if lang == 'es' %} class="is-on"{% endif %}>ES</a>
+        <a href="/lang/en"{% if lang == 'en' %} class="is-on"{% endif %}>EN</a>
+      </span>
       {% if user %}
         <a class="nav-mi" href="/mi">{{ display_label }}</a>
-        <a class="nav-connect" href="/cuenta">Cuenta</a>
+        <a class="nav-connect" href="/cuenta">{{ t('Cuenta') }}</a>
         <form class="inline-form" action="/auth/logout" method="post">
-          <button class="linkish" type="submit">Salir</button>
+          <button class="linkish" type="submit">{{ t('Salir') }}</button>
         </form>
       {% else %}
-        <a class="nav-enter" href="/cuenta">Entrar o crear cuenta</a>
+        <a class="nav-enter" href="/cuenta">{{ t('Entrar o crear cuenta') }}</a>
       {% endif %}
     </nav>
   </header>
@@ -49,9 +53,9 @@
   </main>
 
   <footer class="footer">
-    <span>Vinilogy · precios de vinilo en tiendas independientes de España</span>
+    <span>{{ t('Vinilogy · precios de vinilo en tiendas independientes de España') }}</span>
     <span class="footer-sep">·</span>
-    <a href="/privacidad">Privacidad</a>
+    <a href="/privacidad">{{ t('Privacidad') }}</a>
   </footer>
   <script>
     function vbToggleTheme() {
