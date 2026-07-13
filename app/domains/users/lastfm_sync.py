@@ -20,6 +20,8 @@ from app.domains.users import oauth
 log = logging.getLogger(__name__)
 
 _API_ROOT = "https://ws.audioscrobbler.com/2.0/"
+# Last.fm resetea conexiones sin User-Agent propio (curl funciona, httpx por defecto no).
+_HEADERS = {"User-Agent": "Vinilogy/1.0 (+https://www.vinilogy.com)"}
 # 'overall' es el periodo que lee la reco por escucha (_LISTEN_PERIOD en db.py);
 # poblamos los tres para cubrir cualquier vista.
 _PERIODS = ("1month", "6month", "overall")
@@ -34,7 +36,7 @@ def sync_lastfm_user(user_id, username):
     if not api_key:
         return
     try:
-        with httpx.Client(timeout=12.0) as client:
+        with httpx.Client(timeout=12.0, headers=_HEADERS) as client:
             for period in _PERIODS:
                 artists = _fetch(client, api_key, "user.getTopArtists",
                                  "topartists", "artist", username, period)
