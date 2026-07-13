@@ -1,8 +1,11 @@
-fastapi
-uvicorn[standard]
-psycopg2-binary
-jinja2
-python-multipart
-httpx
-requests-oauthlib
-slowapi
+# Versiones fijadas al set desplegado en producción (VPS Contabo, 13-jul-2026).
+# Sin fijar, pip cogía fastapi/starlette nuevos (starlette 1.3.1) que rompían las
+# plantillas (TemplateResponse). No subas fastapi/starlette sin probar la home.
+fastapi==0.128.8
+uvicorn[standard]==0.39.0
+psycopg2-binary==2.9.12
+jinja2==3.1.6
+python-multipart==0.0.32
+httpx==0.28.1
+requests-oauthlib==2.0.0
+slowapi==0.1.10
