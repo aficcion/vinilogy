@@ -57,7 +57,7 @@ templates = Jinja2Templates(directory=_TEMPLATES_DIR)
 # Defaults i18n para CUALQUIER render (aunque no pase por _render): ES / identidad.
 # _render los sobrescribe por-petición con el idioma real y el `t` ligado.
 templates.env.globals["t"] = lambda s: s
-templates.env.globals["lang"] = i18n.DEFAULT
+templates.env.globals["lang"] = "es"  # literal: i18n aún no importado aquí (import diferido)
 
 # Rate limiting por IP (slowapi, en memoria → válido con 1 worker; ver deploy). Se
 # aplica solo a los endpoints caros (/api/suggest, /buscar) con @limiter.limit.
