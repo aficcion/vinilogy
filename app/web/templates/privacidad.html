@@ -1,67 +1,50 @@
 {% extends "base.html" %}
-{% block title %}Privacidad · Vinilogy{% endblock %}
+{% block title %}{{ t('Privacidad') }} · Vinilogy{% endblock %}
 {% block content %}
 <article class="legal">
-  <h1>Política de privacidad</h1>
-  <p class="legal-updated">Última actualización: {{ updated }}</p>
+  <h1>{{ t('Política de privacidad') }}</h1>
+  <p class="legal-updated">{{ t('Última actualización:') }} {{ updated }}</p>
 
-  <p>Esta política explica qué datos personales trata <strong>Vinilogy</strong> y con
-     qué fin. Vinilogy es una herramienta para descubrir ediciones de vinilo y sus
-     precios en tiendas independientes de España. Puedes usar la mayor parte de la web
-     (buscar, ver fichas, precios, «vibra» y guardar discos con ♥) <strong>sin cuenta</strong>.</p>
+  <p>{{ t('Esta política explica qué datos personales trata') }} <strong>Vinilogy</strong> {{ t('y con qué fin. Vinilogy es una herramienta para descubrir ediciones de vinilo y sus precios en tiendas independientes de España. Puedes usar la mayor parte de la web (buscar, ver fichas, precios, «vibra» y guardar discos con ♥)') }} <strong>{{ t('sin cuenta') }}</strong>.</p>
 
   <section class="block">
-    <h2>Responsable del tratamiento</h2>
-    <p>Florent · Contacto:
+    <h2>{{ t('Responsable del tratamiento') }}</h2>
+    <p>Florent · {{ t('Contacto:') }}
        <a href="mailto:aficcion@gmail.com">aficcion@gmail.com</a>.</p>
   </section>
 
   <section class="block">
-    <h2>Qué datos tratamos y con qué base</h2>
+    <h2>{{ t('Qué datos tratamos y con qué base') }}</h2>
     <ul class="legal-list">
-      <li><strong>Uso sin cuenta.</strong> La wishlist anónima (♥) se guarda solo en
-          <em>tu navegador</em> (localStorage); no llega a nuestros servidores hasta que
-          inicias sesión y decides fusionarla. El tema claro/oscuro también es local.</li>
-      <li><strong>Cuenta (opcional).</strong> Si te identificas con Google, Discogs o
-          Last.fm guardamos: tu <strong>correo</strong> y nombre para mostrar (Google),
-          el identificador y nombre de usuario en el proveedor, tu <strong>wishlist</strong>
-          y, si conectas Discogs, un valor estimado de tu colección. Base legal:
-          <strong>ejecución del servicio que solicitas</strong> (art. 6.1.b RGPD).</li>
-      <li><strong>Cookie de sesión</strong> (<code>vb_session</code>): estrictamente
-          necesaria para mantenerte identificado. No usamos cookies de publicidad ni de
-          seguimiento de terceros.</li>
+      <li><strong>{{ t('Uso sin cuenta.') }}</strong> {{ t('La wishlist anónima (♥) se guarda solo en') }}
+          <em>{{ t('tu navegador') }}</em> {{ t('(localStorage); no llega a nuestros servidores hasta que inicias sesión y decides fusionarla. El tema claro/oscuro también es local.') }}</li>
+      <li><strong>{{ t('Cuenta (opcional).') }}</strong> {{ t('Si te identificas con Google, Discogs o Last.fm guardamos: tu') }} <strong>{{ t('correo') }}</strong> {{ t('y nombre para mostrar (Google), el identificador y nombre de usuario en el proveedor, tu') }} <strong>{{ t('wishlist') }}</strong>
+          {{ t('y, si conectas Discogs, un valor estimado de tu colección. Base legal:') }}
+          <strong>{{ t('ejecución del servicio que solicitas') }}</strong> {{ t('(art. 6.1.b RGPD).') }}</li>
+      <li><strong>{{ t('Cookie de sesión') }}</strong> (<code>vb_session</code>): {{ t('estrictamente necesaria para mantenerte identificado. No usamos cookies de publicidad ni de seguimiento de terceros.') }}</li>
     </ul>
   </section>
 
   <section class="block">
-    <h2>Proveedores de identidad (terceros)</h2>
-    <p>Al conectar Google, Discogs o Last.fm, esos servicios actúan bajo sus propias
-       políticas. A Google solo le pedimos identidad básica (correo y perfil). Los
-       tokens de conexión se usan únicamente para el fin de cada proveedor (colección
-       de Discogs, escucha de Last.fm, identidad de Google) y puedes revocarlos cuando
-       quieras desconectando el proveedor. No vendemos ni cedemos tus datos a terceros
-       con fines comerciales.</p>
+    <h2>{{ t('Proveedores de identidad (terceros)') }}</h2>
+    <p>{{ t('Al conectar Google, Discogs o Last.fm, esos servicios actúan bajo sus propias políticas. A Google solo le pedimos identidad básica (correo y perfil). Los tokens de conexión se usan únicamente para el fin de cada proveedor (colección de Discogs, escucha de Last.fm, identidad de Google) y puedes revocarlos cuando quieras desconectando el proveedor. No vendemos ni cedemos tus datos a terceros con fines comerciales.') }}</p>
   </section>
 
   <section class="block">
-    <h2>Conservación</h2>
-    <p>Conservamos tus datos mientras tengas la cuenta activa. Si la borras, se eliminan
-       tu perfil, conexiones, sesiones y wishlist de forma inmediata (en cascada).</p>
+    <h2>{{ t('Conservación') }}</h2>
+    <p>{{ t('Conservamos tus datos mientras tengas la cuenta activa. Si la borras, se eliminan tu perfil, conexiones, sesiones y wishlist de forma inmediata (en cascada).') }}</p>
   </section>
 
   <section class="block">
-    <h2>Tus derechos</h2>
-    <p>Puedes ejercer en cualquier momento tus derechos de acceso, portabilidad,
-       rectificación y supresión:</p>
+    <h2>{{ t('Tus derechos') }}</h2>
+    <p>{{ t('Puedes ejercer en cualquier momento tus derechos de acceso, portabilidad, rectificación y supresión:') }}</p>
     <ul class="legal-list">
-      <li><strong>Acceso y portabilidad:</strong> descarga todos tus datos en JSON desde
-          <a href="/account/export">Exportar mis datos</a> (requiere sesión).</li>
-      <li><strong>Supresión:</strong> borra tu cuenta y todo lo asociado desde
-          <a href="/cuenta">tu cuenta</a>.</li>
-      <li>Para cualquier otra solicitud, escríbenos a
-          <a href="mailto:aficcion@gmail.com">aficcion@gmail.com</a>.
-          También puedes reclamar ante la Agencia Española de Protección de Datos
-          (aepd.es).</li>
+      <li><strong>{{ t('Acceso y portabilidad:') }}</strong> {{ t('descarga todos tus datos en JSON desde') }}
+          <a href="/account/export">{{ t('Exportar mis datos') }}</a> {{ t('(requiere sesión).') }}</li>
+      <li><strong>{{ t('Supresión:') }}</strong> {{ t('borra tu cuenta y todo lo asociado desde') }}
+          <a href="/cuenta">{{ t('tu cuenta') }}</a>.</li>
+      <li>{{ t('Para cualquier otra solicitud, escríbenos a') }}
+          <a href="mailto:aficcion@gmail.com">aficcion@gmail.com</a>. {{ t('También puedes reclamar ante la Agencia Española de Protección de Datos (aepd.es).') }}</li>
     </ul>
   </section>
 </article>

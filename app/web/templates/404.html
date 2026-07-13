@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}No encontrado · Vinilogy{% endblock %}
+{% block title %}{{ t('No encontrado') }} · Vinilogy{% endblock %}
 {% block content %}
 <section class="hero">
-  <h1>No encontrado</h1>
-  <p class="lead">No existe ninguna {{ what }} con el identificador
+  <h1>{{ t('No encontrado') }}</h1>
+  <p class="lead">{{ t('No existe ninguna') }} {{ what }} {{ t('con el identificador') }}
      <code>{{ ident }}</code>.</p>
-  <p><a class="buy" href="/">Volver al inicio</a></p>
+  <p><a class="buy" href="/">{{ t('Volver al inicio') }}</a></p>
 </section>
 {% endblock %}

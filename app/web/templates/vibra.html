@@ -3,19 +3,18 @@
 {% block content %}
 
 <section class="vibra-head">
-  <h1>Recomendación por vibra</h1>
-  <p class="lead">Dime el ambiente y te saco vinilos que casen. Elige una vibra o
-     descríbela con tus palabras.</p>
+  <h1>{{ t('Recomendación por vibra') }}</h1>
+  <p class="lead">{{ t('Dime el ambiente y te saco vinilos que casen. Elige una vibra o descríbela con tus palabras.') }}</p>
 
   <form class="vibra-form search" action="/vibra" method="get" role="search">
     <input type="search" name="q" value="{{ entry|default('') }}"
-           placeholder="algo para un domingo lluvioso…" autocomplete="off">
-    <button type="submit">Buscar vibra</button>
+           placeholder="{{ t('algo para un domingo lluvioso…') }}" autocomplete="off">
+    <button type="submit">{{ t('Buscar vibra') }}</button>
   </form>
 
   <div class="chips">
     {% for c in chips %}
-      <a class="chip" href="/vibra?mood={{ c.key }}">{{ c.label }}</a>
+      <a class="chip" href="/vibra?mood={{ c.key }}">{{ t(c.label) }}</a>
     {% endfor %}
   </div>
 </section>
@@ -23,22 +22,22 @@
 {% if result is not none %}
   {% if result.mood %}
     <section class="block reco-block">
-      <h2>Vinilos con vibra “{{ result.mood.label }}”</h2>
+      <h2>{{ t('Vinilos con vibra') }} “{{ t(result.mood.label) }}”</h2>
       {% if result.results %}
-        <p class="hint">Ordenados por relevancia, con vinilo. Cada uno lleva su porqué.</p>
+        <p class="hint">{{ t('Ordenados por relevancia, con vinilo. Cada uno lleva su porqué.') }}</p>
         <div class="grid">
           {% for w in result.results %}{% include "_reco_card.html" %}{% endfor %}
         </div>
       {% else %}
-        <p class="empty">No hemos localizado vinilos para esta vibra ahora mismo.</p>
+        <p class="empty">{{ t('No hemos localizado vinilos para esta vibra ahora mismo.') }}</p>
       {% endif %}
     </section>
   {% else %}
     <section class="block">
-      <p class="empty">No reconozco esa vibra. Prueba con una de estas:</p>
+      <p class="empty">{{ t('No reconozco esa vibra. Prueba con una de estas:') }}</p>
       <div class="chips">
         {% for c in result.suggestions %}
-          <a class="chip" href="/vibra?mood={{ c.key }}">{{ c.label }}</a>
+          <a class="chip" href="/vibra?mood={{ c.key }}">{{ t(c.label) }}</a>
         {% endfor %}
       </div>
     </section>

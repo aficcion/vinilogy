@@ -1,29 +1,29 @@
 {% extends "base.html" %}
-{% block title %}Vinilogy — busca cualquier vinilo y su precio en tiendas de España{% endblock %}
+{% block title %}{{ t('Vinilogy — busca cualquier vinilo y su precio en tiendas de España') }}{% endblock %}
 {% block page %}home{% endblock %}
 {% block content %}
 <section class="landing">
   <div class="hero">
-    <span class="kicker"><span class="dot-live"></span> No compras canciones. Compras discos.</span>
-    <h1><span>Deja de rastrear tiendas.</span><span>Busca el disco y <span class="hero-em">punto</span>.</span></h1>
-    <p class="lead">Vinilogy junta las ediciones en vinilo de cualquier álbum y lo que
-       cuesta en <strong>tiendas independientes de España</strong>. Tú solo eliges cuál cae este mes.</p>
+    <span class="kicker"><span class="dot-live"></span> {{ t('No compras canciones. Compras discos.') }}</span>
+    <h1><span>{{ t('Deja de rastrear tiendas.') }}</span><span>{{ t('Busca el disco y') }} <span class="hero-em">{{ t('punto') }}</span>.</span></h1>
+    <p class="lead">{{ t('Vinilogy junta las ediciones en vinilo de cualquier álbum y lo que cuesta en') }}
+       <strong>{{ t('tiendas independientes de España') }}</strong>. {{ t('Tú solo eliges cuál cae este mes.') }}</p>
     <form class="search-big" action="/buscar" method="get" role="search" data-typeahead>
       <input type="search" name="q" placeholder="Radiohead, In Rainbows, garage rock…"
              autocomplete="off" autofocus>
-      <button type="submit">Buscar</button>
+      <button type="submit">{{ t('Buscar') }}</button>
     </form>
-    <p class="hint">¿No sabes qué buscar? Prueba la
-       <a class="nav-vibra" href="/vibra">recomendación por vibra ✦</a>{% if not user %}
-       &nbsp;·&nbsp; Guarda discos con <strong>♥</strong> sin cuenta, o
-       <a href="/auth/google/login">entra con Google</a>{% endif %}</p>
+    <p class="hint">{{ t('¿No sabes qué buscar? Prueba la') }}
+       <a class="nav-vibra" href="/vibra">{{ t('recomendación por vibra ✦') }}</a>{% if not user %}
+       &nbsp;·&nbsp; {{ t('Guarda discos con') }} <strong>♥</strong> {{ t('sin cuenta, o') }}
+       <a href="/auth/google/login">{{ t('entra con Google') }}</a>{% endif %}</p>
   </div>
 
   {% if featured %}
   <div class="strip">
     <div class="strip-head">
-      <span class="strip-label">En tiendas ahora</span>
-      <span class="strip-sub">precios reales de tiendas independientes ES</span>
+      <span class="strip-label">{{ t('En tiendas ahora') }}</span>
+      <span class="strip-sub">{{ t('precios reales de tiendas independientes ES') }}</span>
     </div>
     <div class="strip-track">
       {% for w in featured %}
@@ -44,25 +44,25 @@
   {% if not user %}
   <section class="connect">
     <div class="connect-head">
-      <h2>Hazla <em>tuya</em></h2>
-      <span>Conecta tus cuentas y deja de ser un catálogo para volverse tuyo</span>
+      <h2>{{ t('Hazla') }} <em>{{ t('tuya') }}</em></h2>
+      <span>{{ t('Conecta tus cuentas y deja de ser un catálogo para volverse tuyo') }}</span>
     </div>
     <div class="connect-grid">
       <div class="connect-card">
         <div class="connect-logo connect-logo--discogs" aria-hidden="true">◉</div>
         <div class="connect-body">
           <h3>Discogs</h3>
-          <p>Importa tu colección y calcula tu <strong>gap de vinilo</strong>, con precios ES.</p>
+          <p>{{ t('Importa tu colección y calcula tu') }} <strong>{{ t('gap de vinilo') }}</strong>{{ t(', con precios ES.') }}</p>
         </div>
-        <a class="btn-primary" href="/auth/discogs/login">Conectar</a>
+        <a class="btn-primary" href="/auth/discogs/login">{{ t('Conectar') }}</a>
       </div>
       <div class="connect-card">
         <div class="connect-logo connect-logo--lastfm" aria-hidden="true">❋</div>
         <div class="connect-body">
           <h3>Last.fm</h3>
-          <p>Afina la reco con lo que <strong>de verdad escuchas</strong>.</p>
+          <p>{{ t('Afina la reco con lo que') }} <strong>{{ t('de verdad escuchas') }}</strong>.</p>
         </div>
-        <a class="btn-primary" href="/auth/lastfm/login">Conectar</a>
+        <a class="btn-primary" href="/auth/lastfm/login">{{ t('Conectar') }}</a>
       </div>
     </div>
   </section>

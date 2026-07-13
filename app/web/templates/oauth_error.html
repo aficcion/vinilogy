@@ -1,20 +1,20 @@
 {% extends "base.html" %}
-{% block title %}Conexión con {{ provider }}{% endblock %}
+{% block title %}{{ t('Conexión con') }} {{ provider }}{% endblock %}
 {% block content %}
 <header class="mi-head">
-  <h1>No pudimos conectar con {{ provider }}</h1>
+  <h1>{{ t('No pudimos conectar con') }} {{ provider }}</h1>
   <p class="mi-summary">{{ detail }}</p>
 </header>
 <section class="block">
   <p class="mi-connect-cta">
     {% if provider == 'Google' %}
-      <a class="btn-primary" href="/auth/google/login">Reintentar con Google</a>
+      <a class="btn-primary" href="/auth/google/login">{{ t('Reintentar con Google') }}</a>
     {% elif provider == 'Discogs' %}
-      <a class="btn-primary" href="/auth/discogs/login">Reintentar con Discogs</a>
+      <a class="btn-primary" href="/auth/discogs/login">{{ t('Reintentar con Discogs') }}</a>
     {% elif provider == 'Last.fm' %}
-      <a class="btn-primary" href="/auth/lastfm/login">Reintentar con Last.fm</a>
+      <a class="btn-primary" href="/auth/lastfm/login">{{ t('Reintentar con Last.fm') }}</a>
     {% endif %}
-    <a class="btn-ghost" href="/">Volver al inicio</a>
+    <a class="btn-ghost" href="/">{{ t('Volver al inicio') }}</a>
   </p>
 </section>
 {% endblock %}

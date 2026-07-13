@@ -6,7 +6,7 @@
   <div class="work-head">
     <div class="work-cover">
       {% if work.cover_url or work.cover_thumb %}
-        <img src="{{ work.cover_url or work.cover_thumb }}" alt="Portada de {{ work.title }}"
+        <img src="{{ work.cover_url or work.cover_thumb }}" alt="{{ t('Portada de') }} {{ work.title }}"
              onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'card-cover-empty big',textContent:'♫'}))">
       {% else %}
         <div class="card-cover-empty big">♫</div>
@@ -25,11 +25,11 @@
       {% if owned and work.id in owned %}
       {# Flag "ya lo tienes": la work está en la colección Discogs del usuario. #}
       <p class="owned-line">
-        <span class="owned-flag owned-flag--inline" title="Ya lo tienes en tu colección">
+        <span class="owned-flag owned-flag--inline" title="{{ t('Ya lo tienes en tu colección') }}">
           <span class="owned-flag__ico" aria-hidden="true">✓</span>
-          <span class="owned-flag__txt">En tu colección</span>
+          <span class="owned-flag__txt">{{ t('En tu colección') }}</span>
           {% set _f = owned[work.id] %}
-          {% if 'vinyl' in _f %}<span class="owned-flag__fmt">Vinilo</span>{% endif %}
+          {% if 'vinyl' in _f %}<span class="owned-flag__fmt">{{ t('Vinilo') }}</span>{% endif %}
           {% if 'cd' in _f %}<span class="owned-flag__fmt">CD</span>{% endif %}
         </span>
       </p>
@@ -43,16 +43,16 @@
       <p class="work-actions">
         {# Guardar en wishlist: siempre visible; `hidden` hasta que el JS lo activa. #}
         <button class="wish-btn wish-btn--wide" type="button" data-work="{{ work.id }}"
-                aria-label="Guardar en tu wishlist" aria-pressed="false" hidden>
+                aria-label="{{ t('Guardar en tu wishlist') }}" aria-pressed="false" hidden>
           <span class="wish-ico" aria-hidden="true">♥</span>
-          <span class="wish-label">Guardar</span>
+          <span class="wish-label">{{ t('Guardar') }}</span>
         </button>
         {% if spotify_url %}
         <a class="btn-spotify" href="{{ spotify_url.web }}" data-spotify-app="{{ spotify_url.app }}" target="_blank" rel="noopener">
           <svg class="btn-ico" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
             <path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm4.586 14.424a.623.623 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.623.623 0 1 1-.277-1.215c3.809-.87 7.077-.496 9.712 1.115a.623.623 0 0 1 .207.857Zm1.223-2.722a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 1 1-.452-1.492c3.632-1.102 8.147-.568 11.232 1.329a.78.78 0 0 1 .257 1.072Zm.105-2.835c-3.223-1.914-8.54-2.09-11.618-1.156a.935.935 0 1 1-.542-1.79c3.532-1.072 9.404-.865 13.115 1.338a.935.935 0 1 1-.955 1.608Z"/>
           </svg>
-          Escuchar en Spotify
+          {{ t('Escuchar en') }} Spotify
         </a>
         {% endif %}
         {% if discogs_url %}
@@ -60,53 +60,50 @@
           <svg class="btn-ico" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
             <path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 3a7 7 0 1 1 0 14 7 7 0 0 1 0-14Zm0 4a3 3 0 1 0 0 6 3 3 0 0 0 0-6Zm0 2a1 1 0 1 1 0 2 1 1 0 0 1 0-2Z"/>
           </svg>
-          Ver en Discogs Marketplace
+          {{ t('Ver en') }} Discogs Marketplace
         </a>
         {% endif %}
       </p>
       {% if artist_bio %}
       <p class="artist-bio">{{ artist_bio }}
-        <a class="bio-more" href="/artista/{{ work.artist_id }}">más sobre {{ work.artist_name }} →</a>
+        <a class="bio-more" href="/artista/{{ work.artist_id }}">{{ t('más sobre') }} {{ work.artist_name }} →</a>
       </p>
       {% endif %}
     </div>
   </div>
 
   <section class="block">
-    <h2>Precios en tiendas ES</h2>
+    <h2>{{ t('Precios en tiendas ES') }}</h2>
     {% if prices.listings %}
       {% if prices.any_stale %}
-      <p class="freshness">Algún dato de tienda puede estar desactualizado
-         (más antiguo: {{ prices.data_as_of }}).</p>
+      <p class="freshness">{{ t('Algún dato de tienda puede estar desactualizado (más antiguo:') }} {{ prices.data_as_of }}).</p>
       {% endif %}
       <div class="table-scroll">
       <table class="prices">
         <thead>
-          <tr><th>Precio</th><th>Tienda</th><th>Disponibilidad</th><th></th></tr>
+          <tr><th>{{ t('Precio') }}</th><th>{{ t('Tienda') }}</th><th>{{ t('Disponibilidad') }}</th><th></th></tr>
         </thead>
         <tbody>
           {% for p in prices.listings %}
           <tr>
             <td class="price">{{ p.price_display }}</td>
             <td>{{ p.store_label }}</td>
-            <td>{{ p.availability_label }}</td>
-            <td><a class="buy" href="{{ p.url }}" target="_blank" rel="noopener">Ver en tienda ↗</a></td>
+            <td>{{ t(p.availability_label) }}</td>
+            <td><a class="buy" href="{{ p.url }}" target="_blank" rel="noopener">{{ t('Ver en tienda') }} ↗</a></td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
       </div>
-      <p class="price-level-note">El precio corresponde al <strong>álbum</strong>, no a
-         un prensaje concreto (año, color, catálogo). Confirma la edición exacta en la
-         tienda antes de comprar.</p>
+      <p class="price-level-note">{{ t('El precio corresponde al') }} <strong>{{ t('álbum') }}</strong>{{ t(', no a un prensaje concreto (año, color, catálogo). Confirma la edición exacta en la tienda antes de comprar.') }}</p>
     {% else %}
-      <p class="empty">Sin precio localizado en tiendas ES para esta obra.</p>
+      <p class="empty">{{ t('Sin precio localizado en tiendas ES para esta obra.') }}</p>
     {% endif %}
   </section>
 
   {% if press.has_signals %}
   <section class="block press-block">
-    <h2>La crítica dice</h2>
+    <h2>{{ t('La crítica dice') }}</h2>
     {% for f in press.frases %}
     <blockquote class="press-quote">
       <p>«{{ f.frase }}»</p>
@@ -126,19 +123,19 @@
     {% endif %}
 
     {% if press.suena_a_links %}
-    <p class="press-suena">Según la crítica suena a:
+    <p class="press-suena">{{ t('Según la crítica suena a:') }}
       {% for s in press.suena_a_links %}{%- if s.artist_id -%}<a href="/artista/{{ s.artist_id }}">{{ s.name }}</a>{%- else -%}<span>{{ s.name }}</span>{%- endif -%}{% if not loop.last %}, {% endif %}{% endfor %}.
     </p>
     {% endif %}
 
     {% if press.temas_destacados %}
-    <p class="press-temas"><strong>Temas destacados:</strong>
+    <p class="press-temas"><strong>{{ t('Temas destacados:') }}</strong>
       {{ press.temas_destacados|join(', ') }}.
     </p>
     {% endif %}
 
     {% if press.sources %}
-    <p class="press-sources hint">Reseñas en:
+    <p class="press-sources hint">{{ t('Reseñas en:') }}
       {% for s in press.sources %}{%- if s.review_url -%}<a href="{{ s.review_url }}" target="_blank" rel="noopener">{{ s.source_label }}</a>{%- else -%}{{ s.source_label }}{%- endif -%}{% if not loop.last %}, {% endif %}{% endfor %}.
     </p>
     {% endif %}
@@ -147,7 +144,7 @@
 
   {% if tracklist %}
   <section class="block">
-    <h2>Canciones</h2>
+    <h2>{{ t('Canciones') }}</h2>
     <ol class="tracklist">
       {% for t in tracklist %}
       <li>
@@ -157,7 +154,7 @@
       </li>
       {% endfor %}
     </ol>
-    <p class="hint">Tracklist de la edición de referencia del disco.</p>
+    <p class="hint">{{ t('Tracklist de la edición de referencia del disco.') }}</p>
   </section>
   {% endif %}
 
@@ -165,7 +162,7 @@
      que la ficha aparezca al instante. Skeleton mientras llega el fragmento. #}
   <div data-afines-src="/obra/{{ work.id }}/afines" aria-busy="true">
     <section class="block reco-block">
-      <h2>Vinilos afines</h2>
+      <h2>{{ t('Vinilos afines') }}</h2>
       <div class="grid">
         {% for _ in range(6) %}<div class="skel-card"></div>{% endfor %}
       </div>

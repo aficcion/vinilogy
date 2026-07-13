@@ -1,10 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Algo falló · Vinilogy{% endblock %}
+{% block title %}{{ t('Algo falló') }} · Vinilogy{% endblock %}
 {% block content %}
 <section class="hero">
-  <h1>Algo falló por nuestro lado</h1>
-  <p class="lead">Ha ocurrido un error inesperado. Ya ha quedado registrado; vuelve a
-     intentarlo en un momento.</p>
-  <p><a class="buy" href="/">Volver al inicio</a></p>
+  <h1>{{ t('Algo falló por nuestro lado') }}</h1>
+  <p class="lead">{{ t('Ha ocurrido un error inesperado. Ya ha quedado registrado; vuelve a intentarlo en un momento.') }}</p>
+  <p><a class="buy" href="/">{{ t('Volver al inicio') }}</a></p>
 </section>
 {% endblock %}

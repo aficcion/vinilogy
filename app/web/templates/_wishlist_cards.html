@@ -6,6 +6,5 @@
   {% for w in works %}{% include "_work_card.html" %}{% endfor %}
 </div>
 {% else %}
-<p class="empty">Aún no has guardado ningún disco. Pulsa el ♥ en cualquier disco
-   para empezar tu wishlist.</p>
+<p class="empty">{{ t('Aún no has guardado ningún disco. Pulsa el ♥ en cualquier disco para empezar tu wishlist.') }}</p>
 {% endif %}

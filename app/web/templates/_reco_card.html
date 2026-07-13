@@ -2,9 +2,9 @@
    El botón ♥ (wishlist) es hermano del <a> y arranca `hidden` (lo activa el JS). #}
 <div class="card-wrap">
   <button class="wish-btn" type="button" data-work="{{ w.id }}"
-          aria-label="Guardar en tu wishlist" aria-pressed="false" hidden>♥</button>
+          aria-label="{{ t('Guardar en tu wishlist') }}" aria-pressed="false" hidden>♥</button>
   <a class="card reco-card" href="/obra/{{ w.id }}">
-    <div class="card-band card-band--reco"><span>Afín</span><span class="card-band__action">recomendación</span></div>
+    <div class="card-band card-band--reco"><span>{{ t('Afín') }}</span><span class="card-band__action">{{ t('recomendación') }}</span></div>
     <div class="card-cover">
       {% if w.cover_thumb or w.cover_url %}
         <img src="{{ w.cover_thumb or w.cover_url }}" alt="" loading="lazy"
@@ -20,7 +20,7 @@
         {% if w.year %}{{ w.year }}{% endif %}
         {% if w.work_type %}· {{ w.work_type|replace('_', ' ') }}{% endif %}
       </div>
-      {% if w.cheapest_price %}<div class="card-price">desde {{ w.cheapest_price }}</div>{% endif %}
+      {% if w.cheapest_price %}<div class="card-price">{{ t('desde') }} {{ w.cheapest_price }}</div>{% endif %}
       {% if w.porque %}<div class="card-porque">{{ w.porque }}</div>{% endif %}
     </div>
   </a>

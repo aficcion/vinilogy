@@ -1,14 +1,14 @@
 {% extends "base.html" %}
-{% block title %}{% if q %}“{{ q }}” · {% endif %}Buscar · Vinilogy{% endblock %}
+{% block title %}{% if q %}“{{ q }}” · {% endif %}{{ t('Buscar') }} · Vinilogy{% endblock %}
 {% block content %}
 
 {% if mode == 'selection' %}
   {# ---- Búsqueda por SELECCIÓN (chips): tu selección + mejores por artista + combinadas ---- #}
-  <h1 class="page-title">Tu selección</h1>
+  <h1 class="page-title">{{ t('Tu selección') }}</h1>
 
   {% if selected_works %}
   <section class="block">
-    <h2>Los discos que has elegido</h2>
+    <h2>{{ t('Los discos que has elegido') }}</h2>
     <div class="grid">
       {% for w in selected_works %}{% include "_work_card.html" %}{% endfor %}
     </div>
@@ -17,8 +17,8 @@
 
   {% for blk in artist_blocks %}
   <section class="block">
-    <h2>Mejores de <a href="/artista/{{ blk.artist_id }}">{{ blk.artist_name }}</a></h2>
-    <p class="hint">Sus mejores álbumes en vinilo{% if user %}, que aún no tienes{% endif %}.</p>
+    <h2>{{ t('Mejores de') }} <a href="/artista/{{ blk.artist_id }}">{{ blk.artist_name }}</a></h2>
+    <p class="hint">{{ t('Sus mejores álbumes en vinilo') }}{% if user %}{{ t(', que aún no tienes') }}{% endif %}.</p>
     <div class="grid">
       {% for w in blk.works %}{% include "_work_card.html" %}{% endfor %}
     </div>
@@ -26,30 +26,30 @@
   {% endfor %}
 
   <section class="block reco-block">
-    <h2>En la onda de tu selección</h2>
+    <h2>{{ t('En la onda de tu selección') }}</h2>
     {% if combined and combined.results %}
-      <p class="hint">Otros artistas afines a lo que has elegido, con vinilo.</p>
+      <p class="hint">{{ t('Otros artistas afines a lo que has elegido, con vinilo.') }}</p>
       <div class="grid">
         {% for w in combined.results %}{% include "_reco_card.html" %}{% endfor %}
       </div>
     {% else %}
-      <p class="empty">No hemos encontrado afines para tu selección.</p>
+      <p class="empty">{{ t('No hemos encontrado afines para tu selección.') }}</p>
     {% endif %}
   </section>
 
   {% if not artist_blocks and not (combined and combined.results) %}
-    <p class="empty">Tu selección no ha dado resultados con vinilo y portada.</p>
+    <p class="empty">{{ t('Tu selección no ha dado resultados con vinilo y portada.') }}</p>
   {% endif %}
 
 {% elif not q %}
-  <p class="empty">Escribe algo en el buscador para empezar.</p>
+  <p class="empty">{{ t('Escribe algo en el buscador para empezar.') }}</p>
 {% else %}
   {# ---- Búsqueda por TEXTO (§1): artistas + discos en bloques ---- #}
-  <h1 class="page-title">Resultados para <span class="q">“{{ q }}”</span></h1>
+  <h1 class="page-title">{{ t('Resultados para') }} <span class="q">“{{ q }}”</span></h1>
 
   {% if artists %}
   <section class="block">
-    <h2>Artistas</h2>
+    <h2>{{ t('Artistas') }}</h2>
     <ul class="artist-list">
       {% for a in artists %}
       <li>
@@ -71,13 +71,13 @@
   {% endif %}
 
   <section class="block">
-    <h2>Obras con vinilo</h2>
+    <h2>{{ t('Obras con vinilo') }}</h2>
     {% if works %}
       <div class="grid">
         {% for w in works %}{% include "_work_card.html" %}{% endfor %}
       </div>
     {% else %}
-      <p class="empty">No hemos encontrado obras con vinilo para “{{ q }}”.</p>
+      <p class="empty">{{ t('No hemos encontrado obras con vinilo para') }} “{{ q }}”.</p>
     {% endif %}
   </section>
 
@@ -86,7 +86,7 @@
   {% if afines_src %}
   <div data-afines-src="{{ afines_src }}" aria-busy="true">
     <section class="block reco-block">
-      <h2>Vinilos afines</h2>
+      <h2>{{ t('Vinilos afines') }}</h2>
       <div class="grid">{% for _ in range(6) %}<div class="skel-card"></div>{% endfor %}</div>
     </section>
   </div>
