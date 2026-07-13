@@ -16,9 +16,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=27">
+  <link rel="stylesheet" href="/static/styles.css?v=28">
 </head>
-<body data-auth="{{ 'user' if user else 'anon' }}">
+<body data-auth="{{ 'user' if user else 'anon' }}" data-page="{% block page %}{% endblock %}">
   <header class="topbar">
     <a class="brand" href="/">Vinilogy</a>
     <form class="search" action="/buscar" method="get" role="search" data-typeahead>
