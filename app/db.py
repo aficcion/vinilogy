@@ -3152,45 +3152,36 @@ def upsert_lastfm_albums(user_id, period, albums):
 
 def resolve_lastfm_user(user_id):
     """Resuelve artist_id/work_id de la capa Last.fm del usuario contra el catálogo
-    por MusicBrainz id. Homónimos (un mbid con >1 artista) NO se resuelven (mejor
-    NULL que un homónimo mal). Mismos criterios que reresolve_user_layer del core."""
+    por MusicBrainz id. `artists.mb_artist_id` y `releases.mb_release_id` son ÚNICOS
+    e indexados en el catálogo → JOIN directo por índice, acotado a las ~150 filas
+    del usuario (nada de agregar el catálogo entero). Mismos FKs que el port del core."""
     with _cursor() as cur:
+        # artistas: artist_id por mb_artist_id (índice único)
         cur.execute(
             """
-            WITH uq AS (
-                SELECT mb_artist_id, min(id) AS artist_id
-                  FROM artists WHERE mb_artist_id IS NOT NULL
-                 GROUP BY mb_artist_id HAVING count(*) = 1
-            )
             UPDATE user_lastfm_artists ula
-               SET artist_id = uq.artist_id,
+               SET artist_id = a.id,
                    resolved_at = COALESCE(ula.resolved_at, now())
-              FROM uq
+              FROM artists a
              WHERE ula.user_id = %(u)s
-               AND uq.mb_artist_id = NULLIF(ula.artist_mbid, '')
+               AND a.mb_artist_id = NULLIF(ula.artist_mbid, '')
             """, {"u": user_id})
+        # álbumes: work_id por mb_release_id (resolved_at se ancla al work_id)
         cur.execute(
             """
-            WITH rel AS (
-                SELECT mb_release_id, min(work_id) AS work_id
-                  FROM releases WHERE mb_release_id IS NOT NULL
-                 GROUP BY mb_release_id
-            ), uq AS (
-                SELECT mb_artist_id, min(id) AS artist_id
-                  FROM artists WHERE mb_artist_id IS NOT NULL
-                 GROUP BY mb_artist_id HAVING count(*) = 1
-            ), res AS (
-                SELECT ula.id, rel.work_id AS new_work, uq.artist_id AS new_artist
-                  FROM user_lastfm_albums ula
-                  LEFT JOIN rel ON rel.mb_release_id = NULLIF(ula.album_mbid, '')
-                  LEFT JOIN uq  ON uq.mb_artist_id   = NULLIF(ula.artist_mbid, '')
-                 WHERE ula.user_id = %(u)s
-            )
             UPDATE user_lastfm_albums ula
-               SET work_id = res.new_work,
-                   artist_id = res.new_artist,
-                   resolved_at = CASE WHEN res.new_work IS NOT NULL
-                                      THEN COALESCE(ula.resolved_at, now()) END
-              FROM res
-             WHERE ula.id = res.id
+               SET work_id = r.work_id,
+                   resolved_at = COALESCE(ula.resolved_at, now())
+              FROM releases r
+             WHERE ula.user_id = %(u)s
+               AND r.mb_release_id = NULLIF(ula.album_mbid, '')
+            """, {"u": user_id})
+        # álbumes: artist_id por mb_artist_id (independiente del work_id)
+        cur.execute(
+            """
+            UPDATE user_lastfm_albums ula
+               SET artist_id = a.id
+              FROM artists a
+             WHERE ula.user_id = %(u)s
+               AND a.mb_artist_id = NULLIF(ula.artist_mbid, '')
             """, {"u": user_id})
