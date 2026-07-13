@@ -3092,3 +3092,105 @@ def store_artist_image(artist_id, url):
                    updated_at = now()
              WHERE id = %(a)s
         """, {"u": url, "a": int(artist_id)})
+
+
+# ── Capa de escucha Last.fm: sync + resolución (prod) ──────────────────────────
+# En dev esto lo hace el pipeline del core (fetch en Florent/port + reresolve_user_
+# layer). En prod el core no corre, así que Vinilogy se enriquece SOLO al conectar
+# Last.fm (igual que la colección de Discogs). El fetch vive en
+# app/domains/users/lastfm_sync.py; aquí van la persistencia y la resolución por
+# MusicBrainz id (misma semántica que ingest.reresolve_user_layer del core).
+
+def _lastfm_playcount(item):
+    try:
+        return int(str(item.get("playcount") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def upsert_lastfm_artists(user_id, period, artists):
+    """Reemplaza los top artistas Last.fm del usuario para `period` (nombre + mbid +
+    playcount). artist_id se resuelve aparte. Atómico por (user, period)."""
+    with _cursor() as cur:
+        cur.execute(
+            "DELETE FROM user_lastfm_artists WHERE user_id = %(u)s AND period = %(p)s",
+            {"u": user_id, "p": period})
+        for rank, a in enumerate(artists, start=1):
+            cur.execute(
+                "INSERT INTO user_lastfm_artists "
+                "(user_id, period, rank, artist_name, artist_mbid, playcount) "
+                "VALUES (%(u)s, %(p)s, %(r)s, %(n)s, %(m)s, %(pc)s)",
+                {"u": user_id, "p": period, "r": rank, "n": a.get("name"),
+                 "m": (a.get("mbid") or "").strip() or None,
+                 "pc": _lastfm_playcount(a)})
+
+
+def upsert_lastfm_albums(user_id, period, albums):
+    """Reemplaza los top álbumes Last.fm del usuario para `period`. work_id/artist_id
+    se resuelven aparte. Atómico por (user, period)."""
+    with _cursor() as cur:
+        cur.execute(
+            "DELETE FROM user_lastfm_albums WHERE user_id = %(u)s AND period = %(p)s",
+            {"u": user_id, "p": period})
+        for rank, al in enumerate(albums, start=1):
+            artist = al.get("artist") or {}
+            if isinstance(artist, dict):
+                artist_name = artist.get("name")
+                artist_mbid = (artist.get("mbid") or "").strip() or None
+            else:
+                artist_name, artist_mbid = str(artist), None
+            cur.execute(
+                "INSERT INTO user_lastfm_albums "
+                "(user_id, period, rank, album_title, album_mbid, artist_name, "
+                " artist_mbid, playcount) "
+                "VALUES (%(u)s, %(p)s, %(r)s, %(t)s, %(am)s, %(an)s, %(rm)s, %(pc)s)",
+                {"u": user_id, "p": period, "r": rank, "t": al.get("name"),
+                 "am": (al.get("mbid") or "").strip() or None,
+                 "an": artist_name or "", "rm": artist_mbid,
+                 "pc": _lastfm_playcount(al)})
+
+
+def resolve_lastfm_user(user_id):
+    """Resuelve artist_id/work_id de la capa Last.fm del usuario contra el catálogo
+    por MusicBrainz id. Homónimos (un mbid con >1 artista) NO se resuelven (mejor
+    NULL que un homónimo mal). Mismos criterios que reresolve_user_layer del core."""
+    with _cursor() as cur:
+        cur.execute(
+            """
+            WITH uq AS (
+                SELECT mb_artist_id, min(id) AS artist_id
+                  FROM artists WHERE mb_artist_id IS NOT NULL
+                 GROUP BY mb_artist_id HAVING count(*) = 1
+            )
+            UPDATE user_lastfm_artists ula
+               SET artist_id = uq.artist_id,
+                   resolved_at = COALESCE(ula.resolved_at, now())
+              FROM uq
+             WHERE ula.user_id = %(u)s
+               AND uq.mb_artist_id = NULLIF(ula.artist_mbid, '')
+            """, {"u": user_id})
+        cur.execute(
+            """
+            WITH rel AS (
+                SELECT mb_release_id, min(work_id) AS work_id
+                  FROM releases WHERE mb_release_id IS NOT NULL
+                 GROUP BY mb_release_id
+            ), uq AS (
+                SELECT mb_artist_id, min(id) AS artist_id
+                  FROM artists WHERE mb_artist_id IS NOT NULL
+                 GROUP BY mb_artist_id HAVING count(*) = 1
+            ), res AS (
+                SELECT ula.id, rel.work_id AS new_work, uq.artist_id AS new_artist
+                  FROM user_lastfm_albums ula
+                  LEFT JOIN rel ON rel.mb_release_id = NULLIF(ula.album_mbid, '')
+                  LEFT JOIN uq  ON uq.mb_artist_id   = NULLIF(ula.artist_mbid, '')
+                 WHERE ula.user_id = %(u)s
+            )
+            UPDATE user_lastfm_albums ula
+               SET work_id = res.new_work,
+                   artist_id = res.new_artist,
+                   resolved_at = CASE WHEN res.new_work IS NOT NULL
+                                      THEN COALESCE(ula.resolved_at, now()) END
+              FROM res
+             WHERE ula.id = res.id
+            """, {"u": user_id})

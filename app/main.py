@@ -24,6 +24,7 @@ Arranque:
 import logging
 import os
 import random
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -37,7 +38,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app.domains import catalog, pricing, reco, editorial, press, users, covers
-from app.domains.users import oauth
+from app.domains.users import oauth, lastfm_sync
 
 # Logging al arranque (sin esto, ni los warnings de covers.py salían a ningún sitio).
 logging.basicConfig(
@@ -774,6 +775,13 @@ def lastfm_callback(request: Request, token: str = ""):
         provider_username=username, guest_user_id=flow.get("guest_user_id"),
         session_key=session_key,
     )
+    # Enriquecer la capa de escucha en segundo plano (fetch + resolución contra el
+    # catálogo) para que la reco por Last.fm tenga datos en prod, donde el core no
+    # corre. En hilo: el login redirige al instante; los datos llegan en ~unos seg.
+    threading.Thread(
+        target=lastfm_sync.sync_lastfm_user, args=(user_id, username),
+        daemon=True,
+    ).start()
     return _login_after_oauth(user_id, flow.get("return_to"))
 
 
