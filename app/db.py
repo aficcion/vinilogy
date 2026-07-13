@@ -3228,3 +3228,82 @@ def lastfm_is_stale(user_id, ttl_hours=24):
             {"u": user_id, "h": ttl_hours})
         row = cur.fetchone()
         return bool(row["stale"]) if row and row["stale"] is not None else True
+
+
+# ── Colección Discogs: sync + resolución + frescura (prod) ─────────────────────
+# Espejo de la capa Last.fm. Vinilogy sólo LEÍA user_collection (la poblaba Florent);
+# ahora también la importa+refresca al usar /mi. Upsert verbatim del core: re-enlaza a
+# releases.id por discogs_release_id EXACTO (lo que casa lleva release_id+resolved_at).
+
+def upsert_discogs_collection(user_id, items):
+    """Sync de un lote de la colección Discogs → user_collection, resolviendo a
+    releases.id por discogs_release_id exacto. Devuelve nº de ítems procesados."""
+    count = 0
+    with _cursor() as cur:
+        for item in items:
+            rel = str(item.get("release_id", "")) or None
+            cur.execute(
+                """
+                INSERT INTO user_collection
+                    (user_id, discogs_release_id, artist_name, album_title, format,
+                     year, label, cover_url, discogs_added_at, release_id, resolved_at)
+                SELECT %(u)s, %(rel)s, %(ar)s, %(ti)s, %(fmt)s, %(yr)s, %(lb)s,
+                       %(cv)s, %(da)s,
+                       r.id, CASE WHEN r.id IS NOT NULL THEN now() END
+                FROM (SELECT 1) _
+                LEFT JOIN releases r ON r.discogs_release_id = NULLIF(%(rel)s, '')::bigint
+                ON CONFLICT (user_id, discogs_release_id) DO UPDATE SET
+                    artist_name      = EXCLUDED.artist_name,
+                    album_title      = EXCLUDED.album_title,
+                    format           = EXCLUDED.format,
+                    year             = EXCLUDED.year,
+                    label            = EXCLUDED.label,
+                    cover_url        = EXCLUDED.cover_url,
+                    discogs_added_at = EXCLUDED.discogs_added_at,
+                    release_id       = EXCLUDED.release_id,
+                    resolved_at      = CASE WHEN EXCLUDED.release_id IS NOT NULL
+                                            THEN COALESCE(user_collection.resolved_at, now())
+                                            END
+                """,
+                {"u": user_id, "rel": rel, "ar": item.get("artist"),
+                 "ti": item.get("title"),
+                 "fmt": item.get("internal_category", "OTHERS"),
+                 "yr": item.get("year"), "lb": item.get("label"),
+                 "cv": item.get("cover_url"), "da": item.get("discogs_added_at")})
+            count += 1
+    return count
+
+
+def upsert_discogs_profile(user_id, username):
+    """Perfil Discogs + sello de frescura (updated_at). Se llama al terminar un sync OK."""
+    with _cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO user_profile_discogs (user_id, discogs_username, updated_at)
+            VALUES (%(u)s, %(n)s, now())
+            ON CONFLICT (user_id) DO UPDATE SET
+                discogs_username = EXCLUDED.discogs_username,
+                updated_at = now()
+            """, {"u": user_id, "n": username})
+
+
+def discogs_username(user_id):
+    """Username de Discogs del usuario (de su credencial OAuth) o None."""
+    with _cursor() as cur:
+        cur.execute(
+            "SELECT provider_username FROM user_oauth_credentials "
+            "WHERE user_id = %(u)s AND provider = 'discogs'", {"u": user_id})
+        row = cur.fetchone()
+        return row["provider_username"] if row else None
+
+
+def discogs_collection_is_stale(user_id, ttl_hours=24):
+    """True si el usuario nunca sincronizó la colección o el último sync es más viejo
+    que `ttl_hours`. Espejo de lastfm_is_stale."""
+    with _cursor() as cur:
+        cur.execute(
+            "SELECT NOT COALESCE(bool_or(updated_at > now() - make_interval(hours => %(h)s)), false) AS stale "
+            "FROM user_profile_discogs WHERE user_id = %(u)s",
+            {"u": user_id, "h": ttl_hours})
+        row = cur.fetchone()
+        return bool(row["stale"]) if row and row["stale"] is not None else True

@@ -38,7 +38,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app.domains import catalog, pricing, reco, editorial, press, users, covers
-from app.domains.users import oauth, lastfm_sync
+from app.domains.users import oauth, lastfm_sync, discogs_sync
 
 # Logging al arranque (sin esto, ni los warnings de covers.py salían a ningún sitio).
 logging.basicConfig(
@@ -514,9 +514,10 @@ def mi(request: Request):
         return _render(request, "mi.html", user=None, anon=True)
     summary = users.collection_summary(user)
     uid = user["id"]
-    # Refresco perezoso de Last.fm: si los datos están viejos (>24h), re-sincroniza en
-    # segundo plano (no bloquea; entra para la próxima carga). Como Florent.
+    # Refresco perezoso de Last.fm y colección Discogs: si están viejos (>24h), se
+    # re-sincronizan en segundo plano (no bloquea; entran para la próxima carga).
     lastfm_sync.maybe_refresh_lastfm(uid)
+    discogs_sync.maybe_refresh_collection(uid)
     # Las tres recomendaciones de /mi son independientes y cada una ronda ~1s
     # (KNN de dos fases + join de precios en el gap). En serie sumaban ~2,6s, muy
     # cerca del presupuesto de 3s; se lanzan en PARALELO (el pool es
