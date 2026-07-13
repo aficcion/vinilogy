@@ -324,6 +324,9 @@ EN: dict[str, str] = {
     "Relajado / chill": "Relaxed / chill",
     "Romántico": "Romantic",
     "Veraniego / soleado": "Summery / sunny",
+    # ── títulos de página ──
+    "Mi Vinilogy": "My Vinilogy",
+    "Vibra · Vinilogy": "Vibe · Vinilogy",
 }
 
 
