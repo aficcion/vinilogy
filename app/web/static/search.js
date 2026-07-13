@@ -11,6 +11,11 @@
 (function () {
   "use strict";
 
+  // i18n mínimo: el idioma va en <html lang>; fallback a ES para lo no traducido.
+  var _L = document.documentElement.lang === "en" ? "en" : "es";
+  var _EN = { "Artistas": "Artists", "Discos": "Records", "Sin sugerencias": "No suggestions" };
+  function _t(s) { return _L === "en" && _EN[s] ? _EN[s] : s; }
+
   var MIN_CHARS = 3;
   var DEBOUNCE_MS = 180;
 
@@ -107,15 +112,15 @@
           });
         });
       }
-      section("Artistas", data.artists, "artists", function (a) {
+      section(_t("Artistas"), data.artists, "artists", function (a) {
         return a.name;
       });
-      section("Discos", data.works, "works", function (w) {
+      section(_t("Discos"), data.works, "works", function (w) {
         return w.title + (w.artist_name ? " · " + w.artist_name : "") +
           (w.year ? " (" + w.year + ")" : "");
       });
       if (!any) {
-        menu.appendChild(h("div", "ta-empty", "Sin sugerencias"));
+        menu.appendChild(h("div", "ta-empty", _t("Sin sugerencias")));
       }
       menu.hidden = false;
     }

@@ -13,6 +13,15 @@
 (function () {
   "use strict";
 
+  // i18n mínimo: el idioma va en <html lang>; fallback a ES para lo no traducido.
+  var _L = document.documentElement.lang === "en" ? "en" : "es";
+  var _EN = {
+    "Guardada": "Saved", "Guardar": "Save",
+    "Guardar en tu wishlist": "Save to your wishlist",
+    "Quitar de tu wishlist": "Remove from your wishlist"
+  };
+  function _t(s) { return _L === "en" && _EN[s] ? _EN[s] : s; }
+
   var LS_KEY = "vb-wishlist";
   var body = document.body;
   var mode = (body && body.getAttribute("data-auth")) === "user" ? "user" : "anon";
@@ -58,9 +67,9 @@
     btn.classList.toggle("is-wished", on);
     btn.setAttribute("aria-pressed", on ? "true" : "false");
     var label = btn.querySelector(".wish-label");
-    if (label) label.textContent = on ? "Guardada" : "Guardar";
+    if (label) label.textContent = on ? _t("Guardada") : _t("Guardar");
     if (!btn.querySelector(".wish-label")) {
-      btn.setAttribute("aria-label", on ? "Quitar de tu wishlist" : "Guardar en tu wishlist");
+      btn.setAttribute("aria-label", on ? _t("Quitar de tu wishlist") : _t("Guardar en tu wishlist"));
     }
   }
   function paintAll(root) {
