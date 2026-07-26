@@ -220,10 +220,34 @@
     });
   }
 
+  // Bio del artista: se recorta a N líneas con "ver más/ver menos". Progressive
+  // enhancement — sin JS la bio se ve entera; el toggle solo aparece si DESBORDA.
+  function installBioToggles() {
+    var bios = document.querySelectorAll("[data-bio]");
+    Array.prototype.forEach.call(bios, function (bio) {
+      var wrap = bio.parentNode;
+      var btn = wrap && wrap.querySelector("[data-bio-toggle]");
+      if (!btn) return;
+      bio.classList.add("is-clamped");
+      // Si ya cabe recortado (no desborda), no hace falta el botón: quita el recorte.
+      if (bio.scrollHeight <= bio.clientHeight + 2) {
+        bio.classList.remove("is-clamped");
+        return;
+      }
+      btn.hidden = false;
+      btn.addEventListener("click", function () {
+        var clamped = bio.classList.toggle("is-clamped");
+        btn.textContent = clamped ? btn.dataset.more : btn.dataset.less;
+        btn.setAttribute("aria-expanded", String(!clamped));
+      });
+    });
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     var forms = document.querySelectorAll("form[data-typeahead]");
     Array.prototype.forEach.call(forms, install);
     loadAfines();
     installSpotifyLinks();
+    installBioToggles();
   });
 })();

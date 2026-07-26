@@ -541,6 +541,10 @@ th { color: var(--ink-3); font-family: var(--mono-font); font-weight: 500; font-
 .btn-danger:hover { background: var(--danger, #d05a5a); color: #fff; border-color: var(--danger, #d05a5a); }
 
 .artist-bio { color: var(--ink-2); font-size: 14px; margin-top: 14px; line-height: 1.65; max-width: 62ch; }
+/* Recorte por líneas (JS lo aplica solo si la bio desborda; sin JS se ve entera). */
+.artist-bio.is-clamped { display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
+.bio-toggle { display: inline-block; margin-top: 6px; padding: 0; border: 0; background: none; font: inherit; font-size: 13px; color: var(--accent); cursor: pointer; }
+.bio-toggle:hover { text-decoration: underline; }
 .bio-more { color: var(--accent); white-space: nowrap; }
 
 /* Prensa */

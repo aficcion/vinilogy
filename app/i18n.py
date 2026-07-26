@@ -27,6 +27,8 @@ EN: dict[str, str] = {
     "Salir": "Log out",
     "Entrar o crear cuenta": "Sign in or create account",
     "Cambiar tema": "Toggle theme",
+    "ver más": "show more",
+    "ver menos": "show less",
     "Tu wishlist": "Your wishlist",
     # ── footer ──
     "Vinilogy · precios de vinilo en tiendas independientes de España":

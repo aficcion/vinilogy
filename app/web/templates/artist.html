@@ -22,7 +22,14 @@
         {% if artist.kind %}<span>{{ artist.kind }}</span>{% endif %}
         {% if artist.country %}<span>{{ artist.country }}</span>{% endif %}
       </p>
-      {% if artist.bio %}<p class="artist-bio">{{ artist.bio|truncate(320) }}</p>{% endif %}
+      {% if artist.bio %}
+      <div class="artist-bio-wrap">
+        <p class="artist-bio" data-bio>{{ artist.bio }}</p>
+        <button type="button" class="bio-toggle" data-bio-toggle hidden
+                data-more="{{ t('ver más') }}" data-less="{{ t('ver menos') }}"
+                aria-expanded="false">{{ t('ver más') }}</button>
+      </div>
+      {% endif %}
       {% if spotify_url %}
       <p class="work-actions">
         <a class="btn-spotify" href="{{ spotify_url.web }}" data-spotify-app="{{ spotify_url.app }}" target="_blank" rel="noopener">
