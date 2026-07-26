@@ -620,14 +620,23 @@ def search_artists(q, limit=20, prefix=False, popular_only=False):
         # Ranking: en type-ahead, EMPIEZA-POR-el-prefijo → popularidad (el ts_rank de un
         # `:*` premia en falso nombres con varios tokens que casan el prefijo).
         if prefix:
+            # El tier "empieza-por" mira name_clean (sin "The": casa "beatles"→The
+            # Beatles) Y el nombre visible (con "The": casa "the"→The Beatles). Sin la 2ª
+            # rama, teclear "the" mandaría a The Beatles al fondo (name_clean="beatles").
             cand_order = (
-                "CASE WHEN a.name_clean = p.nq THEN 0 "
-                "     WHEN a.name_clean LIKE p.nq || '%%' THEN 1 ELSE 2 END, "
+                "CASE WHEN a.name_clean = p.nq "
+                "       OR lower(immutable_unaccent(a.name)) = p.nq THEN 0 "
+                "     WHEN a.name_clean LIKE p.nq || '%%' "
+                "       OR lower(immutable_unaccent(a.name)) LIKE p.nq || '%%' THEN 1 "
+                "     ELSE 2 END, "
                 "a.is_primary DESC, a.listeners DESC NULLS LAST, "
                 "ts_rank(a.search_doc, " + tsq + ") DESC")
             final_order = (
-                "CASE WHEN d.name_clean = p.nq THEN 0 "
-                "     WHEN d.name_clean LIKE p.nq || '%%' THEN 1 ELSE 2 END, "
+                "CASE WHEN d.name_clean = p.nq "
+                "       OR lower(immutable_unaccent(d.name)) = p.nq THEN 0 "
+                "     WHEN d.name_clean LIKE p.nq || '%%' "
+                "       OR lower(immutable_unaccent(d.name)) LIKE p.nq || '%%' THEN 1 "
+                "     ELSE 2 END, "
                 "d.is_primary DESC, d.listeners DESC NULLS LAST, d.fts_rank DESC")
         else:
             cand_order = (
