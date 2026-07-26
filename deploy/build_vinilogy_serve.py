@@ -50,12 +50,16 @@ EMBEDDING_HALFVEC = True
 HNSW_M = 8
 HNSW_OPS = "halfvec_cosine_ops" if EMBEDDING_HALFVEC else "vector_cosine_ops"
 
-# Predicado "servible" — idéntico al de app/db.py (_DISCOGRAPHY_WORK_TYPES +
-# has_vinyl + is_official). El filtro de PORTADA es de query-time (no de
-# almacenamiento): la slim guarda TODOS los servibles aunque aún no tengan
-# portada, para que el backfill pueda pedírsela.
+# Predicado "servible" para la BD de SERVICIO. Base = app/db.py (_DISCOGRAPHY_WORK_TYPES
+# + has_vinyl + is_official), MÁS una CURACIÓN por género: fuera los géneros que no
+# encajan en una web de vinilo de música popular (clásica, hablados, infantil, marchas,
+# bandas sonoras). Decisión de Carlos. NO se filtra por portada (esos works llaman a
+# Discogs en vivo para recuperarla — es una feature). Resultado ~769K works.
+_CUT_GENRES = "'Classical','Non-Music','Children''s','Brass & Military','Stage & Screen'"
 SERVIBLE = ("w.has_vinyl AND w.is_official "
-            "AND w.work_type IN ('studio_album','ep')")
+            "AND w.work_type IN ('studio_album','ep') "
+            "AND NOT EXISTS (SELECT 1 FROM work_genres wg JOIN genres g ON g.id=wg.genre_id "
+            f"                WHERE wg.work_id=w.id AND g.name IN ({_CUT_GENRES}))")
 
 # Tablas de usuario: esqueleto VACÍO (schema + constraints + índices), nunca datos.
 # (excluded_artists NO va aquí: es una CTE en app/db.py, no una tabla real.)
