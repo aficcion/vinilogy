@@ -66,21 +66,45 @@ def suggest(q, per_kind=6):
     return _suggest_cached(key, per_kind, int(time.time() // _SUGGEST_TTL_S))
 
 
+def _two_phase(fetch, id_of, per_kind):
+    """Dos fases del type-ahead. FASE 1: solo populares (índice GIN parcial → instantáneo
+    incluso para prefijos genéricos como "the", que casan cientos de miles de filas).
+    Si llena `per_kind`, listo. FASE 2 (solo si falta): búsqueda completa para prefijos
+    raros/nicho (que casan pocas filas → rápida), deduplicando por id. Así un prefijo
+    común nunca dispara el escaneo caro y uno nicho sigue encontrando su artista/disco."""
+    rows = list(fetch(popular_only=True))
+    if len(rows) < per_kind:
+        seen = {id_of(r) for r in rows}
+        for r in fetch(popular_only=False):
+            if id_of(r) not in seen:
+                rows.append(r)
+                seen.add(id_of(r))
+                if len(rows) >= per_kind:
+                    break
+    return rows[:per_kind]
+
+
 @lru_cache(maxsize=2048)
 def _suggest_cached(q, per_kind, _bucket):
     # PREFIJO: el type-ahead manda cadenas incompletas ("radioh"); el modo prefix usa
-    # una tsquery `:*` que casa por prefijo con el índice FTS (0,6s → ~0,05s) en vez
-    # de caer al trigram. Mismo ranking/filtros (portada-obligatoria).
+    # una tsquery `:*` que casa por prefijo con el índice FTS. Ranking empieza-por →
+    # popularidad, y en dos fases (populares primero) para acotar prefijos genéricos.
+    def works_phase(popular_only):
+        return db.search_works(q, per_kind, prefix=True, popular_only=popular_only)["works"]
+
+    def artists_phase(popular_only):
+        return db.search_artists(q, per_kind, prefix=True, popular_only=popular_only)
+
     with ThreadPoolExecutor(max_workers=2) as ex:
-        fw = ex.submit(db.search_works, q, per_kind, prefix=True)
-        fa = ex.submit(db.search_artists, q, per_kind, prefix=True)
-        works = fw.result()["works"]
+        fw = ex.submit(_two_phase, works_phase, lambda w: w["id"], per_kind)
+        fa = ex.submit(_two_phase, artists_phase, lambda a: a["id"], per_kind)
+        works = fw.result()
         artists = fa.result()
     return {
-        "artists": [{"id": a["id"], "name": a["name"]} for a in artists[:per_kind]],
+        "artists": [{"id": a["id"], "name": a["name"]} for a in artists],
         "works": [{"id": w["id"], "title": w["title"],
                    "artist_name": w.get("artist_name"), "year": w.get("year")}
-                  for w in works[:per_kind]],
+                  for w in works],
     }
 
 

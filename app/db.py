@@ -334,6 +334,16 @@ _TRGM_FALLBACK_THRESHOLD = 0.4
 # PLENAS (/buscar) NO llevan tope (el usuario espera un resultado completo).
 _SUGGEST_TIMEOUT_MS = int(os.environ.get("VINILOGY_SUGGEST_TIMEOUT_MS", "1200"))
 
+# Fase 1 del type-ahead (`popular_only`): umbral de popularidad para los índices GIN
+# PARCIALES `idx_artists_search_doc_pop` (WHERE listeners > 20000) e
+# `idx_works_search_doc_pop` (WHERE has_vinyl AND lastfm_playcount > 20000). Un prefijo
+# ultra-común ("the") casa cientos de miles de filas y no cabe rankearlas; restringido
+# al subconjunto popular casa ~2.500 → instantáneo, y populares es justo lo que se
+# quiere para un prefijo genérico. DEBE ir como LITERAL en el SQL: con parámetro el
+# planner no puede probar que la condición implica el predicado del índice parcial y NO
+# lo usaría. Si cambias el valor, RECREA los dos índices con el mismo umbral.
+_SUGGEST_POPULAR_FLOOR = 20000
+
 
 def _prefix_tsquery(q):
     """Construye una tsquery de PREFIJO para el type-ahead: los tokens anteriores
@@ -357,7 +367,7 @@ def _prefix_tsquery(q):
     return " & ".join(toks[:-1] + [toks[-1] + ":*"])
 
 
-def search_works(q, limit=20, prefix=False):
+def search_works(q, limit=20, prefix=False, popular_only=False):
     """Works que casan `q`, cumpliendo la regla TRANSVERSAL (vinilo + álbum/EP +
     anti-single + PORTADA de Discogs). Devuelve un dict:
         {"works": [filas a mostrar, con portada],
@@ -366,6 +376,12 @@ def search_works(q, limit=20, prefix=False):
     Ranking (spec): exacto de título primero (CASE), luego `ts_rank` de FTS, luego
     popularidad (`lastfm_playcount DESC NULLS LAST, releases_count DESC NULLS LAST`).
     El TRIGRAM va SOLO en el WHERE (typos), NUNCA en el ORDER BY.
+
+    TYPE-AHEAD (`prefix`): el ranking cambia a EMPIEZA-POR-el-prefijo → popularidad
+    (el `ts_rank` de un `:*` premia falsamente los títulos con varios tokens que casan
+    el prefijo). Con `popular_only` además se restringe al índice PARCIAL de populares
+    (fase 1, ver _SUGGEST_POPULAR_FLOOR) para que un prefijo genérico ("the") sea
+    instantáneo en vez de rankear cientos de miles de filas.
 
     CONVERGENCIA: `cand` calcula candidatos SIN el filtro de portada; se aplican
     los filtros de álbum/anti-single en `showable`; de esos, `missing_cover_ids`
@@ -401,6 +417,38 @@ def search_works(q, limit=20, prefix=False):
         # El trigram va en el WHERE (typos), NUNCA en el ORDER BY (ranking).
         trgm_or = ("OR lower(immutable_unaccent(w.title)) %% p.nq"
                    if use_trgm else "")
+        # Fase 1 populares: LITERAL (no parámetro) para que el planner use el índice
+        # GIN parcial idx_works_search_doc_pop (WHERE has_vinyl AND lastfm_playcount>N).
+        pop_filter = ("AND w.lastfm_playcount > %d" % _SUGGEST_POPULAR_FLOOR
+                      if popular_only else "")
+        # Ranking: en type-ahead, EMPIEZA-POR-el-prefijo → popularidad (el ts_rank de un
+        # `:*` premia en falso los títulos con varios tokens que casan el prefijo).
+        if prefix:
+            cand_order = (
+                "CASE WHEN lower(immutable_unaccent(w.title)) = p.nq THEN 0 "
+                "     WHEN lower(immutable_unaccent(w.title)) LIKE p.nq || '%%' THEN 1 "
+                "     ELSE 2 END, "
+                "w.lastfm_playcount DESC NULLS LAST, "
+                "ts_rank(w.search_doc, " + tsq + ") DESC, "
+                "w.releases_count DESC NULLS LAST")
+            final_order = (
+                "CASE WHEN lower(immutable_unaccent(ao.title)) = p.nq THEN 0 "
+                "     WHEN lower(immutable_unaccent(ao.title)) LIKE p.nq || '%%' THEN 1 "
+                "     ELSE 2 END, "
+                "ao.lastfm_playcount DESC NULLS LAST, "
+                "ao.fts_rank DESC, "
+                "ao.releases_count DESC NULLS LAST")
+        else:
+            cand_order = (
+                "CASE WHEN lower(immutable_unaccent(w.title)) = p.nq THEN 0 ELSE 1 END, "
+                "ts_rank(w.search_doc, " + tsq + ") DESC, "
+                "w.lastfm_playcount DESC NULLS LAST, "
+                "w.releases_count DESC NULLS LAST")
+            final_order = (
+                "CASE WHEN lower(immutable_unaccent(ao.title)) = p.nq THEN 0 ELSE 1 END, "
+                "ao.fts_rank DESC, "
+                "ao.lastfm_playcount DESC NULLS LAST, "
+                "ao.releases_count DESC NULLS LAST")
         sql = """
             WITH params AS MATERIALIZED (
                 SELECT immutable_unaccent(%(q)s)               AS uq,
@@ -415,15 +463,12 @@ def search_works(q, limit=20, prefix=False):
                 FROM works w, params p
                 WHERE w.has_vinyl = true
                   AND w.work_type = ANY(%(work_types)s::work_type[])
+                  {pop_filter}
                   AND (
                       w.search_doc @@ {tsq}
                       {trgm_or}
                   )
-                ORDER BY CASE WHEN lower(immutable_unaccent(w.title)) = p.nq
-                              THEN 0 ELSE 1 END,
-                         ts_rank(w.search_doc, {tsq}) DESC,
-                         w.lastfm_playcount DESC NULLS LAST,
-                         w.releases_count DESC NULLS LAST
+                ORDER BY {cand_order}
                 LIMIT %(cand_limit)s
             ),
             albumok AS MATERIALIZED (
@@ -455,13 +500,10 @@ def search_works(q, limit=20, prefix=False):
             CROSS JOIN params p
             JOIN artists a ON a.id = ao.primary_artist_id
             LEFT JOIN covers_c vc ON vc.work_id = ao.id
-            ORDER BY CASE WHEN lower(immutable_unaccent(ao.title)) = p.nq
-                          THEN 0 ELSE 1 END,
-                     ao.fts_rank DESC,
-                     ao.lastfm_playcount DESC NULLS LAST,
-                     ao.releases_count DESC NULLS LAST
+            ORDER BY {final_order}
         """.format(album_track_ok_c=_album_track_ok_sql("c"), trgm_or=trgm_or,
-                   tsq=tsq)
+                   tsq=tsq, pop_filter=pop_filter, cand_order=cand_order,
+                   final_order=final_order)
         try:
             with _cursor() as cur:
                 # Type-ahead: acota la latencia (ver _SUGGEST_TIMEOUT_MS). SET LOCAL es
@@ -527,13 +569,18 @@ def _clean_disambiguation_sql(col="a.disambiguation"):
     return ("CASE WHEN {col} ~ '^[0-9]+$' THEN NULL ELSE {col} END").format(col=col)
 
 
-def search_artists(q, limit=20, prefix=False):
+def search_artists(q, limit=20, prefix=False, popular_only=False):
     """Artistas que casan `q`, DEDUP de homónimos y SIN "(N)" de Discogs.
 
     Solo artistas con ≥1 work MOSTRABLE (vinilo + álbum/EP + anti-single + portada
     de Discogs) → los homónimos-basura sin discos caen. Dedup por nombre normalizado
     (`name_clean`) quedándose con el canónico (is_primary DESC, nº de works
     mostrables DESC, listeners DESC) → no salen dos "Geese".
+
+    TYPE-AHEAD (`prefix`): ranking a EMPIEZA-POR-el-prefijo → popularidad (`listeners`),
+    con `ts_rank` de tiebreaker (el `:*` de un prefijo genérico premia en falso los
+    nombres con varios tokens que casan). `popular_only` restringe al índice PARCIAL de
+    populares (fase 1) para que "the" sea instantáneo. Ver _SUGGEST_POPULAR_FLOOR.
 
     Ranking (spec): boost exacto por `name_clean`=normalize(q) primero, `is_primary`,
     luego `ts_rank` de FTS, luego `listeners DESC NULLS LAST`. Trigram SOLO en el
@@ -566,6 +613,30 @@ def search_artists(q, limit=20, prefix=False):
                if prefix else "plainto_tsquery('simple', p.uq)")
         trgm_or = ("OR lower(immutable_unaccent(a.name)) %% p.nq"
                    if use_trgm else "")
+        # Fase 1 populares: LITERAL (no parámetro) para que el planner use el índice GIN
+        # parcial idx_artists_search_doc_pop (WHERE listeners > N).
+        pop_filter = ("AND a.listeners > %d" % _SUGGEST_POPULAR_FLOOR
+                      if popular_only else "")
+        # Ranking: en type-ahead, EMPIEZA-POR-el-prefijo → popularidad (el ts_rank de un
+        # `:*` premia en falso nombres con varios tokens que casan el prefijo).
+        if prefix:
+            cand_order = (
+                "CASE WHEN a.name_clean = p.nq THEN 0 "
+                "     WHEN a.name_clean LIKE p.nq || '%%' THEN 1 ELSE 2 END, "
+                "a.is_primary DESC, a.listeners DESC NULLS LAST, "
+                "ts_rank(a.search_doc, " + tsq + ") DESC")
+            final_order = (
+                "CASE WHEN d.name_clean = p.nq THEN 0 "
+                "     WHEN d.name_clean LIKE p.nq || '%%' THEN 1 ELSE 2 END, "
+                "d.is_primary DESC, d.listeners DESC NULLS LAST, d.fts_rank DESC")
+        else:
+            cand_order = (
+                "CASE WHEN a.name_clean = p.nq THEN 0 ELSE 1 END, "
+                "a.is_primary DESC, ts_rank(a.search_doc, " + tsq + ") DESC, "
+                "a.listeners DESC NULLS LAST")
+            final_order = (
+                "CASE WHEN d.name_clean = p.nq THEN 0 ELSE 1 END, "
+                "d.is_primary DESC, d.fts_rank DESC, d.listeners DESC NULLS LAST")
         sql = """
             WITH params AS MATERIALIZED (
                 SELECT immutable_unaccent(%(q)s)        AS uq,
@@ -578,10 +649,8 @@ def search_artists(q, limit=20, prefix=False):
                 FROM artists a, params p
                 WHERE a.search_doc @@ {tsq}
                    {trgm_or}
-                ORDER BY CASE WHEN a.name_clean = p.nq THEN 0 ELSE 1 END,
-                         a.is_primary DESC,
-                         ts_rank(a.search_doc, {tsq}) DESC,
-                         a.listeners DESC NULLS LAST
+                   {pop_filter}
+                ORDER BY {cand_order}
                 LIMIT %(cand_limit)s
             ),
             cand_works AS MATERIALIZED (
@@ -622,13 +691,11 @@ def search_artists(q, limit=20, prefix=False):
                    {clean_disamb} AS disambiguation,
                    d.country, d.is_primary, d.listeners, d.image_url
             FROM deduped d, params p
-            ORDER BY CASE WHEN d.name_clean = p.nq THEN 0 ELSE 1 END,
-                     d.is_primary DESC,
-                     d.fts_rank DESC,
-                     d.listeners DESC NULLS LAST
+            ORDER BY {final_order}
             LIMIT %(limit)s
         """.format(album_track_ok_w=_album_track_ok_sql("w"),
-                   trgm_or=trgm_or, tsq=tsq,
+                   trgm_or=trgm_or, tsq=tsq, pop_filter=pop_filter,
+                   cand_order=cand_order, final_order=final_order,
                    clean_name=_clean_artist_name_sql("d.name"),
                    clean_disamb=_clean_disambiguation_sql("d.disambiguation"))
         try:

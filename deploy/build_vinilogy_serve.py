@@ -79,12 +79,20 @@ INDEXES = [
     "CREATE INDEX ON {s}.works (primary_artist_id)",
     "CREATE INDEX ON {s}.works USING gin (lower(immutable_unaccent(title)) gin_trgm_ops)",
     "CREATE INDEX ON {s}.works (primary_artist_id, releases_count DESC NULLS LAST) WHERE has_vinyl",
+    # type-ahead fase 1: GIN parcial solo sobre works POPULARES. Un prefijo genérico
+    # ("the") casa cientos de miles de filas y no cabe rankearlas; restringido a lo
+    # popular casa un puñado → instantáneo. El umbral (20000) DEBE casar el literal de
+    # app/db.py:_SUGGEST_POPULAR_FLOOR o el planner no usará el índice parcial.
+    "CREATE INDEX ON {s}.works USING gin (search_doc) WHERE has_vinyl AND lastfm_playcount > 20000",
     "CREATE INDEX ON {s}.works USING hnsw (embedding {ops}) WITH (m = {m}) WHERE embedding IS NOT NULL",
     # embedding_press: solo ~8,7K works (afines por crítica). Índice pequeño.
     "CREATE INDEX ON {s}.works USING hnsw (embedding_press {ops}) WITH (m = {m}) WHERE embedding_press IS NOT NULL",
     # artists
     "CREATE UNIQUE INDEX ON {s}.artists (id)",
     "CREATE INDEX ON {s}.artists USING gin (search_doc)",
+    # type-ahead fase 1: GIN parcial solo sobre artistas POPULARES (ver nota en works;
+    # umbral 20000 = app/db.py:_SUGGEST_POPULAR_FLOOR).
+    "CREATE INDEX ON {s}.artists USING gin (search_doc) WHERE listeners > 20000",
     "CREATE INDEX ON {s}.artists USING gin (lower(immutable_unaccent(name)) gin_trgm_ops)",
     "CREATE INDEX ON {s}.artists USING gin (tags)",
     # covers
