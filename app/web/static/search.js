@@ -127,12 +127,19 @@
 
     var timer = null;
     var lastReq = 0;
+    var inflight = null;   // AbortController de la petición en vuelo (para cancelarla)
     function query() {
       var q = input.value.trim();
       if (q.length < MIN_CHARS) { closeMenu(); return; }
       var mine = ++lastReq;
+      // Al teclear la siguiente letra, cancela la petición anterior: no tiene sentido
+      // que el servidor (1 worker) siga rankeando "que" mientras tú ya vas por "queen".
+      if (inflight) inflight.abort();
+      var ctl = ("AbortController" in window) ? new AbortController() : null;
+      inflight = ctl;
       fetch("/api/suggest?q=" + encodeURIComponent(q), {
         headers: { "Accept": "application/json" },
+        signal: ctl ? ctl.signal : undefined,
       })
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (data) {
@@ -140,7 +147,7 @@
           if (input.value.trim().length < MIN_CHARS) return;
           renderMenu(data);
         })
-        .catch(function () { /* red caída → sin dropdown, el form sigue */ });
+        .catch(function () { /* abortada o red caída → sin dropdown, el form sigue */ });
     }
 
     input.addEventListener("input", function () {

@@ -3,9 +3,17 @@
 Fachada fina sobre db.py. No hace SQL propio; expone la capa de catálogo al
 router web. Los límites internos son one-way (catalog no depende de pricing).
 """
+import time
 from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 
 from app import db
+
+# TTL (s) del cache de sugerencias. En prod el catálogo es ESTÁTICO (se rebuildea
+# offline en el Mac, no en vivo), así que sugerencias "viejas" hasta unos minutos son
+# inocuas. El bucket temporal va en la clave del lru_cache → las entradas de buckets
+# pasados caen solas por LRU, sin lógica de invalidación.
+_SUGGEST_TTL_S = 300
 
 
 def search(q, limit=20):
@@ -46,7 +54,20 @@ def suggest(q, per_kind=6):
     """Sugerencias type-ahead: {artists:[{id,name}], works:[{id,title,artist_name,
     year}]}. Mismo ranking/filtros que search (portada-obligatoria en works). Min 3
     chars (lo controla db). NO devuelve missing_cover_ids (el buscador pleno los
-    encola; sugerir es de solo lectura)."""
+    encola; sugerir es de solo lectura).
+
+    CACHE: los prefijos se repiten muchísimo entre usuarios ("que", "queen", "the"…);
+    rankear 10K+ filas en cada tecla es caro. Se cachea por (prefijo, ventana de TTL)
+    → los prefijos calientes se sirven instantáneos. Clave en minúsculas (db normaliza
+    igual). <3 chars: vacío sin tocar BD ni cache."""
+    key = (q or "").strip().lower()
+    if len(key) < 3:
+        return {"artists": [], "works": []}
+    return _suggest_cached(key, per_kind, int(time.time() // _SUGGEST_TTL_S))
+
+
+@lru_cache(maxsize=2048)
+def _suggest_cached(q, per_kind, _bucket):
     # PREFIJO: el type-ahead manda cadenas incompletas ("radioh"); el modo prefix usa
     # una tsquery `:*` que casa por prefijo con el índice FTS (0,6s → ~0,05s) en vez
     # de caer al trigram. Mismo ranking/filtros (portada-obligatoria).

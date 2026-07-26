@@ -16,6 +16,7 @@ Contratos del proyecto respetados aquí:
 """
 import os
 import atexit
+from psycopg2 import errors as _pg_errors
 from psycopg2.pool import ThreadedConnectionPool
 from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
@@ -325,6 +326,14 @@ _SEARCH_CAND_LIMIT = 120
 # así que NO se filtra a otras queries de la conexión del pool.
 _TRGM_FALLBACK_THRESHOLD = 0.4
 
+# Tope de latencia (ms) para las queries de type-ahead (modo `prefix`). Un prefijo
+# corto/común (`the b`, `pink f`) expande una posting-list GIN enorme y el
+# `ORDER BY ts_rank ... LIMIT` obliga a rankear cientos de miles de filas → segundos.
+# El type-ahead es best-effort: se acota con `SET LOCAL statement_timeout` y, si salta,
+# se devuelve vacío (sin sugerencias) en vez de bloquear el único worker. Las búsquedas
+# PLENAS (/buscar) NO llevan tope (el usuario espera un resultado completo).
+_SUGGEST_TIMEOUT_MS = int(os.environ.get("VINILOGY_SUGGEST_TIMEOUT_MS", "1200"))
+
 
 def _prefix_tsquery(q):
     """Construye una tsquery de PREFIJO para el type-ahead: los tokens anteriores
@@ -453,17 +462,24 @@ def search_works(q, limit=20, prefix=False):
                      ao.releases_count DESC NULLS LAST
         """.format(album_track_ok_c=_album_track_ok_sql("c"), trgm_or=trgm_or,
                    tsq=tsq)
-        with _cursor() as cur:
-            if use_trgm:
-                cur.execute("SET LOCAL pg_trgm.similarity_threshold = %s"
-                            % _TRGM_FALLBACK_THRESHOLD)
-            cur.execute(sql, {
-                "q": q,
-                "prefix_ts": prefix_ts,
-                "work_types": list(_SEARCH_WORK_TYPES),
-                "cand_limit": _SEARCH_CAND_LIMIT,
-            })
-            return cur.fetchall()
+        try:
+            with _cursor() as cur:
+                # Type-ahead: acota la latencia (ver _SUGGEST_TIMEOUT_MS). SET LOCAL es
+                # transaccional → no se filtra a otras queries del pool.
+                if prefix:
+                    cur.execute("SET LOCAL statement_timeout = %d" % _SUGGEST_TIMEOUT_MS)
+                if use_trgm:
+                    cur.execute("SET LOCAL pg_trgm.similarity_threshold = %s"
+                                % _TRGM_FALLBACK_THRESHOLD)
+                cur.execute(sql, {
+                    "q": q,
+                    "prefix_ts": prefix_ts,
+                    "work_types": list(_SEARCH_WORK_TYPES),
+                    "cand_limit": _SEARCH_CAND_LIMIT,
+                })
+                return cur.fetchall()
+        except _pg_errors.QueryCanceled:
+            return []  # prefijo patológico agotó el tope → type-ahead sin match
 
     def _split(rows):
         # `top_coverless`: el candidato MEJOR rankeado (rows[0], p.ej. el match exacto
@@ -615,18 +631,25 @@ def search_artists(q, limit=20, prefix=False):
                    trgm_or=trgm_or, tsq=tsq,
                    clean_name=_clean_artist_name_sql("d.name"),
                    clean_disamb=_clean_disambiguation_sql("d.disambiguation"))
-        with _cursor() as cur:
-            if use_trgm:
-                cur.execute("SET LOCAL pg_trgm.similarity_threshold = %s"
-                            % _TRGM_FALLBACK_THRESHOLD)
-            cur.execute(sql, {
-                "q": q,
-                "prefix_ts": prefix_ts,
-                "work_types": list(_SEARCH_WORK_TYPES),
-                "cand_limit": _SEARCH_CAND_LIMIT,
-                "limit": limit,
-            })
-            return cur.fetchall()
+        try:
+            with _cursor() as cur:
+                # Type-ahead: acota la latencia (ver _SUGGEST_TIMEOUT_MS). SET LOCAL es
+                # transaccional → no se filtra a otras queries del pool.
+                if prefix:
+                    cur.execute("SET LOCAL statement_timeout = %d" % _SUGGEST_TIMEOUT_MS)
+                if use_trgm:
+                    cur.execute("SET LOCAL pg_trgm.similarity_threshold = %s"
+                                % _TRGM_FALLBACK_THRESHOLD)
+                cur.execute(sql, {
+                    "q": q,
+                    "prefix_ts": prefix_ts,
+                    "work_types": list(_SEARCH_WORK_TYPES),
+                    "cand_limit": _SEARCH_CAND_LIMIT,
+                    "limit": limit,
+                })
+                return cur.fetchall()
+        except _pg_errors.QueryCanceled:
+            return []  # prefijo patológico agotó el tope → type-ahead sin match
 
     rows = _run(use_trgm=False)
     if not rows and not prefix:  # sin fallback trigram en type-ahead (prefijo)
