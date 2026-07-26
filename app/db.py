@@ -3307,3 +3307,63 @@ def discogs_collection_is_stale(user_id, ttl_hours=24):
             {"u": user_id, "h": ttl_hours})
         row = cur.fetchone()
         return bool(row["stale"]) if row and row["stale"] is not None else True
+
+
+# ── Sitemap ──────────────────────────────────────────────────────────────────
+# El sitemap solo lista lo que la app SIRVE de verdad: obras con portada (regla de
+# portada-obligatoria) y artistas con ≥1 obra servible. Enumerar `works`/`artists`
+# enteras (5,9M / 9,8M) inflaría el índice con miles de páginas fantasma (thin
+# content) que Google penaliza. Paginación por OFFSET: el sitemap se pide raras
+# veces y Googlebot tolera bien su latencia.
+
+def sitemap_work_count():
+    """Nº de obras indexables (con portada)."""
+    with _cursor() as cur:
+        cur.execute("SELECT count(*) AS n FROM cover_images")
+        return cur.fetchone()["n"]
+
+
+def sitemap_works_page(limit, offset):
+    """Página de obras indexables: (id, lastmod) ordenada por id (paginación estable)."""
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT w.id AS id, w.updated_at::date AS lastmod
+            FROM works w
+            WHERE EXISTS (SELECT 1 FROM cover_images ci WHERE ci.work_id = w.id)
+            ORDER BY w.id
+            LIMIT %(lim)s OFFSET %(off)s
+            """,
+            {"lim": limit, "off": offset})
+        return cur.fetchall()
+
+
+def sitemap_artist_count():
+    """Nº de artistas con ≥1 obra servible (con portada)."""
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT count(*) AS n FROM (
+                SELECT DISTINCT w.primary_artist_id
+                FROM works w
+                WHERE w.primary_artist_id IS NOT NULL
+                  AND EXISTS (SELECT 1 FROM cover_images ci WHERE ci.work_id = w.id)
+            ) t
+            """)
+        return cur.fetchone()["n"]
+
+
+def sitemap_artists_page(limit, offset):
+    """Página de artistas servibles: ids ordenados (paginación estable)."""
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT w.primary_artist_id AS id
+            FROM works w
+            WHERE w.primary_artist_id IS NOT NULL
+              AND EXISTS (SELECT 1 FROM cover_images ci WHERE ci.work_id = w.id)
+            ORDER BY w.primary_artist_id
+            LIMIT %(lim)s OFFSET %(off)s
+            """,
+            {"lim": limit, "off": offset})
+        return [r["id"] for r in cur.fetchall()]

@@ -4,6 +4,21 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Vinilogy{% endblock %}</title>
+
+  {# SEO / social: descripción + Open Graph + Twitter. Las fichas (obra/artista)
+     sobreescriben og_title, meta_description y og_image con sus datos reales. #}
+  <meta name="description" content="{% block meta_description %}{{ t('Vinilogy · precios de vinilo en tiendas independientes de España') }}{% endblock %}">
+  <link rel="canonical" href="{{ canonical_url }}">
+  <meta property="og:site_name" content="Vinilogy">
+  <meta property="og:type" content="{% block og_type %}website{% endblock %}">
+  <meta property="og:locale" content="{{ 'en_US' if lang == 'en' else 'es_ES' }}">
+  <meta property="og:url" content="{{ canonical_url }}">
+  <meta property="og:title" content="{% block og_title %}Vinilogy{% endblock %}">
+  <meta property="og:description" content="{% block og_description %}{{ self.meta_description() }}{% endblock %}">
+  {% block og_image %}{% endblock %}
+  <meta name="twitter:card" content="{% block twitter_card %}summary{% endblock %}">
+  <meta name="twitter:title" content="{{ self.og_title() }}">
+  <meta name="twitter:description" content="{{ self.og_description() }}">
   <script>
     /* Tema antes de pintar (evita el flash): preferencia guardada, o papel por defecto. */
     (function () {
@@ -17,6 +32,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/styles.css?v=29">
+  {% block head_extra %}{% endblock %}
 </head>
 <body data-auth="{{ 'user' if user else 'anon' }}" data-page="{% block page %}{% endblock %}">
   <header class="topbar">

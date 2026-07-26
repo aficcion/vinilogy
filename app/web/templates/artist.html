@@ -1,5 +1,9 @@
 {% extends "base.html" %}
 {% block title %}{{ artist.name }} · Vinilogy{% endblock %}
+{% block twitter_card %}summary_large_image{% endblock %}
+{% block og_title %}{{ artist.name }}{% endblock %}
+{% block meta_description %}Discografía de {{ artist.name }} en vinilo: precios en tiendas independientes de España.{% endblock %}
+{% block og_image %}{% if artist.image_url %}<meta property="og:image" content="{{ artist.image_url }}">{% endif %}{% endblock %}
 {% block content %}
 
 <article class="artist-page">

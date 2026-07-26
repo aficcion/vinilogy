@@ -27,10 +27,13 @@ import random
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from xml.sax.saxutils import escape as _xml_escape
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import (
+    HTMLResponse, RedirectResponse, JSONResponse, Response, PlainTextResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -58,6 +61,7 @@ templates = Jinja2Templates(directory=_TEMPLATES_DIR)
 # _render los sobrescribe por-petición con el idioma real y el `t` ligado.
 templates.env.globals["t"] = lambda s: s
 templates.env.globals["lang"] = "es"  # literal: i18n aún no importado aquí (import diferido)
+templates.env.globals["canonical_url"] = ""  # _render lo fija por-petición (og:url/canonical)
 
 # Rate limiting por IP (slowapi, en memoria → válido con 1 worker; ver deploy). Se
 # aplica solo a los endpoints caros (/api/suggest, /buscar) con @limiter.limit.
@@ -68,6 +72,10 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Cookies Secure solo en prod (sobre HTTPS). En dev local (http) queda off o el
 # navegador no enviaría la cookie. Actívalo con VINILOGY_SECURE_COOKIES=1.
 _SECURE_COOKIES = os.environ.get("VINILOGY_SECURE_COOKIES") == "1"
+
+# URL pública base para canonical/og:url ABSOLUTAS (p.ej. https://vinilogy.com). En
+# prod se fija VINILOGY_SITE_URL; vacío en dev → se deriva de la propia petición.
+_SITE_URL = os.environ.get("VINILOGY_SITE_URL", "").rstrip("/")
 
 # Vida de la cookie de sesión (segundos), espejo de db.SESSION_TTL_DAYS.
 from app import db, i18n  # noqa: E402
@@ -107,8 +115,17 @@ def _owned_formats_map(user):
     return catalog.owned_formats_for_user(user["id"])
 
 
+def _abs_url(request):
+    """URL absoluta de la petición SIN query (canonical / og:url / JSON-LD). En prod
+    se antepone VINILOGY_SITE_URL; en dev cae a la URL real de la petición."""
+    if _SITE_URL:
+        return _SITE_URL + request.url.path
+    return str(request.url).split("?", 1)[0]
+
+
 def _render(request, name, status_code=200, **ctx):
     ctx["request"] = request
+    ctx["canonical_url"] = _abs_url(request)
     # Idioma de la petición + helper de traducción ligado a él (fallback a ES).
     lang = i18n.resolve_lang(request)
     ctx["lang"] = lang
@@ -386,6 +403,158 @@ def api_suggest(request: Request, q: str = ""):
     return JSONResponse(catalog.suggest((q or "").strip()))
 
 
+# ── Sitemap + robots ─────────────────────────────────────────────────────────
+# ~509k URLs indexables (406k obras + 103k artistas) superan el tope de 50k por
+# fichero → índice de sitemaps + hijos paginados. Solo se listan páginas SERVIBLES
+# (obra con portada / artista con obra servible), nunca el catálogo crudo.
+_SITEMAP_PAGE = 50000
+
+
+def _site_base(request):
+    """Base pública (esquema+host) para las URLs absolutas del sitemap/robots. En
+    prod la fija VINILOGY_SITE_URL; en dev se deriva de la petición."""
+    if _SITE_URL:
+        return _SITE_URL
+    return "{}://{}".format(request.url.scheme, request.url.netloc)
+
+
+def _sitemap_xml(body):
+    return Response("\n".join(body), media_type="application/xml")
+
+
+@app.get("/sitemap.xml")
+def sitemap_index(request: Request):
+    base = _xml_escape(_site_base(request))
+    n_works = -(-db.sitemap_work_count() // _SITEMAP_PAGE)
+    n_artists = -(-db.sitemap_artist_count() // _SITEMAP_PAGE)
+    out = ['<?xml version="1.0" encoding="UTF-8"?>',
+           '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
+    for i in range(1, n_works + 1):
+        out.append("<sitemap><loc>{}/sitemap-works-{}.xml</loc></sitemap>".format(base, i))
+    for i in range(1, n_artists + 1):
+        out.append("<sitemap><loc>{}/sitemap-artists-{}.xml</loc></sitemap>".format(base, i))
+    out.append("</sitemapindex>")
+    return _sitemap_xml(out)
+
+
+@app.get("/sitemap-works-{page}.xml")
+def sitemap_works(request: Request, page: int):
+    rows = db.sitemap_works_page(_SITEMAP_PAGE, (page - 1) * _SITEMAP_PAGE) if page >= 1 else []
+    if not rows:
+        return Response(status_code=404)
+    base = _site_base(request)
+    out = ['<?xml version="1.0" encoding="UTF-8"?>',
+           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
+    for r in rows:
+        loc = _xml_escape("{}/obra/{}".format(base, r["id"]))
+        lm = r.get("lastmod")
+        if lm:
+            out.append("<url><loc>{}</loc><lastmod>{}</lastmod></url>".format(loc, lm.isoformat()))
+        else:
+            out.append("<url><loc>{}</loc></url>".format(loc))
+    out.append("</urlset>")
+    return _sitemap_xml(out)
+
+
+@app.get("/sitemap-artists-{page}.xml")
+def sitemap_artists(request: Request, page: int):
+    ids = db.sitemap_artists_page(_SITEMAP_PAGE, (page - 1) * _SITEMAP_PAGE) if page >= 1 else []
+    if not ids:
+        return Response(status_code=404)
+    base = _site_base(request)
+    out = ['<?xml version="1.0" encoding="UTF-8"?>',
+           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
+    for aid in ids:
+        loc = _xml_escape("{}/artista/{}".format(base, aid))
+        out.append("<url><loc>{}</loc></url>".format(loc))
+    out.append("</urlset>")
+    return _sitemap_xml(out)
+
+
+@app.get("/robots.txt")
+def robots_txt(request: Request):
+    base = _site_base(request)
+    body = [
+        "User-agent: *",
+        "Disallow: /cuenta",
+        "Disallow: /mi",
+        "Disallow: /wishlist",
+        "Disallow: /auth/",
+        "Disallow: /lang/",
+        "Disallow: /buscar",
+        "Disallow: /api/",
+        "Disallow: /*/afines",
+        "",
+        "Sitemap: {}/sitemap.xml".format(base),
+        "",
+    ]
+    return PlainTextResponse("\n".join(body))
+
+
+# Disponibilidad de tienda (clave interna) → vocabulario schema.org.
+_AVAIL_SCHEMA = {
+    "in_stock": "https://schema.org/InStock",
+    "listed": "https://schema.org/InStock",
+    "on_request": "https://schema.org/LimitedAvailability",
+    "out_of_stock": "https://schema.org/OutOfStock",
+}
+
+
+def _work_jsonld(work, prices, url):
+    """Datos estructurados de la ficha de obra para el rich result de Google.
+
+    Nodo multi-tipo Product+MusicAlbum: Product (con AggregateOffer) habilita el
+    snippet de precio en SERP; MusicAlbum añade la semántica de disco (artista,
+    año, géneros). Los offers reflejan EXACTAMENTE los listings visibles en la
+    página (requisito de Google: el marcado no puede afirmar precios que el
+    usuario no ve). Sin listings → solo MusicAlbum, sin Product ni offers (un
+    Product sin oferta daría warning en Search Console)."""
+    listings = [l for l in (prices or {}).get("listings", []) if l.get("price_cents")]
+    node = {
+        "@context": "https://schema.org",
+        "@type": ["Product", "MusicAlbum"] if listings else "MusicAlbum",
+        "name": work.get("title"),
+        "url": url,
+    }
+    img = work.get("cover_url") or work.get("cover_thumb")
+    if img:
+        node["image"] = img
+    if work.get("artist_name"):
+        node["byArtist"] = {"@type": "MusicGroup", "name": work["artist_name"]}
+    if work.get("year"):
+        node["datePublished"] = str(work["year"])
+    genres = list(work.get("genres") or []) + list(work.get("styles") or [])
+    if genres:
+        node["genre"] = genres
+    if listings:
+        cents = [l["price_cents"] for l in listings]
+        currency = listings[0].get("currency") or "EUR"
+        offers = []
+        for l in listings:
+            offer = {
+                "@type": "Offer",
+                "price": "{:.2f}".format(l["price_cents"] / 100),
+                "priceCurrency": l.get("currency") or "EUR",
+                "availability": _AVAIL_SCHEMA.get(
+                    l.get("availability"), "https://schema.org/InStock"),
+            }
+            if l.get("url"):
+                offer["url"] = l["url"]
+            seller = l.get("store_label") or l.get("source")
+            if seller:
+                offer["seller"] = {"@type": "Organization", "name": seller}
+            offers.append(offer)
+        node["offers"] = {
+            "@type": "AggregateOffer",
+            "priceCurrency": currency,
+            "lowPrice": "{:.2f}".format(min(cents) / 100),
+            "highPrice": "{:.2f}".format(max(cents) / 100),
+            "offerCount": len(offers),
+            "offers": offers,
+        }
+    return node
+
+
 @app.get("/obra/{work_id}", response_class=HTMLResponse)
 def obra(request: Request, work_id: int):
     user = users.current_user(request)
@@ -419,6 +588,7 @@ def obra(request: Request, work_id: int):
         artist_bio=artist_bio,
         spotify_url=_spotify_search_link(_spotify_work_query(work)),
         discogs_url=_discogs_market_url(work),
+        jsonld=_work_jsonld(work, prices, _abs_url(request)),
         user=user,
     )
 

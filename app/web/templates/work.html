@@ -1,5 +1,11 @@
 {% extends "base.html" %}
 {% block title %}{{ work.title }} — {{ work.artist_name }} · Vinilogy{% endblock %}
+{% block og_type %}music.album{% endblock %}
+{% block twitter_card %}summary_large_image{% endblock %}
+{% block og_title %}{{ work.title }} — {{ work.artist_name }}{% endblock %}
+{% block meta_description %}{{ work.title }} de {{ work.artist_name }}{% if work.year %} ({{ work.year }}){% endif %} en vinilo: compara precios en tiendas independientes de España.{% endblock %}
+{% block og_image %}{% if work.cover_url or work.cover_thumb %}<meta property="og:image" content="{{ work.cover_url or work.cover_thumb }}">{% endif %}{% endblock %}
+{% block head_extra %}{% if jsonld %}<script type="application/ld+json">{{ jsonld | tojson }}</script>{% endif %}{% endblock %}
 {% block content %}
 
 <article class="work">
