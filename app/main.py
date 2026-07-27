@@ -82,6 +82,10 @@ _SITE_URL = os.environ.get("VINILOGY_SITE_URL", "").rstrip("/")
 templates.env.globals["gsc_verification"] = os.environ.get(
     "VINILOGY_GSC_VERIFICATION", "").strip()
 
+# Google Analytics 4: Measurement ID (formato G-XXXXXXX). Vacío → no se carga gtag
+# (ni en dev). Se fija con VINILOGY_GA_ID y redeploy.
+templates.env.globals["ga_id"] = os.environ.get("VINILOGY_GA_ID", "").strip()
+
 # Vida de la cookie de sesión (segundos), espejo de db.SESSION_TTL_DAYS.
 from app import db, i18n  # noqa: E402
 _COOKIE_MAX_AGE = db.SESSION_TTL_DAYS * 24 * 3600

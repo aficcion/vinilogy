@@ -6,6 +6,17 @@
   <title>{% block title %}Vinilogy{% endblock %}</title>
   {% if gsc_verification %}<meta name="google-site-verification" content="{{ gsc_verification }}">{% endif %}
 
+  {% if ga_id %}
+  {# Google Analytics 4 (gtag.js). Solo carga si VINILOGY_GA_ID está fijada. #}
+  <script async src="https://www.googletagmanager.com/gtag/js?id={{ ga_id }}"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', '{{ ga_id }}');
+  </script>
+  {% endif %}
+
   {# SEO / social: descripción + Open Graph + Twitter. Las fichas (obra/artista)
      sobreescriben og_title, meta_description y og_image con sus datos reales. #}
   <meta name="description" content="{% block meta_description %}{{ t('Vinilogy · precios de vinilo en tiendas independientes de España') }}{% endblock %}">
