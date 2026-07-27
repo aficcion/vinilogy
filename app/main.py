@@ -77,6 +77,11 @@ _SECURE_COOKIES = os.environ.get("VINILOGY_SECURE_COOKIES") == "1"
 # prod se fija VINILOGY_SITE_URL; vacío en dev → se deriva de la propia petición.
 _SITE_URL = os.environ.get("VINILOGY_SITE_URL", "").rstrip("/")
 
+# Token de verificación de Google Search Console (meta-tag). Vacío → no se pinta la
+# etiqueta. Se fija con VINILOGY_GSC_VERIFICATION al valor que da Google y redeploy.
+templates.env.globals["gsc_verification"] = os.environ.get(
+    "VINILOGY_GSC_VERIFICATION", "").strip()
+
 # Vida de la cookie de sesión (segundos), espejo de db.SESSION_TTL_DAYS.
 from app import db, i18n  # noqa: E402
 _COOKIE_MAX_AGE = db.SESSION_TTL_DAYS * 24 * 3600

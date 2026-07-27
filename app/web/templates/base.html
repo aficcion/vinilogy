@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Vinilogy{% endblock %}</title>
+  {% if gsc_verification %}<meta name="google-site-verification" content="{{ gsc_verification }}">{% endif %}
 
   {# SEO / social: descripción + Open Graph + Twitter. Las fichas (obra/artista)
      sobreescriben og_title, meta_description y og_image con sus datos reales. #}
