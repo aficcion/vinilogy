@@ -1204,9 +1204,14 @@ def get_prices_for_work(work_id, max_age_days=None):
     es un simple index-scan por work_id.
 
     Cada fila lleva `data_as_of` (fecha de last_seen) y `stale` (bool) según
-    STORE_FRESHNESS_MAX_DAYS (o `max_age_days` si se pasa). Los listings
-    `out_of_stock` se excluyen: un precio agotado no es comprable y solo mete
-    ruido en la tabla. Sin datos → []. Nunca inventa precio.
+    STORE_FRESHNESS_MAX_DAYS (o `max_age_days` si se pasa). Se excluyen los
+    listings `out_of_stock` (un precio agotado no es comprable) y los FANTASMA:
+    filas que la tienda ya no listó en su ÚLTIMO scrape (last_seen_at fuera de
+    la ventana de 12 h del max(last_seen_at) de su source — los scrapes son
+    corridas nocturnas de minutos, así que la ventana separa corridas diarias
+    sin partir una que cruce la medianoche). Un listing no visto en el último
+    scrape es un producto retirado cuya fecha congelada, además, manchaba la
+    nota de frescura de toda la tabla. Sin datos → []. Nunca inventa precio.
     """
     stale_days = max_age_days if max_age_days is not None else STORE_FRESHNESS_MAX_DAYS
 
@@ -1223,9 +1228,13 @@ def get_prices_for_work(work_id, max_age_days=None):
                ml.last_seen_at::date AS data_as_of,
                (ml.last_seen_at < (now() - make_interval(days => %(stale_days)s))) AS stale
         FROM marketplace_listings ml
+        JOIN (SELECT source, max(last_seen_at) AS last_scrape
+                FROM marketplace_listings
+               GROUP BY source) sc ON sc.source = ml.source
         WHERE ml.work_id = %(work_id)s
           AND ml.price_cents > 0
           AND ml.availability IS DISTINCT FROM 'out_of_stock'
+          AND ml.last_seen_at >= sc.last_scrape - interval '12 hours'
         ORDER BY ml.price_cents ASC
     """
     with _cursor() as cur:
@@ -1247,8 +1256,9 @@ def cheapest_prices_for_works(work_ids, max_age_days=None):
 
     Elige el listing NO envejecido más barato; si todos están stale, cae al más
     barato y lo marca `stale=True` (para no anunciar como "el más barato" un
-    listing fantasma cuando existe uno vivo más caro). Excluye `out_of_stock`
-    (mismo criterio que la ficha: un precio agotado no se anuncia). Devuelve
+    listing fantasma cuando existe uno vivo más caro). Excluye `out_of_stock` y
+    los listings no vistos en el ÚLTIMO scrape de su tienda (mismo criterio que
+    la ficha, ver get_prices_for_work: retirado = no se anuncia). Devuelve
     {work_id: {price_cents, currency, url, source, stale}} solo para las obras con
     algún listing con precio. Una sola query (evita el N+1). Lista vacía → {}.
     """
@@ -1261,9 +1271,13 @@ def cheapest_prices_for_works(work_ids, max_age_days=None):
                ml.work_id, ml.price_cents, ml.currency, ml.url, ml.source,
                (ml.last_seen_at < (now() - make_interval(days => %(stale_days)s))) AS stale
         FROM marketplace_listings ml
+        JOIN (SELECT source, max(last_seen_at) AS last_scrape
+                FROM marketplace_listings
+               GROUP BY source) sc ON sc.source = ml.source
         WHERE ml.work_id = ANY(%(ids)s)
           AND ml.price_cents > 0
           AND ml.availability IS DISTINCT FROM 'out_of_stock'
+          AND ml.last_seen_at >= sc.last_scrape - interval '12 hours'
         ORDER BY ml.work_id,
                  (ml.last_seen_at < (now() - make_interval(days => %(stale_days)s))) ASC,
                  ml.price_cents ASC
