@@ -1204,8 +1204,9 @@ def get_prices_for_work(work_id, max_age_days=None):
     es un simple index-scan por work_id.
 
     Cada fila lleva `data_as_of` (fecha de last_seen) y `stale` (bool) según
-    STORE_FRESHNESS_MAX_DAYS (o `max_age_days` si se pasa). Sin datos → [].
-    Nunca inventa precio.
+    STORE_FRESHNESS_MAX_DAYS (o `max_age_days` si se pasa). Los listings
+    `out_of_stock` se excluyen: un precio agotado no es comprable y solo mete
+    ruido en la tabla. Sin datos → []. Nunca inventa precio.
     """
     stale_days = max_age_days if max_age_days is not None else STORE_FRESHNESS_MAX_DAYS
 
@@ -1224,6 +1225,7 @@ def get_prices_for_work(work_id, max_age_days=None):
         FROM marketplace_listings ml
         WHERE ml.work_id = %(work_id)s
           AND ml.price_cents > 0
+          AND ml.availability IS DISTINCT FROM 'out_of_stock'
         ORDER BY ml.price_cents ASC
     """
     with _cursor() as cur:
@@ -1245,7 +1247,8 @@ def cheapest_prices_for_works(work_ids, max_age_days=None):
 
     Elige el listing NO envejecido más barato; si todos están stale, cae al más
     barato y lo marca `stale=True` (para no anunciar como "el más barato" un
-    listing fantasma cuando existe uno vivo más caro). Devuelve
+    listing fantasma cuando existe uno vivo más caro). Excluye `out_of_stock`
+    (mismo criterio que la ficha: un precio agotado no se anuncia). Devuelve
     {work_id: {price_cents, currency, url, source, stale}} solo para las obras con
     algún listing con precio. Una sola query (evita el N+1). Lista vacía → {}.
     """
@@ -1260,6 +1263,7 @@ def cheapest_prices_for_works(work_ids, max_age_days=None):
         FROM marketplace_listings ml
         WHERE ml.work_id = ANY(%(ids)s)
           AND ml.price_cents > 0
+          AND ml.availability IS DISTINCT FROM 'out_of_stock'
         ORDER BY ml.work_id,
                  (ml.last_seen_at < (now() - make_interval(days => %(stale_days)s))) ASC,
                  ml.price_cents ASC
